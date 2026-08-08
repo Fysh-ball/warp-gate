@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>Warp Gate: Privacy Policy</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><a href="/">WARP GATE</a></div>
+</header>
+
+<main class="legal">
+<h1>Privacy Policy</h1>
+<p class="muted small">Last updated: 8 August 2026</p>
+
+<h2>The short version</h2>
+<p>We have no accounts, no database, no analytics, no advertising, no tracking cookies and
+no access logs. We cannot read your messages or files, and we do not keep them. What
+unavoidably exists is network metadata, held briefly in memory and by the network provider
+in front of the Service.</p>
+
+<h2>What we do not collect</h2>
+<ul>
+  <li>No name, email address, phone number or account of any kind.</li>
+  <li>No message content, file content, file names, file sizes or file types. These are
+      encrypted on your device before transmission and the keys never reach us.</li>
+  <li>No history of who connected to whom, or of any past session.</li>
+  <li>No analytics, telemetry, fingerprinting, advertising identifiers or third-party
+      trackers. The Service loads no third-party scripts, fonts or images.</li>
+  <li>No web server access logs.</li>
+</ul>
+
+<h2>What exists while a gate is open</h2>
+<p>For the lifetime of a session only, and only in memory, the server holds:</p>
+<ul>
+  <li>a random room identifier, derived from your secret in a way that does not reveal it;</li>
+  <li>two random session tokens, one per participant;</li>
+  <li>an expiry time;</li>
+  <li>the two live connections, so that encrypted handshake messages can be passed
+      between them.</li>
+</ul>
+<p>The handshake messages themselves are relayed as opaque ciphertext. The server cannot
+read them, which means it cannot see the network addresses they contain.</p>
+<p>This state is destroyed when the gate expires, when either participant severs it, or
+when the server restarts. None of it is written to disk.</p>
+
+<h2>Abuse prevention</h2>
+<p>To stop one user from denying the Service to others, we count recent requests per
+client. The counter is keyed by a value derived from your IP address using a secret that
+is generated fresh each time the server starts and is never written down. The counters
+live in memory, expire within minutes, and cannot be linked back to an IP address without
+that secret, which ceases to exist when the process restarts. We do not store IP
+addresses.</p>
+
+<h2>Network providers who can see metadata</h2>
+<p>We cannot make the network invisible, and we will not pretend otherwise.</p>
+<ul>
+  <li><strong>Cloudflare</strong> sits in front of the Service and terminates the HTTPS
+      connection. It can observe your IP address, the time and size of requests, and the
+      room identifier. It cannot read message or file content, which is separately
+      encrypted. Its handling of that data is governed by Cloudflare's own policies.</li>
+  <li><strong>A STUN server</strong> is contacted by your browser to discover your public
+      network address, which is a necessary step in making a direct connection. We
+      deliberately use Cloudflare's STUN server, because Cloudflare already sees your
+      address from the connection above, so this adds no party that was not already
+      involved.</li>
+  <li><strong>The other device</strong> learns your network address, unavoidably, because
+      your devices connect directly to each other. This is described on the first screen
+      of the Service.</li>
+  <li><strong>Your own network operators</strong>, such as your ISP or employer, can see
+      that you connected to this Service, as they can for any website.</li>
+</ul>
+
+<h2>What is stored in your browser</h2>
+<p>The Service sets no cookies. It uses browser storage only for:</p>
+<ul>
+  <li><code>localStorage</code>: a record that you accepted the Terms, with the version
+      and date. This exists so you are not asked on every visit.</li>
+  <li><code>sessionStorage</code>: your session token for a gate that is currently open,
+      so that reloading the page does not destroy the session. It is scoped to the tab
+      and is discarded when the tab closes.</li>
+</ul>
+<p>Both can be cleared at any time through your browser's settings. Messages and received
+files are held in the page's memory only and are gone when the page closes.</p>
+
+<h2>Retention</h2>
+<p>Session state: until the gate ends, and never on disk. Abuse counters: minutes, in
+memory. Everything else: not collected, therefore not retained. There is nothing to
+export, and a deletion request would find nothing to delete.</p>
+
+<h2>Legal requests</h2>
+<p>If we receive a valid legal demand, we can only produce what we hold, which for past
+sessions is nothing at all. We cannot decrypt, recover or reconstruct the contents of any
+session, because the keys exist only on the two devices involved and are destroyed with
+the session.</p>
+
+<h2>Children</h2>
+<p>The Service is not directed at children and is not intended for use by anyone under the
+age at which they can form a binding contract in their jurisdiction.</p>
+
+<h2>Changes</h2>
+<p>Any change to this policy will be published on this page with an updated date.</p>
+
+<h2>Contact</h2>
+<p>Privacy questions can be sent to <span class="fillme">[CONTACT EMAIL]</span>. The
+operator is <span class="fillme">[OPERATOR LEGAL NAME AND ADDRESS, if required in your
+jurisdiction]</span>.</p>
+
+<p class="muted small"><a href="/">Back to Warp Gate</a></p>
+</main>
+</body>
+</html>

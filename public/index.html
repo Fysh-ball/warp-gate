@@ -22,52 +22,80 @@
 
   <!-- onboarding ------------------------------------------------------->
   <section id="screen-onboarding" class="screen" hidden>
-    <h1>Before you start</h1>
+    <h1>A temporary encrypted bridge between two devices.</h1>
+    <p class="lede">Open a gate, send what you need, close it. Nothing is stored anywhere.</p>
 
-    <div class="note">
-      <h2>End-to-end encryption</h2>
-      <p>Your messages and files are encrypted in this browser before they are sent. The
-      server relays an encrypted handshake and never receives the keys, the file
-      contents, the messages, or even the file names.</p>
+    <details class="disc">
+      <summary><span class="disc-title">Your messages and files are encrypted here, in this browser</span>
+        <span class="disc-hint">what the server can and cannot see</span></summary>
+      <div class="disc-body">
+        <p>Everything is encrypted before it leaves your device. The server relays an
+        encrypted handshake and then steps out of the way entirely. It never receives
+        the keys, the file contents, the messages, or even the file names.</p>
+        <p>The secret that unlocks the gate lives after the <code>#</code> in the link,
+        which browsers never send to a server.</p>
+      </div>
+    </details>
+
+    <details class="disc">
+      <summary><span class="disc-title">Anyone with the link can join</span>
+        <span class="disc-hint">treat it like a password</span></summary>
+      <div class="disc-body">
+        <p>There are no accounts and no identity checks. The link is the only credential.
+        Send it the way you would send a password, and only to the person you mean to.</p>
+        <p>A gate holds exactly two devices. Once a second device joins, it locks.</p>
+      </div>
+    </details>
+
+    <details class="disc warn">
+      <summary><span class="disc-title">The two devices see each other's IP address</span>
+        <span class="disc-hint">Warp Gate is confidential, not anonymous</span></summary>
+      <div class="disc-body">
+        <p>Warp Gate connects your devices directly to each other. That is what keeps the
+        server out of the data path, but it means each device learns the other's network
+        address.</p>
+        <p>This applies even if you loaded this page through a proxy. If hiding your
+        network address matters, use a VPN or Tor that you trust.</p>
+      </div>
+    </details>
+
+    <details class="disc">
+      <summary><span class="disc-title">What this does not protect you from</span>
+        <span class="disc-hint">the honest limits</span></summary>
+      <div class="disc-body">
+        <ul>
+          <li>A compromised device, browser or extension on either end.</li>
+          <li>Screenshots, or a recipient who saves and forwards what you sent.</li>
+          <li>Anyone you choose to give the link to.</li>
+          <li>Traffic analysis: sizes and timings are visible to the network.</li>
+        </ul>
+        <p>For something extremely sensitive, encrypt it yourself before sending it as
+        well. Full detail is in the <a href="/privacy.html">Privacy Policy</a>.</p>
+      </div>
+    </details>
+
+    <div class="agreement">
+      <label class="check">
+        <input type="checkbox" id="agree-check">
+        <span>I have read and agree to the <a href="/terms.html" target="_blank" rel="noopener">Terms of Use</a>,
+        the <a href="/acceptable-use.html" target="_blank" rel="noopener">Acceptable Use Policy</a> and the
+        <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>. I understand that
+        <strong>I am solely responsible and liable for everything I send, receive or do using Warp Gate</strong>,
+        that the service is provided with no warranty of any kind, and that I will not use it for
+        any unlawful purpose.</span>
+      </label>
+      <button id="onboarding-done" class="primary" disabled>Agree and continue</button>
+      <p id="agree-hint" class="muted small">Tick the box above to continue.</p>
     </div>
-
-    <div class="note">
-      <h2>The link is the key</h2>
-      <p>The secret lives after the <code>#</code> in the link, which browsers never send
-      to a server. Anyone who has the link can join the gate, so share it the way you
-      would share a password.</p>
-    </div>
-
-    <div class="note warn">
-      <h2>The two devices see each other's IP address</h2>
-      <p>Warp Gate connects your devices directly. That is what keeps the server out of
-      the data path, but it means each device learns the other's network address. Warp
-      Gate does not make you anonymous. If hiding your address matters, use a VPN or Tor
-      that you trust.</p>
-    </div>
-
-    <div class="note">
-      <h2>What this does not protect against</h2>
-      <p>A compromised device or browser on either end, screenshots, or a recipient who
-      chooses to save and forward what you sent. For something extremely sensitive,
-      encrypt it yourself before sending it as well.</p>
-    </div>
-
-    <div class="note">
-      <h2>Lawful use</h2>
-      <p>Warp Gate is intended for lawful use. You are responsible for what you send and
-      for complying with the law where you are.</p>
-    </div>
-
-    <button id="onboarding-done" class="primary">I understand, continue</button>
   </section>
 
   <!-- home ------------------------------------------------------------->
   <section id="screen-home" class="screen" hidden>
-    <h1>Open a temporary encrypted bridge between two devices.</h1>
+    <h1>Open a gate, or join one.</h1>
 
     <div class="card">
       <h2>Create a gate</h2>
+      <p class="muted small">You will get a link and a QR code to give to the other device.</p>
       <label for="ttl-select">Destroy the gate after</label>
       <select id="ttl-select"></select>
       <button id="create-btn" class="primary">Create gate</button>
@@ -75,24 +103,33 @@
 
     <div class="card">
       <h2>Join a gate</h2>
-      <p class="muted">Paste the link or type the code from the other device.</p>
+      <p class="muted small">Paste the link, or type the code shown on the other device.</p>
       <input id="join-input" type="text" inputmode="latin" autocomplete="off"
              autocapitalize="characters" spellcheck="false" placeholder="WARP-XXXX-XXXX-...">
       <button id="join-btn" class="primary">Join gate</button>
     </div>
 
     <p id="home-error" class="error" hidden></p>
-    <p class="muted small">
-      <button id="show-onboarding" class="link">Read the security notes again</button>
-    </p>
+
+    <details class="disc">
+      <summary><span class="disc-title">How this works</span><span class="disc-hint">in one paragraph</span></summary>
+      <div class="disc-body">
+        <p>Creating a gate generates a secret in your browser and puts it in the link,
+        where the server never sees it. The other device derives the same keys from that
+        link, both sides prove to each other that they hold it, and then your devices talk
+        directly. Closing the gate destroys the keys and the room.</p>
+      </div>
+    </details>
+
+    <p class="muted small"><button id="show-onboarding" class="link">Read the security notes again</button></p>
   </section>
 
   <!-- waiting ---------------------------------------------------------->
   <section id="screen-waiting" class="screen" hidden>
-    <h1>Waiting for the other device</h1>
+    <h1 id="waiting-title">Waiting for the other device</h1>
     <p class="muted">Scan this with the other device's camera, or send it the link.</p>
 
-    <div class="qr-wrap">
+    <div class="qr-wrap" id="qr-wrap">
       <canvas id="qr" width="320" height="320" aria-label="QR code containing the gate link"></canvas>
     </div>
 
@@ -118,8 +155,15 @@
       <span id="route-badge" class="badge">connecting</span>
       <span class="muted small">Verification code <strong id="sas">-----</strong></span>
     </div>
-    <p class="muted small">Both devices should show the same verification code. If they
-    differ, sever the gate: something is between you.</p>
+
+    <details class="disc compact">
+      <summary><span class="disc-title">What the verification code is for</span>
+        <span class="disc-hint">optional check</span></summary>
+      <div class="disc-body">
+        <p>Both devices should show the same five digits. If you read them aloud and they
+        match, nothing has been substituted between you. If they differ, sever the gate.</p>
+      </div>
+    </details>
 
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="chat" role="tab">Chat</button>
@@ -137,7 +181,7 @@
 
     <div id="tab-secret" class="panel" hidden>
       <p class="muted small">For passwords, keys and one-off snippets. Sent over the same
-      encrypted channel and never stored anywhere.</p>
+      encrypted channel and never stored.</p>
       <textarea id="secret-input" rows="4" placeholder="Paste secret here"></textarea>
       <button id="secret-send" class="primary">Send secret</button>
       <div id="secret-list" class="secrets"></div>
@@ -149,6 +193,12 @@
       <button id="file-send" class="primary">Send file</button>
       <div id="transfers" class="transfers"></div>
     </div>
+
+    <details class="disc compact">
+      <summary><span class="disc-title">Connection details</span>
+        <span class="disc-hint" id="conn-hint">how your data is routed</span></summary>
+      <div class="disc-body"><pre id="conn-detail" class="diag">gathering...</pre></div>
+    </details>
 
     <button id="sever" class="danger">Sever warp gate</button>
   </section>
@@ -165,20 +215,34 @@
   <section id="screen-failed" class="screen" hidden>
     <h1 id="failed-title">Unable to establish a direct connection</h1>
     <p id="failed-detail" class="muted"></p>
-    <div class="note">
-      <p>Possible causes:</p>
-      <ul>
-        <li>a restrictive firewall</li>
-        <li>carrier-grade NAT on a mobile network</li>
-        <li>a corporate network that blocks peer-to-peer traffic</li>
-        <li>an incompatible network configuration</li>
-      </ul>
-      <p>Try another network on either device.</p>
-    </div>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">What to try</span><span class="disc-hint">most likely fixes</span></summary>
+      <div class="disc-body">
+        <ul>
+          <li>Put both devices on the same network, which almost always works.</li>
+          <li>Try a different network on either device: mobile data instead of WiFi, or the reverse.</li>
+          <li>Turn off a VPN on either device, or turn one on.</li>
+          <li>Corporate and public guest networks frequently block peer-to-peer traffic outright.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="disc compact">
+      <summary><span class="disc-title">Technical detail</span><span class="disc-hint">for diagnosing</span></summary>
+      <div class="disc-body"><pre id="failed-diag" class="diag"></pre></div>
+    </details>
+
     <button id="failed-restart" class="primary">Start again</button>
   </section>
 
 </main>
+
+<footer class="foot">
+  <a href="/terms.html">Terms</a>
+  <a href="/acceptable-use.html">Acceptable use</a>
+  <a href="/privacy.html">Privacy</a>
+</footer>
 
 <div id="log" class="log" aria-live="polite"></div>
 

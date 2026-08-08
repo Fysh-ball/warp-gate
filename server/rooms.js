@@ -57,6 +57,9 @@ export function createRoom(roomId, sessionMinutes, key, now = Date.now()) {
     b: null,
     relayCount: 0,
     relayWindowStart: now,
+    // A freshly created room has nobody attached yet; the creator attaches moments
+    // later. Left null so the unclaimed TTL governs this window, not the grace.
+    emptySince: null,
   };
   rooms.set(roomId, room);
   return { token: room.a.token, role: 'a', expiresAt: room.expiresAt, sessionMinutes: minutes };
@@ -123,6 +126,8 @@ export function attach(room, role, res) {
     try { slot.res.end(); } catch (err) { void err; }
   }
   slot.res = res;
+  // Somebody is here again, so the abandonment clock stops.
+  room.emptySince = null;
 
   const peer = room[otherRole(role)];
   const peerPresent = Boolean(peer?.res && !peer.res.writableEnded);
@@ -143,6 +148,11 @@ export function detach(room, role, res, graceMs = 8000) {
   const slot = room[role];
   if (!slot || slot.res !== res) return;
   slot.res = null;
+  // Start the abandonment clock only when nobody at all is attached. A reload puts a
+  // stream back within a second or so, which cancels it.
+  const aGone = !room.a?.res;
+  const bGone = !room.b || !room.b.res;
+  if (aGone && bGone) room.emptySince = Date.now();
   if (slot.graceTimer) clearTimeout(slot.graceTimer);
   slot.graceTimer = setTimeout(() => {
     slot.graceTimer = null;
@@ -191,10 +201,8 @@ export function sweep(now = Date.now()) {
       destroyed += 1;
       continue;
     }
-    const aDead = !room.a?.res;
-    const bDead = !room.b || !room.b.res;
-    // Both sides gone and the unclaimed window has passed: nothing will come back.
-    if (aDead && bDead && now - room.createdAt > config.ttl.unclaimedMs) {
+    // Nobody has been attached for the grace period, so nobody is coming back.
+    if (room.emptySince && now - room.emptySince > config.ttl.emptyGraceMs) {
       destroyRoom(id, 'abandoned');
       destroyed += 1;
     }

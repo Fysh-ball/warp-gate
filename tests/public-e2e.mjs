@@ -56,7 +56,15 @@ try {
   check('config endpoint answers through the tunnel', /sessionMinutes/.test(cfg), cfg.slice(0, 120));
 
   // Dismiss onboarding if shown, then create.
-  await a.eval("const b=document.getElementById('onboarding-done'); if(b && !document.getElementById('screen-onboarding').hidden) b.click(); return true;");
+  await a.eval(`
+    if (!document.getElementById('screen-onboarding').hidden) {
+      const c = document.getElementById('agree-check');
+      c.checked = true;
+      c.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('onboarding-done').click();
+    }
+    return true;
+  `);
   await a.waitFor("!document.getElementById('screen-home').hidden", { label: 'home screen' });
   await a.eval("document.getElementById('create-btn').click(); return true;");
   await a.waitFor("!document.getElementById('screen-waiting').hidden", { timeout: 25000, label: 'gate created through Cloudflare' });

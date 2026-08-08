@@ -3,19 +3,45 @@
 // This file owns the DOM and nothing else. All protocol and cryptography lives in
 // session.js, crypto.js, peer.js and signal.js.
 
-import { generateSecret, formatSecret, parseSecret } from './crypto.js';
-import { fetchConfig } from './signal.js';
+import { generateSecret, formatSecret, parseSecret, deriveRoomId } from './crypto.js';
+import { fetchConfig, checkRoom } from './signal.js';
 import { Session, STATE } from './session.js';
 import { describeLimit, canAccept, formatBytes, saveBlob } from './transfer.js';
 import { encodeQr, drawQr } from './qr.js';
 
 const $ = (id) => document.getElementById(id);
 const SCREENS = ['onboarding', 'home', 'waiting', 'connected', 'severed', 'failed'];
-const ONBOARDING_KEY = 'wg.onboarded.v1';
+// Bumping the version re-prompts everyone, which is the point if the terms change.
+const AGREEMENT_KEY = 'wg.agreed.v1';
 
 let session = null;
 let config = null;
 let ttlTimer = null;
+let diag = { candidates: [], ice: null };
+
+// Slot persistence. Without this a page reload is fatal: re-joining a gate you already
+// occupy is correctly refused as full, so the session could never be recovered.
+const slotKey = (roomId) => `wg.slot.${roomId}`;
+
+function rememberSlot(roomId, slot) {
+  try {
+    sessionStorage.setItem(slotKey(roomId), JSON.stringify(slot));
+  } catch (err) { void err; }
+}
+
+function recallSlot(roomId) {
+  try {
+    const raw = sessionStorage.getItem(slotKey(roomId));
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) { return null; }
+}
+
+function forgetSlot(roomId) {
+  try {
+    if (roomId) sessionStorage.removeItem(slotKey(roomId));
+    else for (const k of Object.keys(sessionStorage)) if (k.startsWith('wg.slot.')) sessionStorage.removeItem(k);
+  } catch (err) { void err; }
+}
 
 // ---------------------------------------------------------------- chrome
 
@@ -113,9 +139,18 @@ function wire(active) {
   active.addEventListener('chat', (event) => addMessage(event.detail));
   active.addEventListener('secret', (event) => addSecret(event.detail));
 
+  active.addEventListener('progress', (event) => {
+    const d = event.detail;
+    if (d.kind === 'candidates' || d.kind === 'gathering-complete') diag.candidates = d.types;
+    if (d.kind === 'ice') diag.ice = d.state;
+    renderDiagnostics();
+  });
+
   active.addEventListener('unreachable', (event) => {
-    $('failed-title').textContent = 'Unable to establish a direct connection';
+    $('failed-title').textContent = 'Could not connect the two devices';
     $('failed-detail').textContent = event.detail;
+    $('failed-diag').textContent = diagnosticText();
+    forgetSlot(active.roomId);
     show('failed');
   });
 
@@ -165,6 +200,33 @@ function wire(active) {
 }
 
 // ---------------------------------------------------------------- rendering
+
+const CANDIDATE_MEANING = {
+  host: 'host: a local network address, works on the same network only',
+  srflx: 'srflx: your public address, this is what crosses networks',
+  prflx: 'prflx: an address discovered during connectivity checks',
+  relay: 'relay: a relayed address via TURN',
+};
+
+function diagnosticText() {
+  const lines = [];
+  lines.push(`address types found : ${diag.candidates.length ? diag.candidates.join(', ') : 'none yet'}`);
+  for (const type of diag.candidates) if (CANDIDATE_MEANING[type]) lines.push(`  ${CANDIDATE_MEANING[type]}`);
+  lines.push(`ice state           : ${diag.ice ?? 'not started'}`);
+  const cross = diag.candidates.includes('srflx') || diag.candidates.includes('relay');
+  lines.push(`cross-network able  : ${cross ? 'yes' : 'no, same network only'}`);
+  return lines.join('\n');
+}
+
+function renderDiagnostics() {
+  const el = $('conn-detail');
+  if (el) el.textContent = diagnosticText();
+  const hint = $('conn-hint');
+  if (hint) {
+    const cross = diag.candidates.includes('srflx') || diag.candidates.includes('relay');
+    hint.textContent = cross ? 'direct, cross-network capable' : 'same network only';
+  }
+}
 
 function addMessage({ from, text }) {
   const wrap = document.createElement('div');
@@ -308,6 +370,7 @@ async function startCreate() {
   wire(session);
   try {
     const room = await session.create(minutes);
+    rememberSlot(session.roomId, { token: room.token, role: 'a', expiresAt: room.expiresAt });
     history.replaceState(null, '', `${location.pathname}#${formatted}`);
     const link = `${location.origin}${location.pathname}#${formatted}`;
 
@@ -339,16 +402,44 @@ async function startJoin(text) {
     showHomeError('That does not look like a Warp Gate code. Paste the whole link or the WARP- code.');
     return;
   }
+
+  // If this tab already holds a slot in this gate, re-attach instead of joining again.
+  // Joining twice is correctly refused as full, which is what makes a reload fatal.
+  const roomId = await deriveRoomId(secret);
+  const held = recallSlot(roomId);
+  if (held) {
+    const still = await checkRoom(roomId, held.token).catch(() => null);
+    if (still) {
+      session = new Session({ secret, iceServers: config.iceServers });
+      wire(session);
+      try {
+        await session.resume({ token: held.token, role: still.role, expiresAt: still.expiresAt });
+        startTtl(still.expiresAt);
+        show('waiting');
+        $('waiting-title').textContent = 'Reconnecting to the other device';
+        $('qr-wrap').hidden = true;
+        $('room-code').textContent = formatSecret(secret);
+        log('Resumed the gate after a reload.', 'ok');
+        return;
+      } catch (err) {
+        log(`could not resume: ${err.message}`, 'warn');
+        session = null;
+      }
+    }
+    forgetSlot(roomId);
+  }
+
   session = new Session({ secret, iceServers: config.iceServers });
   wire(session);
   try {
     const room = await session.join();
+    rememberSlot(session.roomId, { token: room.token, role: 'b', expiresAt: room.expiresAt });
     startTtl(room.expiresAt);
     badge('negotiating', 'work');
     show('waiting');
     $('room-code').textContent = formatSecret(secret);
-    $('qr').hidden = true;
-    document.querySelector('#screen-waiting h1').textContent = 'Connecting to the other device';
+    $('qr-wrap').hidden = true;
+    $('waiting-title').textContent = 'Connecting to the other device';
   } catch (err) {
     showHomeError(`Could not join: ${describeError(err)}`);
     session = null;
@@ -377,6 +468,7 @@ function showHomeError(message) {
 
 async function severNow() {
   if (!session) { show('home'); return; }
+  forgetSlot(session.roomId);
   try {
     await session.sever();
   } catch (err) {
@@ -404,9 +496,20 @@ async function boot() {
     select.appendChild(option);
   }
 
-  $('onboarding-done').addEventListener('click', () => {
-    try { localStorage.setItem(ONBOARDING_KEY, '1'); } catch (err) { void err; }
-    afterOnboarding();
+  // Clickwrap: the button stays disabled until the box is ticked, and what was agreed
+  // to is recorded with a version and a timestamp.
+  const agreeCheck = $('agree-check');
+  const agreeBtn = $('onboarding-done');
+  agreeCheck.addEventListener('change', () => {
+    agreeBtn.disabled = !agreeCheck.checked;
+    $('agree-hint').hidden = agreeCheck.checked;
+  });
+  agreeBtn.addEventListener('click', () => {
+    if (!agreeCheck.checked) return;
+    try {
+      localStorage.setItem(AGREEMENT_KEY, JSON.stringify({ version: 1, acceptedAt: new Date().toISOString() }));
+    } catch (err) { void err; }
+    afterAgreement();
   });
   $('show-onboarding').addEventListener('click', () => show('onboarding'));
   $('create-btn').addEventListener('click', startCreate);
@@ -447,17 +550,21 @@ async function boot() {
     try { await session.sendFile(file); } catch (err) { log(`could not send file: ${err.message}`, 'bad'); }
   });
 
-  // Free the room if the tab goes away, so an abandoned gate does not sit until TTL.
-  window.addEventListener('pagehide', () => { session?.signal?.bye(); });
+  // Deliberately NOT calling bye() on pagehide. pagehide fires on reload as well as on
+  // close, and deleting the room there destroyed the gate for both devices whenever
+  // either one refreshed. The server reaps a room once both sides have been gone for a
+  // grace period, which frees abandoned gates without punishing a reload.
 
-  let onboarded = false;
-  try { onboarded = localStorage.getItem(ONBOARDING_KEY) === '1'; } catch (err) { void err; }
-  if (onboarded) afterOnboarding();
+  let agreed = false;
+  try { agreed = Boolean(JSON.parse(localStorage.getItem(AGREEMENT_KEY) || 'null')); } catch (err) { void err; }
+  if (agreed) afterAgreement();
   else show('onboarding');
 }
 
-function afterOnboarding() {
+function afterAgreement() {
   const hash = location.hash.slice(1);
+  // startJoin resumes an existing slot if this tab already holds one, so a reload of
+  // either side lands back in the same gate rather than being refused as full.
   if (hash && parseSecret(hash)) startJoin(hash);
   else show('home');
 }

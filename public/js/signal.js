@@ -131,6 +131,15 @@ export async function joinRoom(roomId) {
   return body;
 }
 
+/** Check whether a stored slot is still valid, so a reload can resume rather than fail. */
+export async function checkRoom(roomId, token) {
+  const res = await fetch(`/api/room?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}`, {
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function fetchConfig() {
   const res = await fetch('/api/config', { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`config failed: http ${res.status}`);

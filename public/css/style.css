@@ -219,6 +219,117 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
 .log .warn { color: var(--warn); }
 .log .ok { color: var(--ok); }
 
+/* ---------------------------------------------- progressive disclosure */
+
+.lede { color: var(--muted); margin: -8px 0 18px; }
+
+details.disc {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+details.disc.warn { border-color: #5a4a20; }
+details.disc.compact { margin-top: 14px; background: transparent; }
+
+details.disc > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 13px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+  padding-right: 40px;
+}
+details.disc > summary::-webkit-details-marker { display: none; }
+details.disc > summary::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  top: 19px;
+  width: 8px; height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+details.disc[open] > summary::after { transform: rotate(-135deg); top: 22px; }
+details.disc > summary:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -2px; }
+
+.disc-title { font-weight: 620; font-size: 15px; line-height: 1.35; }
+.disc-hint { font-size: 12.5px; color: var(--muted); }
+details.disc.warn .disc-title { color: var(--warn); }
+
+.disc-body { padding: 0 14px 13px; border-top: 1px solid var(--line); }
+.disc-body p, .disc-body ul { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+.disc-body ul { padding-left: 18px; }
+.disc-body li { margin-bottom: 4px; }
+.disc-body a { color: var(--accent); }
+
+/* ---------------------------------------------- agreement */
+
+.agreement {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-top: 18px;
+}
+.check { display: flex; gap: 11px; align-items: flex-start; margin-bottom: 14px; }
+.check input { margin-top: 3px; width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); }
+.check span { font-size: 13.5px; line-height: 1.5; color: var(--text); }
+.check a { color: var(--accent); }
+.agreement .muted { margin: 8px 0 0; text-align: center; }
+
+/* ---------------------------------------------- diagnostics */
+
+pre.diag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 10px 0 0;
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+}
+
+/* ---------------------------------------------- footer and legal pages */
+
+.foot {
+  display: flex;
+  gap: 18px;
+  justify-content: center;
+  padding: 4px 16px 26px;
+  font-size: 12.5px;
+}
+.foot a { color: var(--muted); text-decoration: none; }
+.foot a:hover { color: var(--accent); text-decoration: underline; }
+
+.brand a { color: inherit; text-decoration: none; }
+
+main.legal { max-width: 720px; margin: 0 auto; padding: 24px 18px 80px; }
+main.legal h1 { font-size: 24px; margin-bottom: 4px; }
+main.legal h2 { font-size: 16px; margin: 26px 0 8px; color: var(--text); }
+main.legal p, main.legal li { color: var(--muted); font-size: 14.5px; line-height: 1.65; }
+main.legal ul { padding-left: 20px; }
+main.legal li { margin-bottom: 6px; }
+main.legal a { color: var(--accent); }
+main.legal strong { color: var(--text); }
+
+.fillme {
+  background: rgba(255, 200, 87, 0.16);
+  border: 1px dashed var(--warn);
+  border-radius: 4px;
+  padding: 0 5px;
+  color: var(--warn);
+  font-size: 13px;
+}
+
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f6f8fa; --panel: #ffffff; --panel-2: #eef2f6; --line: #d3dbe3;

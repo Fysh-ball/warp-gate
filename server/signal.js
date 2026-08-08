@@ -99,6 +99,25 @@ export async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true, rooms: roomCount(), uptimeSec: Math.floor(process.uptime()) });
   }
 
+  // Lets a reloaded page find out whether its slot is still valid before deciding
+  // between resuming and starting over. Without this a refresh is fatal: re-joining
+  // a room you are already in is correctly refused as full.
+  if (url.pathname === '/api/room' && method === 'GET') {
+    const roomId = url.searchParams.get('room');
+    const token = url.searchParams.get('token');
+    if (!validRoomId(roomId)) return fail(res, 400, 'bad_room_id');
+    const room = getRoom(roomId);
+    if (!room) return fail(res, 404, 'no_room');
+    const role = slotFor(room, token);
+    if (!role) return fail(res, 403, 'bad_token');
+    const peer = role === 'a' ? room.b : room.a;
+    return sendJson(res, 200, {
+      role,
+      expiresAt: room.expiresAt,
+      peerPresent: Boolean(peer?.res && !peer.res.writableEnded),
+    });
+  }
+
   if (url.pathname === '/api/create' && method === 'POST') {
     if (!allow('create', key, config.limits.createPerWindow, config.limits.windowMs)) {
       return fail(res, 429, 'rate_limited');

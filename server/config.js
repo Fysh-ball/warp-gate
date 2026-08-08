@@ -35,6 +35,10 @@ export const config = {
   ttl: {
     // Short and aggressive while nobody has joined.
     unclaimedMs: int(env.WG_UNCLAIMED_TTL_MS, 5 * 60 * 1000),
+    // How long a room with nobody attached survives before being reaped. This must be
+    // comfortably longer than a page reload takes, or refreshing either device would
+    // destroy the gate; and short enough that a closed tab frees its room promptly.
+    emptyGraceMs: int(env.WG_EMPTY_GRACE_MS, 45_000),
     // Once paired, the room survives so ICE restart on a network change can be
     // signalled (DESIGN.md 1.6).
     allowedSessionMinutes: [10, 30, 60],

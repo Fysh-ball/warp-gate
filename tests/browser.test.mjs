@@ -28,6 +28,10 @@ const server = await startServer({
   WG_STUN_URL: `stun:127.0.0.1:${STUN}`,
   WG_CREATE_PER_WINDOW: '200',
   WG_JOIN_PER_WINDOW: '200',
+  // A room is reaped once both sides have been gone this long. Short here so the
+  // abandonment test does not have to wait the production grace period.
+  WG_EMPTY_GRACE_MS: '2500',
+  WG_SWEEP_MS: '400',
 });
 
 const browser = await launchBrowser({ port: 9333 });
@@ -47,8 +51,22 @@ try {
   );
   check('onboarding states that the two devices see each other\'s IP address', warnsAboutIp === true);
 
+  // The continue button is a clickwrap gate: disabled until the box is ticked.
+  const gated = await a.eval("return document.getElementById('onboarding-done').disabled;");
+  check('the continue button is disabled until the terms are accepted', gated === true);
+  await a.eval(`
+    const c = document.getElementById('agree-check');
+    c.checked = true;
+    c.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  `);
+  check('ticking the box enables it',
+    (await a.eval("return document.getElementById('onboarding-done').disabled;")) === false);
   await a.eval("document.getElementById('onboarding-done').click(); return true;");
   await a.waitFor("!document.getElementById('screen-home').hidden", { label: 'home screen' });
+  const record = await a.eval("return localStorage.getItem('wg.agreed.v1');");
+  check('acceptance is recorded with a version and a timestamp',
+    /"version":1/.test(record || '') && /"acceptedAt":"20/.test(record || ''), String(record));
 
   await a.eval("document.getElementById('create-btn').click(); return true;");
   await a.waitFor("!document.getElementById('screen-waiting').hidden", { label: 'waiting screen' });
@@ -78,7 +96,7 @@ try {
   // set and it should join straight from the link. On a genuinely separate device the
   // notes would be shown once, which tab A already demonstrated.
   const bSkipped = await b.waitFor(
-    "document.getElementById('screen-onboarding').hidden ? 'skipped' : ''",
+    "(() => { const o = document.getElementById('screen-onboarding'); return o && o.hidden ? 'skipped' : ''; })()",
     { label: 'tab B skips onboarding it has already seen' },
   );
   check('onboarding is shown once per browser, not on every visit', bSkipped === 'skipped');
@@ -184,6 +202,34 @@ try {
     'a frame was rejected mid-transfer');
   void digest;
 
+  // ------------------------------------------------------------ reload recovery
+  // A reload used to be fatal: re-joining a gate you already occupy is correctly
+  // refused as full, so the session could never come back. The slot is now held in
+  // sessionStorage and the peer is told to renegotiate.
+  await b.send('Page.reload', {});
+  await b.waitFor("[...document.querySelectorAll('section.screen')].some(s => !s.hidden)",
+    { timeout: 30000, label: 'tab B came back after reload' });
+
+  const rejoinError = await b.eval("return (document.getElementById('home-error')||{}).textContent || '';");
+  check('a reloaded peer is not refused as "gate already has two devices"',
+    !/two devices/.test(rejoinError), rejoinError);
+
+  await b.waitFor("!document.getElementById('screen-connected').hidden",
+    { timeout: 40000, label: 'tab B reconnected after reload' });
+  await a.waitFor("!document.getElementById('screen-connected').hidden",
+    { timeout: 40000, label: 'tab A renegotiated after the peer reloaded' });
+  check('a gate survives one side reloading the page', true);
+
+  const afterReload = `after reload ${crypto.randomUUID()}`;
+  await a.eval(`
+    document.getElementById('chat-input').value = ${JSON.stringify(afterReload)};
+    document.getElementById('chat-form').dispatchEvent(new Event('submit', { cancelable: true }));
+    return true;
+  `);
+  await b.waitFor(`document.getElementById('messages').textContent.includes(${JSON.stringify(afterReload)})`,
+    { timeout: 20000, label: 'message crosses the renegotiated channel' });
+  check('the channel works again after the reload, with fresh keys', true);
+
   // ------------------------------------------------------------ page errors
   check('tab A raised no uncaught page errors', a.pageErrors.length === 0, a.pageErrors.join(' | '));
   check('tab B raised no uncaught page errors', b.pageErrors.length === 0, b.pageErrors.join(' | '));
@@ -256,9 +302,27 @@ try {
     { timeout: 20000, label: 'tab D notices the peer left' });
   check('the remaining device is told when the other simply goes away', true);
 
-  const roomsAfterLeave = await request(PORT, 'GET', '/api/health');
-  check('an abandoned gate is released rather than held until its TTL',
-    roomsAfterLeave.json?.rooms === 0, roomsAfterLeave.text);
+  // The room deliberately survives one side leaving: that peer may simply be
+  // reloading, and tab D is still attached and waiting. It is reaped only once
+  // *nobody* is attached, so send tab D away too.
+  const roomsOneLeft = await request(PORT, 'GET', '/api/health');
+  check('a gate survives one side leaving, since that side may be reloading',
+    roomsOneLeft.json?.rooms === 1, roomsOneLeft.text);
+
+  await d.send('Page.navigate', { url: 'about:blank' });
+
+  // The client no longer deletes the room on pagehide, because pagehide also fires on
+  // reload and that destroyed the gate whenever either side refreshed. The server now
+  // reaps a room once both sides have been absent for the grace period.
+  let roomsAfterLeave = null;
+  const reapDeadline = Date.now() + 15000;
+  while (Date.now() < reapDeadline) {
+    roomsAfterLeave = await request(PORT, 'GET', '/api/health');
+    if (roomsAfterLeave.json?.rooms === 0) break;
+    await new Promise((r) => { setTimeout(r, 400); });
+  }
+  check('an abandoned gate is reaped once both sides are gone',
+    roomsAfterLeave?.json?.rooms === 0, roomsAfterLeave?.text);
 
   severTested = true;
 } finally {

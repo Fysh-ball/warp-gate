@@ -23,11 +23,19 @@ export class Peer extends EventTarget {
     this.pendingCandidates = [];
     this.remoteReady = false;
     this.makingOffer = false;
+    // Kept so a stalled connection can explain itself instead of just spinning.
+    this.localCandidateTypes = new Set();
+    this.remoteCandidateTypes = new Set();
+    this.hadIceServers = (iceServers ?? []).length > 0;
 
     this.pc.addEventListener('icecandidate', (event) => {
       if (event.candidate) {
+        if (event.candidate.type) this.localCandidateTypes.add(event.candidate.type);
+        this.emit('candidate', { types: [...this.localCandidateTypes] });
         this.signal.send({ t: 'ice', candidate: event.candidate.toJSON() })
           .catch((err) => this.emit('warning', `could not send an ICE candidate: ${err.message}`));
+      } else {
+        this.emit('gathering-complete', { types: [...this.localCandidateTypes] });
       }
     });
 
@@ -104,6 +112,8 @@ export class Peer extends EventTarget {
         return;
       }
       if (message.t === 'ice') {
+        const type = (message.candidate?.candidate ?? '').match(/ typ (\w+)/)?.[1];
+        if (type) this.remoteCandidateTypes.add(type);
         if (!this.pc.remoteDescription) {
           // Candidates can arrive before the description they belong to.
           this.pendingCandidates.push(message.candidate);
@@ -170,6 +180,51 @@ export class Peer extends EventTarget {
       this.emit('warning', `could not read connection stats: ${err.message}`);
       return null;
     }
+  }
+
+  /**
+   * Everything needed to explain a stalled connection in plain language.
+   * `srflx` is the one that matters: without a server-reflexive candidate the two
+   * devices cannot find each other across different networks.
+   */
+  diagnostics() {
+    const local = [...this.localCandidateTypes];
+    const remote = [...this.remoteCandidateTypes];
+    return {
+      local,
+      remote,
+      hadIceServers: this.hadIceServers,
+      gotReflexive: local.includes('srflx') || local.includes('relay'),
+      peerGotReflexive: remote.includes('srflx') || remote.includes('relay'),
+      iceGathering: this.pc.iceGatheringState,
+      iceConnection: this.pc.iceConnectionState,
+      connection: this.pc.connectionState,
+      signaling: this.pc.signalingState,
+    };
+  }
+
+  /** Turn the diagnostics into a specific cause rather than a shrug. */
+  explainStall() {
+    const d = this.diagnostics();
+    if (!d.hadIceServers) {
+      return 'No STUN server is configured, so this browser could only find local network addresses. '
+        + 'Connections work on the same network and nowhere else.';
+    }
+    if (!d.gotReflexive) {
+      return 'This device could not discover its public address: the network appears to be blocking '
+        + 'the STUN server. A firewall, a captive portal or a restrictive corporate network usually causes this.';
+    }
+    if (!d.peerGotReflexive && d.remote.length > 0) {
+      return 'The other device could not discover its public address, so no usable path exists between you. '
+        + 'Its network is likely blocking STUN.';
+    }
+    if (d.remote.length === 0) {
+      return 'No network candidates arrived from the other device. It may have closed the page, lost '
+        + 'connectivity, or be on a network that blocks peer-to-peer traffic entirely.';
+    }
+    return 'Both devices found public addresses but no direct path between them succeeded. This is the '
+      + 'signature of a strict or symmetric NAT, common on mobile carrier networks. A relay would be '
+      + 'required to connect these two networks.';
   }
 
   close() {

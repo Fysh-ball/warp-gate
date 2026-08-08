@@ -80,6 +80,40 @@ export class Session extends EventTarget {
     return room;
   }
 
+  /**
+   * Re-attach to a slot we already hold, after a page reload.
+   *
+   * Without this a refresh is fatal: re-joining a room you are already occupying is
+   * correctly refused as full, so the gate could never be recovered.
+   */
+  async resume({ token, role, expiresAt }) {
+    this.role = role;
+    this.setState(STATE.CREATING);
+    this.roomId = await deriveRoomId(this.secret);
+    this.expiresAt = expiresAt;
+    // Our peer still holds a connection to the page we just navigated away from, and
+    // will ignore a new public key while it thinks it already has one. Tell it to start
+    // over, otherwise resuming the slot restores the room but never the connection.
+    this.needsRestart = true;
+    await this.openSignal(token);
+    return { token, role, expiresAt };
+  }
+
+  /** Drop all peer and key state so a fresh handshake can run over the same room. */
+  resetForRenegotiation() {
+    this.clearWatchdog();
+    if (this.confirmTimer) { clearTimeout(this.confirmTimer); this.confirmTimer = null; }
+    try { this.peer?.close(); } catch (err) { void err; }
+    this.peer = null;
+    this.keyPair = null;
+    this.peerPublicRaw = null;
+    this.sessionKeys = null;
+    this.channel = null;
+    this.confirmSent = false;
+    this.confirmedByPeer = false;
+    this.incoming = null;
+  }
+
   async openSignal(token) {
     const signalKey = await deriveSignalKey(this.secret);
     this.signal = new Signal({ roomId: this.roomId, token, signalKey });
@@ -105,15 +139,42 @@ export class Session extends EventTarget {
     this.signal.connect();
   }
 
+  /**
+   * Give up waiting after a bounded time and say precisely why.
+   *
+   * Browsers can sit in ICE checking for 30 seconds or more before declaring failure,
+   * and sometimes never declare it at all, which is what "it just spins forever" is.
+   * A watchdog turns that into a specific, actionable message.
+   */
+  startWatchdog(ms = 25000) {
+    this.clearWatchdog();
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null;
+      if (this.severed || this.state === STATE.CONNECTED) return;
+      const detail = this.peer ? this.peer.explainStall() : 'The connection never started.';
+      this.emit('unreachable', detail);
+      this.setState(STATE.AUTH_FAILED, detail);
+    }, ms);
+  }
+
+  clearWatchdog() {
+    if (this.watchdog) { clearTimeout(this.watchdog); this.watchdog = null; }
+  }
+
   async beginHandshake() {
     if (this.keyPair) return; // already under way
     this.setState(STATE.EXCHANGING);
+    this.startWatchdog();
     this.keyPair = await generateKeyPair();
     if (this.keyPair.privateExtractable) {
       this.emit('warning', 'This browser would not create a non-extractable key; key hygiene is degraded.');
     }
     this.peer = new Peer({ role: this.role, iceServers: this.iceServers, signal: this.signal });
     this.wirePeer();
+    if (this.needsRestart) {
+      this.needsRestart = false;
+      await this.signal.send({ t: 'restart' });
+    }
     await this.signal.send({ t: 'pk', pk: b64u.encode(this.keyPair.publicRaw) });
 
     // The peer's public key can arrive before generateKeyPair() above resolves. In that
@@ -145,6 +206,16 @@ export class Session extends EventTarget {
       this.setState(STATE.AUTH_FAILED, event.detail);
     });
     this.peer.addEventListener('warning', (event) => this.emit('warning', event.detail));
+    // Progress the user can actually see while ICE works.
+    this.peer.addEventListener('candidate', (event) => this.emit('progress', {
+      kind: 'candidates', types: event.detail.types,
+    }));
+    this.peer.addEventListener('gathering-complete', (event) => this.emit('progress', {
+      kind: 'gathering-complete', types: event.detail.types,
+    }));
+    this.peer.addEventListener('ice-state', (event) => this.emit('progress', {
+      kind: 'ice', state: event.detail,
+    }));
   }
 
   async onSignalMessage(message) {
@@ -157,6 +228,13 @@ export class Session extends EventTarget {
     }
     if (message.t === 'sever') {
       this.teardown('The other device severed the gate.');
+      return;
+    }
+    if (message.t === 'restart') {
+      // The peer reloaded. Discard our half of the dead session and handshake again.
+      this.emit('warning', 'The other device reloaded. Reconnecting.');
+      this.resetForRenegotiation();
+      await this.beginHandshake();
       return;
     }
     if (!this.peer) await this.beginHandshake();
@@ -270,6 +348,7 @@ export class Session extends EventTarget {
       }
       this.confirmedByPeer = true;
       if (this.confirmTimer) { clearTimeout(this.confirmTimer); this.confirmTimer = null; }
+      this.clearWatchdog();
       this.setState(STATE.CONNECTED);
       this.reportRoute();
       return;
@@ -451,6 +530,7 @@ export class Session extends EventTarget {
    */
   teardown(reason) {
     this.severed = true;
+    this.clearWatchdog();
     if (this.confirmTimer) { clearTimeout(this.confirmTimer); this.confirmTimer = null; }
     try { this.peer?.close(); } catch (err) { void err; }
     try { this.signal?.close(); } catch (err) { void err; }
