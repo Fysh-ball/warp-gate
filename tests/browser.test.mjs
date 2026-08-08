@@ -94,6 +94,11 @@ try {
   await b.waitFor("!document.getElementById('screen-connected').hidden", { timeout: 25000, label: 'tab B connected' });
   check('both tabs reached the connected state over a real WebRTC data channel', true);
 
+  // The route is resolved by polling getStats, so wait for it to settle rather than
+  // sampling the instant the channel opens.
+  const settled = "(t => t && t !== 'connecting' && t !== 'CONNECTED')(document.getElementById('route-badge').textContent)";
+  await a.waitFor(settled, { timeout: 15000, label: 'tab A route badge resolved' });
+  await b.waitFor(settled, { timeout: 15000, label: 'tab B route badge resolved' });
   const badgeA = await a.eval("return document.getElementById('route-badge').textContent;");
   const badgeB = await b.eval("return document.getElementById('route-badge').textContent;");
   check('tab A reports a direct peer-to-peer route', /DIRECT P2P/.test(badgeA), badgeA);

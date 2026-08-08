@@ -59,5 +59,12 @@ export const config = {
 
   // Only trust CF-Connecting-IP / X-Forwarded-For when actually behind a proxy we
   // control. Trusting it unconditionally would let anyone forge their rate-limit key.
+  //
+  // The inverse is just as bad once a proxy IS in front: every request then arrives
+  // from the proxy's address, so all users share one rate-limit bucket and any single
+  // client can lock out everyone else. Behind cloudflared this must be on.
   trustProxy: env.WG_TRUST_PROXY === '1',
+
+  // Send HSTS. Only enable where TLS actually terminates in front of this process.
+  hsts: env.WG_HSTS === '1',
 };

@@ -110,7 +110,7 @@ class Tab {
   }
 }
 
-export async function launchBrowser({ port = 9333 } = {}) {
+export async function launchBrowser({ port = 9333, extraArgs = [] } = {}) {
   const binary = findBrowser();
   if (!binary) throw new Error(`no Chromium-based browser found (looked for: ${CHROMIUM_CANDIDATES.join(', ')})`);
 
@@ -128,6 +128,7 @@ export async function launchBrowser({ port = 9333 } = {}) {
     // host candidates behind mDNS .local names, and a test that turns that off is
     // testing a browser nobody runs. Set WG_TEST_DISABLE_MDNS=1 to compare.
     ...(process.env.WG_TEST_DISABLE_MDNS === '1' ? ['--disable-features=WebRtcHideLocalIpsWithMdns'] : []),
+    ...extraArgs,
     'about:blank',
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
 

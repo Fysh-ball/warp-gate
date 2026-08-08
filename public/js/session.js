@@ -205,6 +205,29 @@ export class Session extends EventTarget {
     }, CONFIRM_TIMEOUT_MS);
   }
 
+  /**
+   * Report how the connection is actually routed.
+   *
+   * The selected candidate pair is not always present in getStats() the instant key
+   * confirmation completes, so sampling once makes the UI fall back to a vague
+   * "CONNECTED" perhaps a third of the time. Telling the user their data is flowing
+   * directly is a stated goal, not decoration, so poll until the answer is real.
+   */
+  async reportRoute(deadlineMs = 8000) {
+    const until = Date.now() + deadlineMs;
+    for (;;) {
+      if (this.severed || !this.peer) return;
+      const route = await this.peer.routeType();
+      if (route) { this.emit('route', route); return; }
+      if (Date.now() >= until) {
+        // Still unknown: say so rather than implying a direct path we cannot confirm.
+        this.emit('route', null);
+        return;
+      }
+      await new Promise((resolve) => { setTimeout(resolve, 250); });
+    }
+  }
+
   // ------------------------------------------------------------ frames
 
   async onFrame(raw) {
@@ -248,8 +271,7 @@ export class Session extends EventTarget {
       this.confirmedByPeer = true;
       if (this.confirmTimer) { clearTimeout(this.confirmTimer); this.confirmTimer = null; }
       this.setState(STATE.CONNECTED);
-      const route = await this.peer.routeType();
-      this.emit('route', route);
+      this.reportRoute();
       return;
     }
     if (control.kind === 'sever') { this.teardown('The other device severed the gate.'); return; }

@@ -43,6 +43,10 @@ function securityHeaders(res) {
   res.setHeader('content-security-policy', CSP);
   res.setHeader('referrer-policy', 'no-referrer');
   res.setHeader('x-content-type-options', 'nosniff');
+  // Only meaningful when actually served over TLS, and harmless otherwise: browsers
+  // ignore it on plain HTTP. Deliberately without includeSubDomains or preload, both
+  // of which are far harder to walk back than they are to switch on.
+  if (config.hsts) res.setHeader('strict-transport-security', 'max-age=31536000');
   res.setHeader('cross-origin-opener-policy', 'same-origin');
   res.setHeader('cross-origin-resource-policy', 'same-origin');
   res.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');

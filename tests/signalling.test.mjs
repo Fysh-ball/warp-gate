@@ -177,6 +177,45 @@ let ok = true;
   await srv.stop();
 }
 
+// ---------------------------------------------------------------- proxy identity
+{
+  // Behind a proxy, every request arrives from the proxy's address. If the real client
+  // address is not recovered from CF-Connecting-IP, all users share one rate-limit
+  // bucket and any single client can lock out everybody else.
+  const P = PORT + 5;
+  const ids = ['PRXY0001', 'PRXY0002', 'PRXY0003', 'PRXY0004', 'PRXY0005'];
+
+  const srvTrust = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
+    WG_TRUST_PROXY: '1', WG_CREATE_PER_WINDOW: '2', WG_RATE_WINDOW_MS: '60000',
+  });
+  const trusted = [];
+  for (let i = 0; i < ids.length; i += 1) {
+    const r = await request(P, 'POST', '/api/create', { roomId: ids[i], sessionMinutes: 10 }, {
+      'cf-connecting-ip': `203.0.113.${i + 1}`, // a distinct client each time
+    });
+    trusted.push(r.status);
+  }
+  check('with the proxy trusted, distinct clients get distinct rate-limit buckets',
+    trusted.every((s) => s === 200), `statuses ${trusted.join(',')}`);
+  await srvTrust.stop();
+
+  const srvNoTrust = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
+    WG_TRUST_PROXY: '0', WG_CREATE_PER_WINDOW: '2', WG_RATE_WINDOW_MS: '60000',
+  });
+  const untrusted = [];
+  for (let i = 0; i < ids.length; i += 1) {
+    const r = await request(P, 'POST', '/api/create', { roomId: ids[i], sessionMinutes: 10 }, {
+      'cf-connecting-ip': `203.0.113.${i + 1}`,
+    });
+    untrusted.push(r.status);
+  }
+  check('with the proxy untrusted, a forged header cannot buy extra quota',
+    untrusted.includes(429), `statuses ${untrusted.join(',')}`);
+  await srvNoTrust.stop();
+}
+
 // ---------------------------------------------------------------- expiry
 {
   const P = PORT + 2;

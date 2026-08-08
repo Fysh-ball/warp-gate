@@ -23,9 +23,13 @@ services:
       # exists: with no STUN, only same-network pairs can connect. Never point this at
       # a public STUN server, which would disclose every user's IP to a third party.
       - WG_STUN_URL=${WG_STUN_URL:-}
-      # Only enable once traffic genuinely arrives through cloudflared, otherwise a
-      # client could forge its own rate-limit identity via a header.
-      - WG_TRUST_PROXY=${WG_TRUST_PROXY:-0}
+      # Traffic arrives through cloudflared (an existing connector tunnel, host networking) as of
+      # 2026-08-08, so CF-Connecting-IP must be trusted: without it every request looks
+      # like 127.0.0.1 and all users share a single rate-limit bucket. Safe here only
+      # because 3095 is bound to loopback, so nothing external can forge the header.
+      - WG_TRUST_PROXY=${WG_TRUST_PROXY:-1}
+      # TLS terminates at Cloudflare, so the response is served over HTTPS.
+      - WG_HSTS=${WG_HSTS:-1}
     volumes:
       - ./app:/app:ro
     ports:
