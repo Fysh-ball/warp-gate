@@ -345,6 +345,42 @@ try {
     /back|finished|temporar/i.test(g.reassurance), g.reassurance.slice(0, 120));
   check('a re-check control is offered so no manual reload is needed', g.hasRecheck);
 
+  // A browser set to "Default public interface only" suppresses host candidates on
+  // purpose but works fine over STUN. Reporting that as blocked was a false positive
+  // on precisely the setting the warning tells people to choose.
+  const priv = await browser.newTab('about:blank');
+  await priv.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `
+      const RealPC = window.RTCPeerConnection;
+      class PublicOnlyPC {
+        constructor(cfg) { this.hasStun = !!(cfg && cfg.iceServers && cfg.iceServers.length); }
+        createDataChannel() { return {}; }
+        async createOffer() { return { type: 'offer', sdp: '' }; }
+        async setLocalDescription() {}
+        addEventListener(name, cb) {
+          if (name !== 'icecandidate') return;
+          setTimeout(() => {
+            // Host candidates suppressed; a public address only via STUN.
+            if (this.hasStun) cb({ candidate: { type: 'srflx' } });
+            cb({ candidate: null });
+          }, 10);
+        }
+        removeEventListener() {}
+        close() {}
+      }
+      window.RTCPeerConnection = PublicOnlyPC;
+    `,
+  });
+  await priv.send('Page.navigate', { url: ORIGIN });
+  await priv.waitFor("document.readyState === 'complete'", { timeout: 30000 });
+  await priv.waitFor("[...document.querySelectorAll('section.screen')].some(s => !s.hidden)",
+    { timeout: 30000, label: 'app loaded in the public-interface-only browser' });
+  // Give the two-stage probe time to run both stages before judging.
+  await new Promise((r) => { setTimeout(r, 3000); });
+  check('a browser that only exposes its public address is NOT reported as blocked',
+    (await priv.eval("return ((document.getElementById('webrtc-warning') || {}).hidden) === true;")) === true,
+    await priv.eval("return (document.getElementById('webrtc-warning-text') || {}).textContent || '';"));
+
   // Recovery: once the browser can gather again, Re-check must clear the banner.
   await z.eval("window.RTCPeerConnection = window.__realPC; return true;");
   await z.eval("document.getElementById('webrtc-recheck').click(); return true;");

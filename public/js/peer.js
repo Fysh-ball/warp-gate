@@ -10,36 +10,65 @@ const CHUNK_RESUME_BYTES = 256 * 1024; // and resume when it drains to here
 /**
  * Can this browser do peer-to-peer at all?
  *
- * Deliberately uses no ICE servers, so it contacts nobody: it only asks whether the
- * browser will produce local candidates. A browser that finishes gathering with zero
- * candidates has WebRTC disabled by policy or an extension, and no amount of network
- * troubleshooting will help. Brave's "WebRTC IP handling policy: Disable non-proxied
- * UDP" does exactly this, and is the most common cause.
+ * Two stages, because one is not enough to tell the difference between a browser that
+ * is blocked and a browser that is merely private:
  *
- * Returns { capable, candidateCount, hint }.
+ *   1. Gather with no ICE servers. Contacts nobody. Any candidate means yes.
+ *   2. Only if that found nothing, gather again with the configured STUN server.
+ *
+ * Stage two exists because "Default public interface only" suppresses host candidates
+ * on purpose, so a browser set exactly the way the warning recommends would otherwise
+ * be reported as blocked. Only a browser that finds nothing in *both* stages truly
+ * cannot connect, which is what "Disable non-proxied UDP" and WebRTC-blocking
+ * extensions do.
+ *
+ * Returns { capable, candidateCount, via } or { capable: false, ...advice }.
  */
-export async function checkWebRtcCapability(timeoutMs = 4000) {
+export async function checkWebRtcCapability(iceServers = [], timeoutMs = 5000) {
+  // Stage one asks only for local addresses, so it contacts nobody.
+  const local = await gatherProbe([], timeoutMs);
+  if (local.error) {
+    return { capable: false, candidateCount: 0, headline: `Could not test WebRTC: ${local.error}`, steps: [] };
+  }
+  if (local.count > 0) return { capable: true, candidateCount: local.count, via: 'host' };
+
+  // Zero local candidates does NOT prove WebRTC is blocked. Chromium's and Brave's
+  // "Default public interface only" deliberately suppresses host candidates and
+  // exposes only the public address, which can only be found through STUN. Treating
+  // that as blocked was a false positive on precisely the setting users are told to
+  // choose. So ask again, with STUN, before accusing the browser of anything.
+  if (iceServers && iceServers.length) {
+    const reflexive = await gatherProbe(iceServers, timeoutMs);
+    if (reflexive.count > 0) {
+      return { capable: true, candidateCount: reflexive.count, via: 'srflx' };
+    }
+  }
+
+  return { capable: false, candidateCount: 0, ...blockedAdvice() };
+}
+
+/** A single gathering run. Returns { count, types } or { error }. */
+async function gatherProbe(iceServers, timeoutMs) {
   let pc;
   try {
-    pc = new RTCPeerConnection({ iceServers: [] });
+    pc = new RTCPeerConnection({ iceServers });
   } catch (err) {
-    return { capable: false, candidateCount: 0, hint: `WebRTC is unavailable in this browser: ${err.message}` };
+    return { error: err.message, count: 0, types: [] };
   }
   try {
-    let count = 0;
+    const types = [];
     pc.createDataChannel('probe');
     await pc.setLocalDescription(await pc.createOffer());
     await new Promise((resolve) => {
       const done = setTimeout(resolve, timeoutMs);
       pc.addEventListener('icecandidate', (event) => {
         if (!event.candidate) { clearTimeout(done); resolve(); return; }
-        count += 1;
+        if (event.candidate.type) types.push(event.candidate.type);
       });
     });
-    if (count > 0) return { capable: true, candidateCount: count, hint: null };
-    return { capable: false, candidateCount: 0, ...blockedAdvice() };
+    return { count: types.length, types: [...new Set(types)] };
   } catch (err) {
-    return { capable: false, candidateCount: 0, headline: `Could not test WebRTC: ${err.message}`, steps: [] };
+    return { error: err.message, count: 0, types: [] };
   } finally {
     try { pc.close(); } catch (err) { void err; }
   }

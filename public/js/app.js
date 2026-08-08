@@ -71,7 +71,7 @@ async function runCapabilityCheck(manual) {
 
   let result;
   try {
-    result = await checkWebRtcCapability();
+    result = await checkWebRtcCapability(config?.iceServers ?? []);
   } catch (err) {
     log(`could not check WebRTC support: ${err.message}`, 'warn');
     return;
