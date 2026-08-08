@@ -351,6 +351,24 @@ main.legal strong { color: var(--text); }
 }
 .banner strong { display: block; color: var(--warn); margin-bottom: 4px; }
 .banner code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.banner-steps { margin: 8px 0 10px; padding-left: 20px; color: var(--muted); }
+.banner-steps li { margin-bottom: 3px; }
+.banner .muted { margin: 6px 0; }
+.banner button { width: auto; padding: 7px 14px; font-size: 13px; margin-top: 4px; }
+
+.path-row { display: flex; gap: 8px; align-items: stretch; margin: 8px 0 4px; }
+.path-row code {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--accent);
+  word-break: break-all;
+  user-select: all;
+}
+.path-row button { flex: 0 0 auto; margin-top: 0; }
 
 /* ---------------------------------------------- header flourish */
 

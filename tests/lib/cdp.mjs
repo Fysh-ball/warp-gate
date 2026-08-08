@@ -71,12 +71,24 @@ class Tab {
    * never shipped to users, and the expressions come from the test files beside it,
    * never from input. Nothing in public/ or server/ uses eval in any form.
    */
-  async eval(expression) {
-    const result = await this.send('Runtime.evaluate', {
-      expression: `(async () => { ${expression} })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
+  async eval(expression, attempt = 0) {
+    let result;
+    try {
+      result = await this.send('Runtime.evaluate', {
+        expression: `(async () => { ${expression} })()`,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+    } catch (err) {
+      // The page navigated out from under us and the execution context was torn down.
+      // This is a race, not a failure: retry against the new context rather than
+      // letting the whole suite abort intermittently.
+      if (/execution context|Execution context was destroyed/i.test(err.message) && attempt < 10) {
+        await new Promise((r) => { setTimeout(r, 150).unref?.(); });
+        return this.eval(expression, attempt + 1);
+      }
+      throw err;
+    }
     if (result.exceptionDetails) {
       throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     }

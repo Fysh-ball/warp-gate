@@ -37,24 +37,66 @@ export async function checkWebRtcCapability(timeoutMs = 4000) {
       });
     });
     if (count > 0) return { capable: true, candidateCount: count, hint: null };
-
-    const isBrave = typeof navigator.brave !== 'undefined';
-    return {
-      capable: false,
-      candidateCount: 0,
-      hint: isBrave
-        ? 'Brave is blocking WebRTC, so this device cannot make a direct connection. Open '
-          + 'brave://settings/privacy and set "WebRTC IP handling policy" to "Default public '
-          + 'interface only", then reload this page.'
-        : 'This browser produced no network addresses, so it cannot make a direct connection. '
-          + 'A privacy extension or a WebRTC-blocking setting is the usual cause. Check your '
-          + 'browser\'s WebRTC or IP-handling settings, then reload this page.',
-    };
+    return { capable: false, candidateCount: 0, ...blockedAdvice() };
   } catch (err) {
-    return { capable: false, candidateCount: 0, hint: `Could not test WebRTC: ${err.message}` };
+    return { capable: false, candidateCount: 0, headline: `Could not test WebRTC: ${err.message}`, steps: [] };
   } finally {
     try { pc.close(); } catch (err) { void err; }
   }
+}
+
+/**
+ * Advice for a browser that gathers nothing, tailored to the browser in use.
+ *
+ * `settingsPath` is deliberately not rendered as a link: Chromium blocks web pages
+ * from navigating to brave:// and chrome:// URLs, and window.open returns null, so a
+ * link would simply appear broken. It is offered as one-tap copy instead.
+ */
+function blockedAdvice() {
+  const ua = navigator.userAgent || '';
+  const isBrave = typeof navigator.brave !== 'undefined';
+  const isFirefox = ua.includes('Firefox');
+
+  if (isBrave) {
+    return {
+      browser: 'Brave',
+      headline: 'Brave is blocking WebRTC on this device, so it cannot connect directly to another device.',
+      settingsPath: 'brave://settings/privacy',
+      steps: [
+        'Copy the settings address below and paste it into a new tab.',
+        'Find "WebRTC IP handling policy".',
+        'Change it to "Default public interface only".',
+        'Come back here and press Re-check.',
+      ],
+      reassurance: 'You can set this back to "Disable non-proxied UDP" once you are finished. '
+        + '"Default public interface only" still hides your local network addresses.',
+    };
+  }
+  if (isFirefox) {
+    return {
+      browser: 'Firefox',
+      headline: 'WebRTC is disabled in this Firefox, so it cannot connect directly to another device.',
+      settingsPath: 'about:config',
+      steps: [
+        'Copy the settings address below and paste it into a new tab.',
+        'Search for media.peerconnection.enabled.',
+        'Set it to true.',
+        'Come back here and press Re-check.',
+      ],
+      reassurance: 'You can set it back to false when you are finished.',
+    };
+  }
+  return {
+    browser: null,
+    headline: 'This browser produced no network addresses, so it cannot connect directly to another device.',
+    settingsPath: null,
+    steps: [
+      'Check for a privacy extension that blocks WebRTC, and pause it for this site.',
+      'Check your browser settings for a WebRTC or IP-handling option.',
+      'Then press Re-check.',
+    ],
+    reassurance: 'You can turn any of it back on once you are finished.',
+  };
 }
 
 export class Peer extends EventTarget {
@@ -309,14 +351,11 @@ export class Peer extends EventTarget {
     }
     if (d.local.length === 0) {
       // Gathering that finishes having produced nothing is browser policy, not the
-      // network: even an offline machine yields a host candidate.
-      const isBrave = typeof navigator.brave !== 'undefined';
-      return `This browser produced no network addresses at all, so it cannot make a direct `
-        + `connection. This is a browser setting rather than a network problem. `
-        + (isBrave
-          ? 'Open brave://settings/privacy and set "WebRTC IP handling policy" to "Default '
-            + 'public interface only", then reload this page.'
-          : 'A privacy extension or a WebRTC-blocking setting is the usual cause.');
+      // network: even an offline machine yields a host candidate. Reuse the same
+      // advice the capability banner gives, so the two never contradict each other.
+      const advice = blockedAdvice();
+      return `${advice.headline} This is a browser setting rather than a network problem`
+        + `${advice.settingsPath ? `, in ${advice.settingsPath}` : ''}. ${advice.reassurance ?? ''}`;
     }
     if (!d.gotReflexive) {
       return 'This device could not discover its public address: the network appears to be blocking '

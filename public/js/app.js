@@ -55,6 +55,63 @@ function show(name) {
   window.scrollTo(0, 0);
 }
 
+/**
+ * Test whether this browser can do peer-to-peer, and if not, say exactly how to fix it.
+ *
+ * `manual` is true when the user pressed Re-check, which is the one case where a
+ * successful result deserves to be announced rather than passing silently.
+ */
+async function runCapabilityCheck(manual) {
+  const banner = $('webrtc-warning');
+  const recheck = $('webrtc-recheck');
+  if (manual) {
+    recheck.disabled = true;
+    recheck.textContent = 'Checking...';
+  }
+
+  let result;
+  try {
+    result = await checkWebRtcCapability();
+  } catch (err) {
+    log(`could not check WebRTC support: ${err.message}`, 'warn');
+    return;
+  } finally {
+    recheck.disabled = false;
+    recheck.textContent = 'Re-check';
+  }
+
+  if (result.capable) {
+    banner.hidden = true;
+    if (manual) log('WebRTC is working now. You can open or join a gate.', 'ok');
+    return;
+  }
+
+  $('webrtc-warning-title').textContent = result.browser
+    ? `${result.browser} is blocking direct connections`
+    : 'This browser cannot make direct connections';
+  $('webrtc-warning-text').textContent = result.headline ?? '';
+
+  const steps = $('webrtc-steps');
+  steps.replaceChildren();
+  for (const step of result.steps ?? []) {
+    const li = document.createElement('li');
+    li.textContent = step;
+    steps.appendChild(li);
+  }
+
+  // Shown as copyable text, not a link: browsers block pages from navigating to their
+  // own settings pages, so a link would just look broken.
+  const hasPath = Boolean(result.settingsPath);
+  $('webrtc-path-row').hidden = !hasPath;
+  $('webrtc-path-note').hidden = !hasPath;
+  if (hasPath) $('webrtc-settings-path').textContent = result.settingsPath;
+
+  $('webrtc-reassurance').textContent = result.reassurance ?? '';
+  banner.hidden = false;
+  if (manual) log('Still blocked. The setting may not have been applied yet.', 'warn');
+  else log(result.headline ?? 'This browser cannot make direct connections.', 'bad');
+}
+
 /** Copy buttons and lazily-rendered QR codes for the donation addresses. */
 function setupSupport() {
   for (const btn of document.querySelectorAll('[data-copy]')) {
@@ -586,12 +643,14 @@ async function boot() {
   // Ask up front whether this browser can do peer-to-peer at all, rather than letting
   // the user set up a gate and wait 25 seconds to find out it never could. The probe
   // uses no ICE servers, so it contacts nobody.
-  checkWebRtcCapability().then((result) => {
-    if (result.capable) return;
-    $('webrtc-warning-text').textContent = result.hint;
-    $('webrtc-warning').hidden = false;
-    log(result.hint, 'bad');
-  }).catch((err) => log(`could not check WebRTC support: ${err.message}`, 'warn'));
+  $('webrtc-copy-path').addEventListener('click', async () => {
+    const btn = $('webrtc-copy-path');
+    const ok = await copyText($('webrtc-settings-path').textContent.trim());
+    btn.textContent = ok ? 'Copied' : 'Select it';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 2500);
+  });
+  $('webrtc-recheck').addEventListener('click', () => runCapabilityCheck(true));
+  runCapabilityCheck(false);
   $('create-btn').addEventListener('click', startCreate);
   $('join-btn').addEventListener('click', () => startJoin($('join-input').value));
   $('join-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startJoin($('join-input').value); });

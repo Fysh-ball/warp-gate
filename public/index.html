@@ -19,8 +19,17 @@
 </header>
 
 <div id="webrtc-warning" class="banner" hidden>
-  <strong>This browser cannot make direct connections.</strong>
+  <strong id="webrtc-warning-title">This browser cannot make direct connections.</strong>
   <span id="webrtc-warning-text"></span>
+  <ol id="webrtc-steps" class="banner-steps"></ol>
+  <div id="webrtc-path-row" class="path-row" hidden>
+    <code id="webrtc-settings-path"></code>
+    <button id="webrtc-copy-path" class="secondary">Copy</button>
+  </div>
+  <p id="webrtc-path-note" class="muted small" hidden>Browsers do not allow a web page to
+  link to their own settings, so this has to be pasted into the address bar yourself.</p>
+  <p id="webrtc-reassurance" class="muted small"></p>
+  <button id="webrtc-recheck" class="secondary">Re-check</button>
 </div>
 
 <main id="main">

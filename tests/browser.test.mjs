@@ -301,19 +301,56 @@ try {
         removeEventListener() {}
         close() {}
       }
+      window.__realPC = window.RTCPeerConnection;
       window.RTCPeerConnection = BlockedPC;
     `,
   });
   await z.send('Page.navigate', { url: ORIGIN });
+  // Every lookup here must tolerate a document that has not parsed yet: Page.navigate
+  // resolves before the new page exists, so a bare getElementById intermittently
+  // throws on null.
+  await z.waitFor("document.readyState === 'complete'",
+    { timeout: 30000, label: 'stubbed page finished loading' });
   await z.waitFor("[...document.querySelectorAll('section.screen')].some(s => !s.hidden)",
     { timeout: 30000, label: 'app loaded with WebRTC stubbed out' });
-  await z.waitFor("document.getElementById('webrtc-warning').hidden === false",
+  await z.waitFor("((document.getElementById('webrtc-warning') || {}).hidden) === false",
     { timeout: 20000, label: 'capability banner shown when nothing can be gathered' });
   check('a browser that gathers no addresses is detected before a gate is created', true);
 
   const hint = await z.eval("return document.getElementById('webrtc-warning-text').textContent;");
   check('the warning points at a browser setting rather than blaming the network',
     /WebRTC|IP handling|extension/i.test(hint) && !/firewall|carrier/i.test(hint), hint.slice(0, 160));
+
+  const guidance = await z.eval(`
+    const path = document.getElementById('webrtc-settings-path');
+    return JSON.stringify({
+      steps: [...document.querySelectorAll('#webrtc-steps li')].map(li => li.textContent),
+      pathShown: !document.getElementById('webrtc-path-row').hidden,
+      pathText: path.textContent,
+      pathIsAnchor: path.tagName === 'A' || !!path.closest('a'),
+      reassurance: document.getElementById('webrtc-reassurance').textContent,
+      hasCopy: !!document.getElementById('webrtc-copy-path'),
+      hasRecheck: !!document.getElementById('webrtc-recheck'),
+    });
+  `);
+  const g = JSON.parse(guidance);
+  check('numbered steps are given, not just a paragraph', g.steps.length >= 3, `${g.steps.length} steps`);
+  check('the settings address is shown with a copy button',
+    g.pathShown && g.pathText.length > 0 && g.hasCopy, guidance.slice(0, 160));
+  // Chromium refuses to navigate to brave:// and chrome:// from a page, so shipping a
+  // link would present the user with something that silently does nothing.
+  check('the settings address is NOT a link, which browsers would refuse to open',
+    g.pathIsAnchor === false);
+  check('the user is told the change is reversible',
+    /back|finished|temporar/i.test(g.reassurance), g.reassurance.slice(0, 120));
+  check('a re-check control is offered so no manual reload is needed', g.hasRecheck);
+
+  // Recovery: once the browser can gather again, Re-check must clear the banner.
+  await z.eval("window.RTCPeerConnection = window.__realPC; return true;");
+  await z.eval("document.getElementById('webrtc-recheck').click(); return true;");
+  await z.waitFor("((document.getElementById('webrtc-warning') || {}).hidden) === true",
+    { timeout: 20000, label: 'banner clears after Re-check once WebRTC works' });
+  check('Re-check clears the warning once the setting is fixed', true);
 
   // ------------------------------------------------------------ page errors
   check('tab A raised no uncaught page errors', a.pageErrors.length === 0, a.pageErrors.join(' | '));
