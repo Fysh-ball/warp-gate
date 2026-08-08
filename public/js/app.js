@@ -17,7 +17,7 @@ const AGREEMENT_KEY = 'wg.agreed.v1';
 let session = null;
 let config = null;
 let ttlTimer = null;
-let diag = { candidates: [], ice: null };
+let diag = { candidates: [], ice: null, full: null };
 
 // Slot persistence. Without this a page reload is fatal: re-joining a gate you already
 // occupy is correctly refused as full, so the session could never be recovered.
@@ -47,7 +47,53 @@ function forgetSlot(roomId) {
 
 function show(name) {
   for (const screen of SCREENS) $(`screen-${screen}`).hidden = screen !== name;
+  // The extras fill the space on the quiet screens, and stay out of the way while a
+  // gate is actually open.
+  const extras = $('extras');
+  if (extras) extras.hidden = !['onboarding', 'home', 'severed'].includes(name);
   window.scrollTo(0, 0);
+}
+
+/** Copy buttons and lazily-rendered QR codes for the donation addresses. */
+function setupSupport() {
+  for (const btn of document.querySelectorAll('[data-copy]')) {
+    btn.addEventListener('click', async () => {
+      const source = $(btn.dataset.copy);
+      if (!source) return;
+      const label = btn.textContent;
+      const copied = await copyText(source.textContent.trim());
+      btn.textContent = copied ? 'Copied' : 'Select it manually';
+      setTimeout(() => { btn.textContent = label; }, 2500);
+    });
+  }
+
+  for (const btn of document.querySelectorAll('[data-qr]')) {
+    btn.addEventListener('click', () => {
+      const which = btn.dataset.qr;
+      const box = $(`qrbox-${which}`);
+      const canvas = $(`qr-${which}`);
+      const address = $(`addr-${which}`)?.textContent.trim();
+      if (!box || !canvas || !address) return;
+
+      if (!box.hidden) {
+        box.hidden = true;
+        btn.textContent = 'Show QR';
+        return;
+      }
+      if (!canvas.dataset.rendered) {
+        try {
+          drawQr(canvas, encodeQr(address));
+          canvas.dataset.rendered = '1';
+        } catch (err) {
+          // Never leave a blank white box implying a scannable code.
+          log(`could not render the ${which.toUpperCase()} QR code: ${err.message}. Copy the address instead.`, 'warn');
+          return;
+        }
+      }
+      box.hidden = false;
+      btn.textContent = 'Hide QR';
+    });
+  }
 }
 
 function log(message, level = '') {
@@ -76,6 +122,7 @@ const STATE_LABELS = {
   [STATE.CONFIRMING]: ['verifying secret', 'work'],
   [STATE.CONNECTED]: ['connected', 'direct'],
   [STATE.AUTH_FAILED]: ['verification failed', 'bad'],
+  [STATE.UNREACHABLE]: ['could not connect', 'bad'],
   [STATE.SEVERED]: ['severed', 'idle'],
 };
 
@@ -103,6 +150,7 @@ function stopTtl() {
 // ---------------------------------------------------------------- session wiring
 
 function wire(active) {
+  diag = { candidates: [], ice: null, full: null };
   active.addEventListener('state', (event) => {
     const [label, kind] = STATE_LABELS[event.detail.state] ?? [event.detail.state, 'work'];
     badge(label, kind);
@@ -110,9 +158,13 @@ function wire(active) {
       show('connected');
       $('file-capability').textContent = describeLimit();
     }
+    // Only a genuine key-confirmation failure says "could not verify". A connectivity
+    // stall has its own state and its own far more specific message, set by the
+    // unreachable handler below; overwriting it here produced the wrong title.
     if (event.detail.state === STATE.AUTH_FAILED) {
       $('failed-title').textContent = 'Could not verify the other device';
       $('failed-detail').textContent = event.detail.detail ?? '';
+      $('failed-diag').textContent = diagnosticText();
       show('failed');
     }
     if (event.detail.detail) log(`${label}: ${event.detail.detail}`);
@@ -143,6 +195,11 @@ function wire(active) {
     const d = event.detail;
     if (d.kind === 'candidates' || d.kind === 'gathering-complete') diag.candidates = d.types;
     if (d.kind === 'ice') diag.ice = d.state;
+    renderDiagnostics();
+  });
+
+  active.addEventListener('diagnostics', (event) => {
+    diag.full = event.detail;
     renderDiagnostics();
   });
 
@@ -210,10 +267,21 @@ const CANDIDATE_MEANING = {
 
 function diagnosticText() {
   const lines = [];
-  lines.push(`address types found : ${diag.candidates.length ? diag.candidates.join(', ') : 'none yet'}`);
-  for (const type of diag.candidates) if (CANDIDATE_MEANING[type]) lines.push(`  ${CANDIDATE_MEANING[type]}`);
-  lines.push(`ice state           : ${diag.ice ?? 'not started'}`);
-  const cross = diag.candidates.includes('srflx') || diag.candidates.includes('relay');
+  const d = diag.full;
+  const types = d?.local ?? diag.candidates;
+
+  // Whether the two sides ever exchanged an offer and answer comes first: if they did
+  // not, ICE never ran, and everything below it is meaningless rather than damning.
+  if (d) {
+    lines.push(`offer sent          : ${d.sentDescription ? 'yes' : 'no'}`);
+    lines.push(`answer received     : ${d.gotDescription ? 'yes' : 'no'}`);
+  }
+  lines.push(`my address types    : ${types.length ? types.join(', ') : 'none yet'}`);
+  for (const type of types) if (CANDIDATE_MEANING[type]) lines.push(`  ${CANDIDATE_MEANING[type]}`);
+  if (d) lines.push(`peer address types  : ${d.remote.length ? d.remote.join(', ') : 'none received'}`);
+  lines.push(`ice state           : ${d?.iceConnection ?? diag.ice ?? 'not started'}`);
+  if (d) lines.push(`ice gathering       : ${d.iceGathering}`);
+  const cross = types.includes('srflx') || types.includes('relay');
   lines.push(`cross-network able  : ${cross ? 'yes' : 'no, same network only'}`);
   return lines.join('\n');
 }
@@ -512,6 +580,7 @@ async function boot() {
     afterAgreement();
   });
   $('show-onboarding').addEventListener('click', () => show('onboarding'));
+  setupSupport();
   $('create-btn').addEventListener('click', startCreate);
   $('join-btn').addEventListener('click', () => startJoin($('join-input').value));
   $('join-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startJoin($('join-input').value); });

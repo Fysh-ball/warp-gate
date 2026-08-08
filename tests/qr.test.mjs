@@ -165,5 +165,25 @@ function roundTrip(name, text) {
   check('the fuzz corpus exercised more than one version', seen.size > 1, `versions ${[...seen].sort().join(',')}`);
 }
 
+// ---------------------------------------------------------------- donation addresses
+{
+  // These are read out of the shipped HTML rather than hardcoded, so the test proves
+  // that what a donor scans is exactly what the page displays. A QR that differs from
+  // the visible address by one character sends money to nobody.
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const found = [...html.matchAll(/id="addr-([a-z]+)"[^>]*>([^<]+)</g)]
+    .map((m) => ({ name: m[1], address: m[2].trim() }));
+
+  check('donation addresses were found in the page', found.length >= 2, `found ${found.length}`);
+
+  for (const { name, address } of found) {
+    const { qr, decoded } = roundTrip(`donate-${name}`, address);
+    check(`${name.toUpperCase()} address survives the QR round trip exactly`,
+      decoded === address,
+      typeof decoded === 'string' ? `decoded ${decoded.length} chars, expected ${address.length}` : JSON.stringify(decoded));
+    check(`${name.toUpperCase()} QR fits the supported version range`, qr.version <= 6, `version ${qr.version}`);
+  }
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 process.exit(summary('qr') ? 0 : 1);

@@ -15,6 +15,12 @@
 
 * { box-sizing: border-box; }
 
+/* The UA stylesheet gives [hidden] display:none, but any author rule setting an
+   explicit display silently beats it. That left the donation QR box showing as a blank
+   white rectangle, and would have done the same to the pairing QR on the join screen.
+   Anything hidden must actually be hidden. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -65,7 +71,7 @@ html, body {
 
 .ttl { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
 
-main { max-width: 640px; margin: 0 auto; padding: 20px 16px 96px; }
+main { max-width: 640px; margin: 0 auto; padding: 20px 16px 4px; }
 
 h1 { font-size: 20px; line-height: 1.35; margin: 8px 0 18px; font-weight: 650; }
 h2 { font-size: 15px; margin: 0 0 6px; font-weight: 650; }
@@ -304,7 +310,7 @@ pre.diag {
   display: flex;
   gap: 18px;
   justify-content: center;
-  padding: 4px 16px 26px;
+  padding: 12px 16px 64px;
   font-size: 12.5px;
 }
 .foot a { color: var(--muted); text-decoration: none; }
@@ -328,6 +334,135 @@ main.legal strong { color: var(--text); }
   padding: 0 5px;
   color: var(--warn);
   font-size: 13px;
+}
+
+/* ---------------------------------------------- header flourish */
+
+.bar { position: sticky; }
+.bar::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 220% 100%;
+  opacity: 0.55;
+  animation: sweep 9s linear infinite;
+}
+@keyframes sweep {
+  0% { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
+/* ---------------------------------------------- extras: bridge, steps, support */
+
+.extras { max-width: 640px; margin: 0 auto; padding: 8px 16px 8px; }
+
+.bridge { text-align: center; margin: 6px 0 20px; }
+.bridge svg { width: 100%; max-width: 380px; height: auto; }
+.bridge .node { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
+.bridge .screen-glow { fill: var(--accent); opacity: 0.22; }
+.bridge .wire { stroke: var(--line); stroke-width: 2; }
+.bridge .flow {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 10 16;
+  animation: flow 2.6s linear infinite;
+}
+@keyframes flow { to { stroke-dashoffset: -52; } }
+.bridge .lock rect { fill: var(--bg); stroke: var(--accent); stroke-width: 1.6; }
+.bridge .lock path { stroke: var(--accent); stroke-width: 1.6; }
+.bridge-cap { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+
+.steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 0;
+  margin: 0 0 16px;
+}
+.step {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 11px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.step-n {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+}
+.step b { font-size: 13.5px; }
+.step span:last-child { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+@media (max-width: 560px) {
+  .steps { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ---------------------------------------------- support */
+
+/* Selector must out-specify `.disc-body a`, which would otherwise colour this link
+   accent-on-accent and render the label invisible. */
+.disc-body a.kofi, a.kofi {
+  display: block;
+  text-align: center;
+  background: var(--accent);
+  color: #06211e;
+  font-weight: 650;
+  padding: 11px 16px;
+  border-radius: var(--radius);
+  text-decoration: none;
+  margin: 12px 0 14px;
+}
+a.kofi:hover { filter: brightness(1.08); }
+
+.coin {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 11px 12px;
+  margin-bottom: 10px;
+}
+.coin-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.coin-name { font-weight: 620; font-size: 14px; }
+.coin-tick {
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.coin-addr {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  word-break: break-all;
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+.coin-actions { display: flex; gap: 8px; }
+.coin-actions button { flex: 1; padding: 8px 10px; font-size: 13px; }
+.coin-qr {
+  display: flex;
+  justify-content: center;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 10px;
+  margin-top: 10px;
+}
+.coin-qr canvas { width: 100%; max-width: 220px; height: auto; image-rendering: pixelated; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bar::after, .bridge .flow { animation: none; }
 }
 
 @media (prefers-color-scheme: light) {

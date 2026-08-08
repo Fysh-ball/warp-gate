@@ -86,12 +86,46 @@ export class Peer extends EventTarget {
       this.makingOffer = true;
       const offer = await this.pc.createOffer({ iceRestart });
       await this.pc.setLocalDescription(offer);
-      await this.signal.send({ t: 'offer', sdp: this.pc.localDescription.sdp });
+      await this.deliverOffer();
     } catch (err) {
       this.emit('failed', `could not create an offer: ${err.message}`);
     } finally {
       this.makingOffer = false;
     }
+  }
+
+  /**
+   * Send the offer, and keep sending it until an answer comes back.
+   *
+   * The relay reports delivered:false when the other side has no live stream, and a
+   * dropped offer used to be lost forever: the joiner would sit with no ICE activity
+   * at all, which is exactly what "it never connects" looked like. Retrying also
+   * covers a peer whose stream reconnects a moment later.
+   */
+  async deliverOffer(attempt = 0) {
+    if (this.closed || this.pc.signalingState === 'closed') return;
+    if (this.pc.remoteDescription) return; // answered already
+    if (!this.pc.localDescription) return;
+
+    let delivered = false;
+    try {
+      delivered = await this.signal.send({ t: 'offer', sdp: this.pc.localDescription.sdp });
+    } catch (err) {
+      this.emit('warning', `could not send the offer: ${err.message}`);
+    }
+    this.emit('offer-sent', { attempt, delivered });
+
+    if (attempt >= 6) {
+      if (!this.pc.remoteDescription) {
+        this.emit('warning', 'The other device never answered the connection offer.');
+      }
+      return;
+    }
+    // Re-send while unanswered. Cheap: an SDP offer is a few kilobytes.
+    this.offerTimer = setTimeout(() => {
+      this.offerTimer = null;
+      if (!this.pc.remoteDescription) this.deliverOffer(attempt + 1);
+    }, delivered ? 3000 : 1200);
   }
 
   /** Handle a decrypted signalling message. */
@@ -200,15 +234,32 @@ export class Peer extends EventTarget {
       iceConnection: this.pc.iceConnectionState,
       connection: this.pc.connectionState,
       signaling: this.pc.signalingState,
+      sentDescription: Boolean(this.pc.localDescription),
+      gotDescription: Boolean(this.pc.remoteDescription),
+      role: this.role,
     };
   }
 
   /** Turn the diagnostics into a specific cause rather than a shrug. */
   explainStall() {
     const d = this.diagnostics();
+
+    // Check this first. If no descriptions were exchanged, ICE never ran at all, and
+    // blaming STUN would be wrong: nothing had yet asked STUN anything.
+    if (!d.gotDescription) {
+      return d.role === 'a'
+        ? 'The other device never answered the connection offer. It may have closed the page, lost '
+          + 'its connection, or never finished loading. Ask it to open the link again.'
+        : 'No connection offer arrived from the other device, so this one never started connecting. '
+          + 'The other side may have closed the page or lost its connection.';
+    }
     if (!d.hadIceServers) {
       return 'No STUN server is configured, so this browser could only find local network addresses. '
         + 'Connections work on the same network and nowhere else.';
+    }
+    if (d.local.length === 0) {
+      return 'This browser produced no network addresses at all, which usually means peer-to-peer '
+        + 'traffic is blocked outright, or an extension or policy is disabling WebRTC.';
     }
     if (!d.gotReflexive) {
       return 'This device could not discover its public address: the network appears to be blocking '
@@ -228,6 +279,8 @@ export class Peer extends EventTarget {
   }
 
   close() {
+    this.closed = true;
+    if (this.offerTimer) { clearTimeout(this.offerTimer); this.offerTimer = null; }
     try { this.channel?.close(); } catch (err) { void err; }
     try { this.pc.close(); } catch (err) { void err; }
     this.channel = null;

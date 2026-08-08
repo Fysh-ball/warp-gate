@@ -238,10 +238,73 @@
 
 </main>
 
+<section id="extras" class="extras" hidden>
+
+  <div class="bridge" aria-hidden="true">
+    <svg viewBox="0 0 420 74" preserveAspectRatio="xMidYMid meet">
+      <rect class="node" x="12" y="19" width="52" height="36" rx="6"/>
+      <rect class="screen-glow" x="20" y="27" width="36" height="16" rx="2"/>
+      <rect class="node" x="356" y="19" width="52" height="36" rx="6"/>
+      <rect class="screen-glow" x="364" y="27" width="36" height="16" rx="2"/>
+      <line class="wire" x1="70" y1="37" x2="350" y2="37"/>
+      <line class="flow" x1="70" y1="37" x2="350" y2="37"/>
+      <g class="lock" transform="translate(198 22)">
+        <rect x="0" y="10" width="24" height="18" rx="3"/>
+        <path d="M5 10 V6 a7 7 0 0 1 14 0 v4" fill="none"/>
+      </g>
+    </svg>
+    <p class="bridge-cap">Encrypted here. Decrypted there. Nothing in between keeps a copy.</p>
+  </div>
+
+  <ol class="steps">
+    <li class="step"><span class="step-n">1</span><b>Create</b><span>Open a gate on one device.</span></li>
+    <li class="step"><span class="step-n">2</span><b>Share</b><span>Scan the code, or send the link.</span></li>
+    <li class="step"><span class="step-n">3</span><b>Send</b><span>Chat, secrets and files, directly.</span></li>
+    <li class="step"><span class="step-n">4</span><b>Sever</b><span>The gate and its keys are gone.</span></li>
+  </ol>
+
+  <details class="disc support">
+    <summary><span class="disc-title">Support Warp Gate</span>
+      <span class="disc-hint">free, no ads, no tracking, no accounts</span></summary>
+    <div class="disc-body">
+      <p>Warp Gate is free and always will be. It keeps nothing, sells nothing and shows
+      no advertising. If it saved you a bit of trouble, this keeps the lights on.</p>
+
+      <a class="kofi" href="https://ko-fi.com/fysh_yum" target="_blank" rel="noopener noreferrer">
+        Buy me a coffee on Ko-fi
+      </a>
+
+      <div class="coin" id="coin-xmr">
+        <div class="coin-head"><span class="coin-name">Monero</span><span class="coin-tick">XMR</span></div>
+        <code class="coin-addr" id="addr-xmr">8Ahxk91aBHfCgLmqUji5NQXVHg9Y6pAj1EpdnsZvm5Nf4M4D9Uam6hr4FXZoBhNuZoKMH9V31pYZF6fkyf4pvK6q4pCmynj</code>
+        <div class="coin-actions">
+          <button class="secondary" data-copy="addr-xmr">Copy address</button>
+          <button class="secondary" data-qr="xmr">Show QR</button>
+        </div>
+        <div class="coin-qr" id="qrbox-xmr" hidden><canvas id="qr-xmr" width="260" height="260"></canvas></div>
+      </div>
+
+      <div class="coin" id="coin-btc">
+        <div class="coin-head"><span class="coin-name">Bitcoin</span><span class="coin-tick">BTC</span></div>
+        <code class="coin-addr" id="addr-btc">bc1qkgq5xpue5se32xu53s4nuvn866u4xgpl0xs27t</code>
+        <div class="coin-actions">
+          <button class="secondary" data-copy="addr-btc">Copy address</button>
+          <button class="secondary" data-qr="btc">Show QR</button>
+        </div>
+        <div class="coin-qr" id="qrbox-btc" hidden><canvas id="qr-btc" width="260" height="260"></canvas></div>
+      </div>
+
+      <p class="muted small">Always check the address on your own screen before sending.
+      Cryptocurrency transfers cannot be reversed.</p>
+    </div>
+  </details>
+</section>
+
 <footer class="foot">
   <a href="/terms.html">Terms</a>
   <a href="/acceptable-use.html">Acceptable use</a>
   <a href="/privacy.html">Privacy</a>
+  <a href="https://ko-fi.com/fysh_yum" target="_blank" rel="noopener noreferrer">Support</a>
 </footer>
 
 <div id="log" class="log" aria-live="polite"></div>

@@ -21,6 +21,7 @@ export const STATE = {
   CONFIRMING: 'confirming',
   CONNECTED: 'connected',
   AUTH_FAILED: 'auth-failed',
+  UNREACHABLE: 'unreachable',
   SEVERED: 'severed',
 };
 
@@ -152,8 +153,10 @@ export class Session extends EventTarget {
       this.watchdog = null;
       if (this.severed || this.state === STATE.CONNECTED) return;
       const detail = this.peer ? this.peer.explainStall() : 'The connection never started.';
+      // Report the connection's own state, not just what the UI happened to observe.
+      this.emit('diagnostics', this.peer ? this.peer.diagnostics() : null);
       this.emit('unreachable', detail);
-      this.setState(STATE.AUTH_FAILED, detail);
+      this.setState(STATE.UNREACHABLE, detail);
     }, ms);
   }
 
@@ -202,8 +205,9 @@ export class Session extends EventTarget {
       if (event.detail === 'connecting' && this.state === STATE.NEGOTIATING) this.setState(STATE.CONNECTING);
     });
     this.peer.addEventListener('failed', (event) => {
+      this.emit('diagnostics', this.peer ? this.peer.diagnostics() : null);
       this.emit('unreachable', event.detail);
-      this.setState(STATE.AUTH_FAILED, event.detail);
+      this.setState(STATE.UNREACHABLE, event.detail);
     });
     this.peer.addEventListener('warning', (event) => this.emit('warning', event.detail));
     // Progress the user can actually see while ICE works.

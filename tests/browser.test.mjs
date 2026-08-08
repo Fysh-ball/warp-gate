@@ -12,8 +12,8 @@ import crypto from 'node:crypto';
 import { check, summary, startServer, request } from './lib/harness.mjs';
 import { launchBrowser, findBrowser } from './lib/cdp.mjs';
 
-const PORT = 3200;
-const STUN = 3484;
+const PORT = 3300;
+const STUN = 3590;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wg-e2e-'));
 
@@ -67,6 +67,53 @@ try {
   const record = await a.eval("return localStorage.getItem('wg.agreed.v1');");
   check('acceptance is recorded with a version and a timestamp',
     /"version":1/.test(record || '') && /"acceptedAt":"20/.test(record || ''), String(record));
+
+  // The support block sits on the quiet screens. Its links must actually be legible:
+  // a class-specificity slip once rendered the Ko-fi label accent-on-accent, i.e.
+  // a solid button with invisible text.
+  const contrast = await a.eval(`
+    const el = document.querySelector('a.kofi');
+    if (!el) return { missing: true };
+    const s = getComputedStyle(el);
+    const parse = (c) => (c.match(/[0-9.]+/g) || []).slice(0, 3).map(Number);
+    const lum = (rgb) => {
+      const [r, g, b] = rgb.map((v) => {
+        const x = v / 255;
+        return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const fg = parse(s.color);
+    const bg = parse(s.backgroundColor);
+    if (fg.length < 3 || bg.length < 3) return { unknown: true, color: s.color, bg: s.backgroundColor };
+    const l1 = Math.max(lum(fg), lum(bg));
+    const l2 = Math.min(lum(fg), lum(bg));
+    return { ratio: (l1 + 0.05) / (l2 + 0.05), text: el.textContent.trim() };
+  `);
+  check('the support link has visible text', Boolean(contrast.text), JSON.stringify(contrast));
+  check('the support link text contrasts with its own background',
+    contrast.ratio >= 4.5, `contrast ratio ${contrast.ratio?.toFixed(2)}`);
+
+  const donateLinks = await a.eval(`
+    return JSON.stringify([...document.querySelectorAll('a.kofi, .foot a')].map(x => x.getAttribute('href')));
+  `);
+  // An author rule with an explicit display beats the UA stylesheet's [hidden]
+  // display:none. That showed the donation QR as a blank white box, and would have
+  // done the same to the pairing QR. Assert real invisibility, not just the attribute.
+  const hiddenReally = await a.eval(`
+    const offenders = [];
+    for (const el of document.querySelectorAll('[hidden]')) {
+      if (el.offsetParent !== null || el.getClientRects().length > 0) {
+        offenders.push(el.id || el.className || el.tagName);
+      }
+    }
+    return JSON.stringify(offenders);
+  `);
+  check('every element marked hidden is actually invisible',
+    hiddenReally === '[]', `still rendered: ${hiddenReally}`);
+
+  check('the Ko-fi link points at the configured handle',
+    /ko-fi\.com\/fysh_yum/.test(donateLinks), donateLinks);
 
   await a.eval("document.getElementById('create-btn').click(); return true;");
   await a.waitFor("!document.getElementById('screen-waiting').hidden", { label: 'waiting screen' });
