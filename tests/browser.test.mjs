@@ -377,9 +377,20 @@ try {
     { timeout: 30000, label: 'app loaded in the public-interface-only browser' });
   // Give the two-stage probe time to run both stages before judging.
   await new Promise((r) => { setTimeout(r, 3000); });
-  check('a browser that only exposes its public address is NOT reported as blocked',
-    (await priv.eval("return ((document.getElementById('webrtc-warning') || {}).hidden) === true;")) === true,
-    await priv.eval("return (document.getElementById('webrtc-warning-text') || {}).textContent || '';"));
+  const privState = await priv.eval(`
+    const b = document.getElementById('webrtc-warning');
+    return JSON.stringify({
+      shown: b ? !b.hidden : false,
+      isNote: b ? b.classList.contains('note') : false,
+      title: (document.getElementById('webrtc-warning-title') || {}).textContent || '',
+      text: (document.getElementById('webrtc-warning-text') || {}).textContent || '',
+    });
+  `);
+  const ps = JSON.parse(privState);
+  check('a browser that only exposes its public address is NOT called blocked',
+    !/blocking|cannot make direct/i.test(ps.title), ps.title);
+  check('it is told instead that same-network pairs may fail',
+    ps.shown && ps.isNote && /same network/i.test(ps.title + ps.text), privState.slice(0, 200));
 
   // Recovery: once the browser can gather again, Re-check must clear the banner.
   await z.eval("window.RTCPeerConnection = window.__realPC; return true;");

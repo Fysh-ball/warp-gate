@@ -350,6 +350,9 @@ main.legal strong { color: var(--text); }
   line-height: 1.55;
 }
 .banner strong { display: block; color: var(--warn); margin-bottom: 4px; }
+/* Informational variant: a limitation worth knowing, not a failure. */
+.banner.note { background: rgba(75, 208, 192, 0.07); border-color: var(--accent-dim); }
+.banner.note strong { color: var(--accent); }
 .banner code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .banner-steps { margin: 8px 0 10px; padding-left: 20px; color: var(--muted); }
 .banner-steps li { margin-bottom: 3px; }

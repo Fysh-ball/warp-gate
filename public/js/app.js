@@ -6,7 +6,7 @@
 import { generateSecret, formatSecret, parseSecret, deriveRoomId } from './crypto.js';
 import { fetchConfig, checkRoom } from './signal.js';
 import { Session, STATE } from './session.js';
-import { checkWebRtcCapability } from './peer.js';
+import { checkWebRtcCapability, hostSuppressedAdvice } from './peer.js';
 import { describeLimit, canAccept, formatBytes, saveBlob } from './transfer.js';
 import { encodeQr, drawQr } from './qr.js';
 
@@ -80,20 +80,27 @@ async function runCapabilityCheck(manual) {
     recheck.textContent = 'Re-check';
   }
 
-  if (result.capable) {
+  // Capable, and local addresses available: nothing to say.
+  if (result.capable && result.via !== 'srflx') {
     banner.hidden = true;
+    banner.classList.remove('note');
     if (manual) log('WebRTC is working now. You can open or join a gate.', 'ok');
     return;
   }
 
-  $('webrtc-warning-title').textContent = result.browser
-    ? `${result.browser} is blocking direct connections`
-    : 'This browser cannot make direct connections';
-  $('webrtc-warning-text').textContent = result.headline ?? '';
+  // Capable, but only over the public address. Cross-network works; same-network may
+  // not, because that would need the router to hairpin. Worth saying, quietly.
+  const advice = result.capable ? hostSuppressedAdvice() : result;
+  banner.classList.toggle('note', Boolean(result.capable));
+
+  $('webrtc-warning-title').textContent = result.capable
+    ? 'Same-network connections may not work'
+    : (advice.browser ? `${advice.browser} is blocking direct connections` : 'This browser cannot make direct connections');
+  $('webrtc-warning-text').textContent = advice.headline ?? '';
 
   const steps = $('webrtc-steps');
   steps.replaceChildren();
-  for (const step of result.steps ?? []) {
+  for (const step of advice.steps ?? []) {
     const li = document.createElement('li');
     li.textContent = step;
     steps.appendChild(li);
@@ -101,15 +108,20 @@ async function runCapabilityCheck(manual) {
 
   // Shown as copyable text, not a link: browsers block pages from navigating to their
   // own settings pages, so a link would just look broken.
-  const hasPath = Boolean(result.settingsPath);
+  const hasPath = Boolean(advice.settingsPath);
   $('webrtc-path-row').hidden = !hasPath;
   $('webrtc-path-note').hidden = !hasPath;
-  if (hasPath) $('webrtc-settings-path').textContent = result.settingsPath;
+  if (hasPath) $('webrtc-settings-path').textContent = advice.settingsPath;
 
-  $('webrtc-reassurance').textContent = result.reassurance ?? '';
+  $('webrtc-reassurance').textContent = advice.reassurance ?? '';
   banner.hidden = false;
-  if (manual) log('Still blocked. The setting may not have been applied yet.', 'warn');
-  else log(result.headline ?? 'This browser cannot make direct connections.', 'bad');
+  if (result.capable) {
+    if (manual) log('WebRTC works. Local addresses are hidden, so same-network pairs may fail.', 'warn');
+  } else if (manual) {
+    log('Still blocked. The setting may not have been applied yet.', 'warn');
+  } else {
+    log(advice.headline ?? 'This browser cannot make direct connections.', 'bad');
+  }
 }
 
 /** Copy buttons and lazily-rendered QR codes for the donation addresses. */

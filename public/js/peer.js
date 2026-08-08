@@ -94,11 +94,11 @@ function blockedAdvice() {
       steps: [
         'Copy the settings address below and paste it into a new tab.',
         'Find "WebRTC IP handling policy".',
-        'Change it to "Default public interface only".',
+        'Change it to "Default public and private interfaces".',
         'Come back here and press Re-check.',
       ],
-      reassurance: 'You can set this back to "Disable non-proxied UDP" once you are finished. '
-        + '"Default public interface only" still hides your local network addresses.',
+      reassurance: 'You can set this back afterwards. Chromium still hides your real local '
+        + 'addresses from web pages behind mDNS names, so this is not the same as exposing them.',
     };
   }
   if (isFirefox) {
@@ -125,6 +125,39 @@ function blockedAdvice() {
       'Then press Re-check.',
     ],
     reassurance: 'You can turn any of it back on once you are finished.',
+  };
+}
+
+/**
+ * Advice for a browser that gathers a public address but no local ones.
+ *
+ * "Default public interface only" suppresses host candidates. That still connects
+ * across networks, but two devices on the *same* network then have to reach each
+ * other via their shared public address, which needs NAT hairpinning that many home
+ * routers do not perform. Verified: two peers in one browser on one machine fail to
+ * connect under this setting.
+ */
+export function hostSuppressedAdvice() {
+  const isBrave = typeof navigator.brave !== 'undefined';
+  return {
+    browser: isBrave ? 'Brave' : null,
+    headline: 'This browser hides local network addresses, so two devices on the same network '
+      + 'may not be able to reach each other. Connections between different networks still work.',
+    settingsPath: isBrave ? 'brave://settings/privacy' : null,
+    steps: isBrave
+      ? [
+        'Only needed if a same-network connection fails.',
+        'Copy the settings address below and paste it into a new tab.',
+        'Set "WebRTC IP handling policy" to "Default public and private interfaces".',
+        'Come back here and press Re-check.',
+      ]
+      : [
+        'Only needed if a same-network connection fails.',
+        'Allow local addresses in your browser\'s WebRTC or IP-handling setting.',
+        'Then press Re-check.',
+      ],
+    reassurance: 'Chromium still hides your real local addresses from web pages behind mDNS '
+      + 'names, so allowing them is not the same as exposing them.',
   };
 }
 
@@ -397,6 +430,15 @@ export class Peer extends EventTarget {
     if (d.remote.length === 0) {
       return 'No network candidates arrived from the other device. It may have closed the page, lost '
         + 'connectivity, or be on a network that blocks peer-to-peer traffic entirely.';
+    }
+    const noHostEither = !d.local.includes('host') && !d.remote.includes('host');
+    if (noHostEither) {
+      // Both sides advertised only their public address. On the same network that
+      // requires the router to hairpin, which many do not do.
+      return 'Both devices advertised only their public address and no local one, so if they are on '
+        + 'the same network there is no usable path between them: that needs NAT hairpinning, which '
+        + 'many home routers do not perform. Allow local addresses in your browser\'s WebRTC setting, '
+        + 'or put the two devices on different networks.';
     }
     return 'Both devices found public addresses but no direct path between them succeeded. This is the '
       + 'signature of a strict or symmetric NAT, common on mobile carrier networks. A relay would be '

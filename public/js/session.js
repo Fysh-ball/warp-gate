@@ -205,9 +205,12 @@ export class Session extends EventTarget {
       if (event.detail === 'connecting' && this.state === STATE.NEGOTIATING) this.setState(STATE.CONNECTING);
     });
     this.peer.addEventListener('failed', (event) => {
+      // Prefer the specific explanation derived from the candidates actually gathered
+      // over the generic "ICE failed" string.
+      const detail = this.peer ? this.peer.explainStall() : event.detail;
       this.emit('diagnostics', this.peer ? this.peer.diagnostics() : null);
-      this.emit('unreachable', event.detail);
-      this.setState(STATE.UNREACHABLE, event.detail);
+      this.emit('unreachable', detail);
+      this.setState(STATE.UNREACHABLE, detail);
     });
     this.peer.addEventListener('warning', (event) => this.emit('warning', event.detail));
     // Progress the user can actually see while ICE works.

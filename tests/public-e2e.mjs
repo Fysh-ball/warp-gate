@@ -53,6 +53,16 @@ if (!pin.length) {
   process.stdout.write(`note  DoH lookup unavailable; falling back to system DNS for ${host}\n`);
 }
 
+// Wait for the deployment to actually be serving before judging it. Running straight
+// after a container restart otherwise fails on a cold start rather than a defect.
+for (let i = 0; i < 30; i += 1) {
+  try {
+    const r = await fetch(`${ORIGIN}/api/health`, { signal: AbortSignal.timeout(4000) });
+    if (r.ok) break;
+  } catch (err) { void err; }
+  await new Promise((r) => { setTimeout(r, 1000); });
+}
+
 const browser = await launchBrowser({ port: 9344, extraArgs: pin });
 let ok = false;
 
