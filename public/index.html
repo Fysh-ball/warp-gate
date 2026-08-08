@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>Warp Gate</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">WARP GATE</div>
+  <div class="bar-right">
+    <span id="status-badge" class="badge badge-idle">idle</span>
+    <span id="ttl" class="ttl" hidden></span>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- onboarding ------------------------------------------------------->
+  <section id="screen-onboarding" class="screen" hidden>
+    <h1>Before you start</h1>
+
+    <div class="note">
+      <h2>End-to-end encryption</h2>
+      <p>Your messages and files are encrypted in this browser before they are sent. The
+      server relays an encrypted handshake and never receives the keys, the file
+      contents, the messages, or even the file names.</p>
+    </div>
+
+    <div class="note">
+      <h2>The link is the key</h2>
+      <p>The secret lives after the <code>#</code> in the link, which browsers never send
+      to a server. Anyone who has the link can join the gate, so share it the way you
+      would share a password.</p>
+    </div>
+
+    <div class="note warn">
+      <h2>The two devices see each other's IP address</h2>
+      <p>Warp Gate connects your devices directly. That is what keeps the server out of
+      the data path, but it means each device learns the other's network address. Warp
+      Gate does not make you anonymous. If hiding your address matters, use a VPN or Tor
+      that you trust.</p>
+    </div>
+
+    <div class="note">
+      <h2>What this does not protect against</h2>
+      <p>A compromised device or browser on either end, screenshots, or a recipient who
+      chooses to save and forward what you sent. For something extremely sensitive,
+      encrypt it yourself before sending it as well.</p>
+    </div>
+
+    <div class="note">
+      <h2>Lawful use</h2>
+      <p>Warp Gate is intended for lawful use. You are responsible for what you send and
+      for complying with the law where you are.</p>
+    </div>
+
+    <button id="onboarding-done" class="primary">I understand, continue</button>
+  </section>
+
+  <!-- home ------------------------------------------------------------->
+  <section id="screen-home" class="screen" hidden>
+    <h1>Open a temporary encrypted bridge between two devices.</h1>
+
+    <div class="card">
+      <h2>Create a gate</h2>
+      <label for="ttl-select">Destroy the gate after</label>
+      <select id="ttl-select"></select>
+      <button id="create-btn" class="primary">Create gate</button>
+    </div>
+
+    <div class="card">
+      <h2>Join a gate</h2>
+      <p class="muted">Paste the link or type the code from the other device.</p>
+      <input id="join-input" type="text" inputmode="latin" autocomplete="off"
+             autocapitalize="characters" spellcheck="false" placeholder="WARP-XXXX-XXXX-...">
+      <button id="join-btn" class="primary">Join gate</button>
+    </div>
+
+    <p id="home-error" class="error" hidden></p>
+    <p class="muted small">
+      <button id="show-onboarding" class="link">Read the security notes again</button>
+    </p>
+  </section>
+
+  <!-- waiting ---------------------------------------------------------->
+  <section id="screen-waiting" class="screen" hidden>
+    <h1>Waiting for the other device</h1>
+    <p class="muted">Scan this with the other device's camera, or send it the link.</p>
+
+    <div class="qr-wrap">
+      <canvas id="qr" width="320" height="320" aria-label="QR code containing the gate link"></canvas>
+    </div>
+
+    <div class="code-block">
+      <div class="label">Gate code</div>
+      <div id="room-code" class="code"></div>
+    </div>
+
+    <div class="row">
+      <button id="copy-link" class="secondary">Copy link</button>
+      <button id="copy-code" class="secondary">Copy code</button>
+    </div>
+
+    <p class="muted small">The secret in this link never reaches the server. Anyone holding
+    it can join, so treat it like a password.</p>
+
+    <button id="waiting-sever" class="danger">Cancel</button>
+  </section>
+
+  <!-- connected -------------------------------------------------------->
+  <section id="screen-connected" class="screen" hidden>
+    <div class="route-line">
+      <span id="route-badge" class="badge">connecting</span>
+      <span class="muted small">Verification code <strong id="sas">-----</strong></span>
+    </div>
+    <p class="muted small">Both devices should show the same verification code. If they
+    differ, sever the gate: something is between you.</p>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="chat" role="tab">Chat</button>
+      <button class="tab" data-tab="secret" role="tab">Secret</button>
+      <button class="tab" data-tab="file" role="tab">File</button>
+    </nav>
+
+    <div id="tab-chat" class="panel">
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <form id="chat-form" class="composer">
+        <input id="chat-input" type="text" autocomplete="off" placeholder="Message">
+        <button type="submit" class="primary">Send</button>
+      </form>
+    </div>
+
+    <div id="tab-secret" class="panel" hidden>
+      <p class="muted small">For passwords, keys and one-off snippets. Sent over the same
+      encrypted channel and never stored anywhere.</p>
+      <textarea id="secret-input" rows="4" placeholder="Paste secret here"></textarea>
+      <button id="secret-send" class="primary">Send secret</button>
+      <div id="secret-list" class="secrets"></div>
+    </div>
+
+    <div id="tab-file" class="panel" hidden>
+      <p id="file-capability" class="muted small"></p>
+      <input id="file-input" type="file">
+      <button id="file-send" class="primary">Send file</button>
+      <div id="transfers" class="transfers"></div>
+    </div>
+
+    <button id="sever" class="danger">Sever warp gate</button>
+  </section>
+
+  <!-- severed ---------------------------------------------------------->
+  <section id="screen-severed" class="screen" hidden>
+    <h1>Warp Gate severed.</h1>
+    <p id="severed-reason" class="muted"></p>
+    <p class="muted small">The session has ended. Keys, messages and the room are gone.</p>
+    <button id="restart" class="primary">Open a new gate</button>
+  </section>
+
+  <!-- failure ---------------------------------------------------------->
+  <section id="screen-failed" class="screen" hidden>
+    <h1 id="failed-title">Unable to establish a direct connection</h1>
+    <p id="failed-detail" class="muted"></p>
+    <div class="note">
+      <p>Possible causes:</p>
+      <ul>
+        <li>a restrictive firewall</li>
+        <li>carrier-grade NAT on a mobile network</li>
+        <li>a corporate network that blocks peer-to-peer traffic</li>
+        <li>an incompatible network configuration</li>
+      </ul>
+      <p>Try another network on either device.</p>
+    </div>
+    <button id="failed-restart" class="primary">Start again</button>
+  </section>
+
+</main>
+
+<div id="log" class="log" aria-live="polite"></div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

@@ -1,2 +1,7 @@
-# CC artifacts
-.claude/
+# Tunnel tokens and anything else that must never leave the host.
+secrets/
+*.token
+.env
+
+node_modules/
+*.log

@@ -114,6 +114,12 @@ for (const t of timers) t.unref?.();
 
 const stunSockets = startStun();
 
+// Without this, a port clash surfaces as an unhandled 'error' event and a stack trace.
+server.on('error', (err) => {
+  process.stderr.write(`warp-gate listen failed on ${config.httpHost}:${config.httpPort}: ${err.message}\n`);
+  process.exit(1);
+});
+
 server.listen(config.httpPort, config.httpHost, () => {
   process.stdout.write(`warp-gate http ${config.httpHost}:${config.httpPort}\n`);
   if (config.stunEnabled) process.stdout.write(`warp-gate stun udp/${config.stunPort} (${stunSockets.length} socket(s))\n`);

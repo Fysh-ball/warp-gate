@@ -75,10 +75,12 @@ export function joinRoom(roomId, key, now = Date.now()) {
 
 /** Constant-time token match. Returns 'a' | 'b' | null. */
 export function slotFor(room, token) {
-  if (typeof token !== 'string') return null;
+  if (typeof token !== 'string' || token.length === 0) return null;
   for (const role of ['a', 'b']) {
     const slot = room[role];
-    if (!slot) continue;
+    // A retired slot has no token. Without this guard an empty stored token could be
+    // matched by an empty supplied one, since both would be zero length.
+    if (!slot || typeof slot.token !== 'string' || slot.token.length === 0) continue;
     const want = Buffer.from(slot.token);
     const got = Buffer.from(token);
     if (want.length === got.length && crypto.timingSafeEqual(want, got)) return role;

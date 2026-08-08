@@ -1,0 +1,77 @@
+# Warp Gate.
+#
+# There is no image build. Warp Gate has no dependencies, so a stock node image with
+# the source mounted read-only is the whole deployment. Updating is a file copy and a
+# restart, and nothing is ever built on this host.
+#
+# Deploy path on the host: <deploy path>
+#   ./app     the project (server/ and public/), mounted read-only
+#   ./secrets TUNNEL_TOKEN, only if the cloudflared service below is enabled
+
+services:
+  warp-gate:
+    image: node:22-alpine # already cached on this host; no pull, no build
+    container_name: warp-gate
+    restart: unless-stopped
+    working_dir: /app
+    command: node server/index.js
+    environment:
+      - WG_HTTP_PORT=3095
+      - WG_HTTP_HOST=0.0.0.0
+      - WG_STUN_PORT=3479
+      # Advertised to browsers. Leave unset until a publicly reachable UDP endpoint
+      # exists: with no STUN, only same-network pairs can connect. Never point this at
+      # a public STUN server, which would disclose every user's IP to a third party.
+      - WG_STUN_URL=${WG_STUN_URL:-}
+      # Only enable once traffic genuinely arrives through cloudflared, otherwise a
+      # client could forge its own rate-limit identity via a header.
+      - WG_TRUST_PROXY=${WG_TRUST_PROXY:-0}
+    volumes:
+      - ./app:/app:ro
+    ports:
+      # HTTP stays on loopback: cloudflared runs with host networking and reaches it
+      # at 127.0.0.1:3095. Nothing else should be able to.
+      - "127.0.0.1:3095:3095"
+      # STUN must be reachable by both browsers directly. Cloudflare cannot carry UDP,
+      # so this port has to be reached without it.
+      - "3479:3479/udp"
+    mem_limit: 128m
+    memswap_limit: 128m
+    oom_score_adj: 100
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3095/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"
+
+# Enable this once a tunnel exists and its token is in ./secrets/TUNNEL_TOKEN.
+# Matches a per-app cloudflared pattern.
+#
+#  warp-gate-cloudflared:
+#    image: cloudflare/cloudflared:latest
+#    container_name: warp-gate-cloudflared
+#    restart: unless-stopped
+#    command: tunnel --no-autoupdate run
+#    environment:
+#      - TUNNEL_TOKEN_FILE=/tmp/TUNNEL_TOKEN
+#    volumes:
+#      - ./secrets/TUNNEL_TOKEN:/tmp/TUNNEL_TOKEN:ro
+#    network_mode: host
+#    mem_limit: 128m
+#    memswap_limit: 128m
+#    oom_score_adj: 100
+#    depends_on:
+#      - warp-gate

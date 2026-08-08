@@ -1,0 +1,181 @@
+// WebRTC peer connection and data channel.
+//
+// The signalling channel carries only what ICE needs, and everything it carries is
+// already sealed by signal.js. This module never touches plaintext application data:
+// it hands raw frames up to the caller, which decrypts them.
+
+const CHUNK_PAUSE_BYTES = 1024 * 1024; // stop feeding the channel above this
+const CHUNK_RESUME_BYTES = 256 * 1024; // and resume when it drains to here
+
+export class Peer extends EventTarget {
+  constructor({ role, iceServers, signal }) {
+    super();
+    this.role = role;
+    this.isCreator = role === 'a';
+    this.signal = signal;
+    this.pc = new RTCPeerConnection({
+      iceServers,
+      // No relay in v1. Left as configuration so adding TURN is a config change.
+      iceTransportPolicy: 'all',
+      bundlePolicy: 'max-bundle',
+    });
+    this.channel = null;
+    this.pendingCandidates = [];
+    this.remoteReady = false;
+    this.makingOffer = false;
+
+    this.pc.addEventListener('icecandidate', (event) => {
+      if (event.candidate) {
+        this.signal.send({ t: 'ice', candidate: event.candidate.toJSON() })
+          .catch((err) => this.emit('warning', `could not send an ICE candidate: ${err.message}`));
+      }
+    });
+
+    this.pc.addEventListener('iceconnectionstatechange', () => {
+      this.emit('ice-state', this.pc.iceConnectionState);
+    });
+
+    this.pc.addEventListener('connectionstatechange', () => {
+      const state = this.pc.connectionState;
+      this.emit('connection-state', state);
+      if (state === 'failed') {
+        this.emit('failed', 'ICE could not establish a path between the two devices');
+      }
+    });
+
+    if (this.isCreator) {
+      // The creator owns the channel. Ordered and reliable, so the frame counter can
+      // be strictly increasing without a reordering window.
+      this.attachChannel(this.pc.createDataChannel('wg', { ordered: true }));
+    } else {
+      this.pc.addEventListener('datachannel', (event) => this.attachChannel(event.channel));
+    }
+  }
+
+  emit(name, detail) {
+    this.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+
+  attachChannel(channel) {
+    this.channel = channel;
+    channel.binaryType = 'arraybuffer';
+    channel.bufferedAmountLowThreshold = CHUNK_RESUME_BYTES;
+    channel.addEventListener('open', () => this.emit('channel-open', null));
+    channel.addEventListener('close', () => this.emit('channel-close', null));
+    channel.addEventListener('error', (event) => {
+      this.emit('warning', `data channel error: ${event.error?.message ?? 'unknown'}`);
+    });
+    channel.addEventListener('message', (event) => this.emit('frame', event.data));
+  }
+
+  async start() {
+    if (!this.isCreator) return;
+    await this.makeOffer(false);
+  }
+
+  async makeOffer(iceRestart) {
+    try {
+      this.makingOffer = true;
+      const offer = await this.pc.createOffer({ iceRestart });
+      await this.pc.setLocalDescription(offer);
+      await this.signal.send({ t: 'offer', sdp: this.pc.localDescription.sdp });
+    } catch (err) {
+      this.emit('failed', `could not create an offer: ${err.message}`);
+    } finally {
+      this.makingOffer = false;
+    }
+  }
+
+  /** Handle a decrypted signalling message. */
+  async handleMessage(message) {
+    try {
+      if (message.t === 'offer') {
+        await this.pc.setRemoteDescription({ type: 'offer', sdp: message.sdp });
+        await this.drainCandidates();
+        const answer = await this.pc.createAnswer();
+        await this.pc.setLocalDescription(answer);
+        await this.signal.send({ t: 'answer', sdp: this.pc.localDescription.sdp });
+        return;
+      }
+      if (message.t === 'answer') {
+        if (this.pc.signalingState === 'stable') return; // a duplicate answer is harmless
+        await this.pc.setRemoteDescription({ type: 'answer', sdp: message.sdp });
+        await this.drainCandidates();
+        return;
+      }
+      if (message.t === 'ice') {
+        if (!this.pc.remoteDescription) {
+          // Candidates can arrive before the description they belong to.
+          this.pendingCandidates.push(message.candidate);
+          return;
+        }
+        await this.pc.addIceCandidate(message.candidate);
+      }
+    } catch (err) {
+      this.emit('warning', `signalling message (${message.t}) failed: ${err.message}`);
+    }
+  }
+
+  async drainCandidates() {
+    const queued = this.pendingCandidates;
+    this.pendingCandidates = [];
+    for (const candidate of queued) {
+      try {
+        await this.pc.addIceCandidate(candidate);
+      } catch (err) {
+        this.emit('warning', `queued ICE candidate rejected: ${err.message}`);
+      }
+    }
+  }
+
+  /** Send a frame, honouring backpressure so a large file cannot blow the buffer. */
+  async send(frame) {
+    const channel = this.channel;
+    if (!channel || channel.readyState !== 'open') throw new Error('data channel is not open');
+    if (channel.bufferedAmount > CHUNK_PAUSE_BYTES) {
+      await new Promise((resolve, reject) => {
+        const onLow = () => { cleanup(); resolve(); };
+        const onClose = () => { cleanup(); reject(new Error('data channel closed while waiting to drain')); };
+        const cleanup = () => {
+          channel.removeEventListener('bufferedamountlow', onLow);
+          channel.removeEventListener('close', onClose);
+        };
+        channel.addEventListener('bufferedamountlow', onLow);
+        channel.addEventListener('close', onClose);
+      });
+    }
+    channel.send(frame);
+  }
+
+  /**
+   * Report how the connection is actually routed, so the UI can say DIRECT rather
+   * than assume it. Returns 'host' | 'srflx' | 'prflx' | 'relay' | null.
+   */
+  async routeType() {
+    try {
+      const stats = await this.pc.getStats();
+      let pair = null;
+      for (const report of stats.values()) {
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated !== false) {
+          if (!pair || (report.bytesSent ?? 0) >= (pair.bytesSent ?? 0)) pair = report;
+        }
+      }
+      if (!pair) return null;
+      const local = [...stats.values()].find((r) => r.id === pair.localCandidateId);
+      const remote = [...stats.values()].find((r) => r.id === pair.remoteCandidateId);
+      if (!local || !remote) return null;
+      if (local.candidateType === 'relay' || remote.candidateType === 'relay') return 'relay';
+      return local.candidateType ?? null;
+    } catch (err) {
+      this.emit('warning', `could not read connection stats: ${err.message}`);
+      return null;
+    }
+  }
+
+  close() {
+    try { this.channel?.close(); } catch (err) { void err; }
+    try { this.pc.close(); } catch (err) { void err; }
+    this.channel = null;
+    this.pendingCandidates = [];
+  }
+}

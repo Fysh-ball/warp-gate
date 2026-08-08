@@ -12,7 +12,19 @@ Date: 2026-08-08
 | ICE posture | Self hosted STUN only | Spec faithful P2P only for v1. `config.js` holds the ICE server list as data so coturn TURN is a config change later, not a refactor. |
 | Hostname | `wg.fysh.site` | Existing Cloudflare zone. Note the `wg` prefix reads as WireGuard to anyone who knows this deployment; accepted as the user's preference. |
 
-**Prerequisite this creates:** self hosted STUN needs a publicly reachable UDP port (3478) forwarded to the coturn container. Cloudflare Tunnel does not carry UDP, so STUN cannot go through it. If the home connection is behind CGNAT and cannot forward UDP, self hosted STUN is impossible and the choice becomes public STUN (a privacy hole, finding 1.2) or TURN. This must be verified in Phase 0, not assumed.
+**Prerequisite this creates:** self hosted STUN needs a publicly reachable UDP port forwarded to the host. Cloudflare Tunnel does not carry UDP, so STUN cannot go through it.
+
+## What implementation changed (2026-08-08, after building it)
+
+Four things were learned by measuring rather than reasoning, and each changed the design.
+
+**coturn was dropped in favour of an in-process STUN responder.** UDP 3478 turned out to be unavailable: another service publishes it, but nothing listens behind that publish (verified by entering the container's network namespace, where the only UDP socket is Docker's embedded DNS). Rather than disturb another service, Warp Gate took 3479. At that point adding a whole coturn container for what is a stateless, non-cryptographic, fully specified request and response looked like exactly the overengineering section 21 forbids. `server/stun.js` is roughly 50 lines of RFC 5389 Binding handling, which keeps the deployment to the single process the specification asks for. It is verified against an independently written client, and that client is proved able to fail before its passes are trusted.
+
+**The QR encoder was written rather than vendored.** `zbarimg` and `qrencode` are both present locally, which turns a hand written encoder from an act of faith into something checkable: every generated code is rendered to PNG and decoded by an unrelated implementation, at all six supported versions and at exactly their stated capacity. That evidence was not available for an unreviewed vendored blob, so writing it was the lower risk option, not the higher one.
+
+**Self hosted STUN cannot be reached through Cloudflare, which makes public operation a real decision rather than a detail.** Cloudflare Tunnel is TCP only. Making STUN publicly reachable therefore needs a DNS-only record pointing at the home IP plus a UDP port forward, which publishes the home address permanently and to everyone. That is a broader exposure than the peer-to-peer IP disclosure in finding 1.3, and it is the user's call. The three options are set out in `deploy/NOTES.md`. Default remains no advertised STUN, which is same-network operation only.
+
+**Docker-published ports on this host are unreachable over its overlay network, and this is pre-existing.** A packet capture shows a request arriving on the overlay interface, being DNAT'd, and then leaving via the host's VPN interface re-sourced to that VPN's address, so it never reaches the container and no reply exists. Published TCP ports on other containers fail the same way, so this is host routing behaviour affecting every container, not anything to do with Warp Gate. It is reported, not changed: altering that routing affects unrelated services and the VPN posture.
 
 ---
 

@@ -53,7 +53,7 @@ export const config = {
     stunPerSecondPerIp: int(env.WG_STUN_PER_SEC, 20),
   },
 
-  sweepIntervalMs: 10_000,
+  sweepIntervalMs: int(env.WG_SWEEP_MS, 10_000),
   // Must stay well under Cloudflare's verified 100s idle timeout on Free/Pro.
   heartbeatMs: int(env.WG_HEARTBEAT_MS, 25_000),
 
