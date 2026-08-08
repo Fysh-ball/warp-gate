@@ -227,6 +227,34 @@ try {
     /does not exist|expired/.test(unknownError), unknownError);
   check('tab C raised no uncaught page errors', c.pageErrors.length === 0, c.pageErrors.join(' | '));
 
+  // ------------------------------------------------------------ abrupt departure
+  // A tab going away without pressing sever. The peer must be told and the room must
+  // not sit around occupied until its TTL.
+  const d = await browser.newTab(ORIGIN);
+  await d.waitFor("!document.getElementById('screen-home').hidden", { label: 'home on tab D' });
+  await d.eval("document.getElementById('create-btn').click(); return true;");
+  await d.waitFor("!document.getElementById('screen-waiting').hidden", { label: 'tab D waiting' });
+  const link2 = await d.eval('return location.href;');
+
+  const e = await browser.newTab(link2);
+  await d.waitFor("!document.getElementById('screen-connected').hidden", { timeout: 25000, label: 'tab D connected' });
+  await e.waitFor("!document.getElementById('screen-connected').hidden", { timeout: 25000, label: 'tab E connected' });
+  check('a second gate connects independently of the first', true);
+
+  const roomsBeforeLeave = await request(PORT, 'GET', '/api/health');
+  check('the second gate is the only room on the server', roomsBeforeLeave.json?.rooms === 1, roomsBeforeLeave.text);
+
+  // Navigating away fires pagehide, which is the closest a page gets to "tab closed".
+  await e.send('Page.navigate', { url: 'about:blank' });
+
+  await d.waitFor("!document.getElementById('screen-severed').hidden || document.getElementById('log').textContent.includes('disconnected')",
+    { timeout: 20000, label: 'tab D notices the peer left' });
+  check('the remaining device is told when the other simply goes away', true);
+
+  const roomsAfterLeave = await request(PORT, 'GET', '/api/health');
+  check('an abandoned gate is released rather than held until its TTL',
+    roomsAfterLeave.json?.rooms === 0, roomsAfterLeave.text);
+
   severTested = true;
 } finally {
   await browser.close();
