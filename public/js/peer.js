@@ -7,6 +7,56 @@
 const CHUNK_PAUSE_BYTES = 1024 * 1024; // stop feeding the channel above this
 const CHUNK_RESUME_BYTES = 256 * 1024; // and resume when it drains to here
 
+/**
+ * Can this browser do peer-to-peer at all?
+ *
+ * Deliberately uses no ICE servers, so it contacts nobody: it only asks whether the
+ * browser will produce local candidates. A browser that finishes gathering with zero
+ * candidates has WebRTC disabled by policy or an extension, and no amount of network
+ * troubleshooting will help. Brave's "WebRTC IP handling policy: Disable non-proxied
+ * UDP" does exactly this, and is the most common cause.
+ *
+ * Returns { capable, candidateCount, hint }.
+ */
+export async function checkWebRtcCapability(timeoutMs = 4000) {
+  let pc;
+  try {
+    pc = new RTCPeerConnection({ iceServers: [] });
+  } catch (err) {
+    return { capable: false, candidateCount: 0, hint: `WebRTC is unavailable in this browser: ${err.message}` };
+  }
+  try {
+    let count = 0;
+    pc.createDataChannel('probe');
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise((resolve) => {
+      const done = setTimeout(resolve, timeoutMs);
+      pc.addEventListener('icecandidate', (event) => {
+        if (!event.candidate) { clearTimeout(done); resolve(); return; }
+        count += 1;
+      });
+    });
+    if (count > 0) return { capable: true, candidateCount: count, hint: null };
+
+    const isBrave = typeof navigator.brave !== 'undefined';
+    return {
+      capable: false,
+      candidateCount: 0,
+      hint: isBrave
+        ? 'Brave is blocking WebRTC, so this device cannot make a direct connection. Open '
+          + 'brave://settings/privacy and set "WebRTC IP handling policy" to "Default public '
+          + 'interface only", then reload this page.'
+        : 'This browser produced no network addresses, so it cannot make a direct connection. '
+          + 'A privacy extension or a WebRTC-blocking setting is the usual cause. Check your '
+          + 'browser\'s WebRTC or IP-handling settings, then reload this page.',
+    };
+  } catch (err) {
+    return { capable: false, candidateCount: 0, hint: `Could not test WebRTC: ${err.message}` };
+  } finally {
+    try { pc.close(); } catch (err) { void err; }
+  }
+}
+
 export class Peer extends EventTarget {
   constructor({ role, iceServers, signal }) {
     super();
@@ -258,8 +308,15 @@ export class Peer extends EventTarget {
         + 'Connections work on the same network and nowhere else.';
     }
     if (d.local.length === 0) {
-      return 'This browser produced no network addresses at all, which usually means peer-to-peer '
-        + 'traffic is blocked outright, or an extension or policy is disabling WebRTC.';
+      // Gathering that finishes having produced nothing is browser policy, not the
+      // network: even an offline machine yields a host candidate.
+      const isBrave = typeof navigator.brave !== 'undefined';
+      return `This browser produced no network addresses at all, so it cannot make a direct `
+        + `connection. This is a browser setting rather than a network problem. `
+        + (isBrave
+          ? 'Open brave://settings/privacy and set "WebRTC IP handling policy" to "Default '
+            + 'public interface only", then reload this page.'
+          : 'A privacy extension or a WebRTC-blocking setting is the usual cause.');
     }
     if (!d.gotReflexive) {
       return 'This device could not discover its public address: the network appears to be blocking '

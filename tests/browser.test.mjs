@@ -277,6 +277,44 @@ try {
     { timeout: 20000, label: 'message crosses the renegotiated channel' });
   check('the channel works again after the reload, with fresh keys', true);
 
+  // ------------------------------------------------------------ blocked WebRTC
+  // A browser configured to block WebRTC finishes gathering with zero candidates and
+  // can never connect. This was observed for real in Brave with "WebRTC IP handling
+  // policy: Disable non-proxied UDP". Chromium's matching command-line flag does not
+  // reproduce it in this build, so the condition is injected directly: what needs
+  // verifying is that Warp Gate reacts to it, not that Chromium implements it.
+  check('the capability banner stays hidden on a browser that can connect',
+    (await a.eval("return document.getElementById('webrtc-warning').hidden;")) === true);
+
+  const z = await browser.newTab('about:blank');
+  await z.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `
+      class BlockedPC {
+        constructor() { this.iceGatheringState = 'complete'; }
+        createDataChannel() { return {}; }
+        async createOffer() { return { type: 'offer', sdp: '' }; }
+        async setLocalDescription() {}
+        addEventListener(name, cb) {
+          // Signal end-of-gathering having produced nothing at all.
+          if (name === 'icecandidate') setTimeout(() => cb({ candidate: null }), 10);
+        }
+        removeEventListener() {}
+        close() {}
+      }
+      window.RTCPeerConnection = BlockedPC;
+    `,
+  });
+  await z.send('Page.navigate', { url: ORIGIN });
+  await z.waitFor("[...document.querySelectorAll('section.screen')].some(s => !s.hidden)",
+    { timeout: 30000, label: 'app loaded with WebRTC stubbed out' });
+  await z.waitFor("document.getElementById('webrtc-warning').hidden === false",
+    { timeout: 20000, label: 'capability banner shown when nothing can be gathered' });
+  check('a browser that gathers no addresses is detected before a gate is created', true);
+
+  const hint = await z.eval("return document.getElementById('webrtc-warning-text').textContent;");
+  check('the warning points at a browser setting rather than blaming the network',
+    /WebRTC|IP handling|extension/i.test(hint) && !/firewall|carrier/i.test(hint), hint.slice(0, 160));
+
   // ------------------------------------------------------------ page errors
   check('tab A raised no uncaught page errors', a.pageErrors.length === 0, a.pageErrors.join(' | '));
   check('tab B raised no uncaught page errors', b.pageErrors.length === 0, b.pageErrors.join(' | '));

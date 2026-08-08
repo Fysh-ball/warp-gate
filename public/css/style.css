@@ -336,6 +336,22 @@ main.legal strong { color: var(--text); }
   font-size: 13px;
 }
 
+/* ---------------------------------------------- capability banner */
+
+.banner {
+  max-width: 640px;
+  margin: 14px auto 0;
+  padding: 12px 14px;
+  background: rgba(255, 200, 87, 0.1);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.banner strong { display: block; color: var(--warn); margin-bottom: 4px; }
+.banner code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
 /* ---------------------------------------------- header flourish */
 
 .bar { position: sticky; }

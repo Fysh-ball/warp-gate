@@ -6,6 +6,7 @@
 import { generateSecret, formatSecret, parseSecret, deriveRoomId } from './crypto.js';
 import { fetchConfig, checkRoom } from './signal.js';
 import { Session, STATE } from './session.js';
+import { checkWebRtcCapability } from './peer.js';
 import { describeLimit, canAccept, formatBytes, saveBlob } from './transfer.js';
 import { encodeQr, drawQr } from './qr.js';
 
@@ -581,6 +582,16 @@ async function boot() {
   });
   $('show-onboarding').addEventListener('click', () => show('onboarding'));
   setupSupport();
+
+  // Ask up front whether this browser can do peer-to-peer at all, rather than letting
+  // the user set up a gate and wait 25 seconds to find out it never could. The probe
+  // uses no ICE servers, so it contacts nobody.
+  checkWebRtcCapability().then((result) => {
+    if (result.capable) return;
+    $('webrtc-warning-text').textContent = result.hint;
+    $('webrtc-warning').hidden = false;
+    log(result.hint, 'bad');
+  }).catch((err) => log(`could not check WebRTC support: ${err.message}`, 'warn'));
   $('create-btn').addEventListener('click', startCreate);
   $('join-btn').addEventListener('click', () => startJoin($('join-input').value));
   $('join-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startJoin($('join-input').value); });
