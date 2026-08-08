@@ -58,11 +58,18 @@ Sections 1 and 12 forbid a relay. The stated reason is that the server must not 
 
 Change: keep the file relay ban absolutely (server never sees plaintext, never stores bytes). Do not architect TURN out. Ship v1 P2P only as the spec asks, but build the ICE configuration as data so a self hosted coturn can be added later behind an explicit, visible `RELAYED (still encrypted)` badge. The UI must already distinguish direct from relayed, which section 11 requires anyway.
 
-### 1.2 Using a public STUN server contradicts section 15.
+### 1.2 A STUN server is a third party disclosure, unless it is a party already in the path.
 
-P2P still needs STUN to learn the public reflexive address. Pointing at `stun.l.google.com` tells Google the client's IP and that the client uses this app, which is precisely the third party disclosure section 15 forbids. This is not optional plumbing: it is a privacy hole in the default path.
+P2P still needs STUN to learn the public reflexive address. Pointing at `stun.l.google.com` tells Google the client's IP and that the client uses this app, which is precisely the third party disclosure section 15 forbids.
 
-Change: run coturn in **STUN only mode** on the deployment host. It is roughly 10 MB resident and one UDP port. Self hosted STUN is a prerequisite for the privacy claim, not an enhancement.
+The original conclusion here was "self host it, always". That was too absolute, and the corrected reasoning matters:
+
+- Against an **unrelated** third party (Google, Twilio), the objection stands. A new party learns an address it had no other reason to see.
+- Against a party **already in the path**, it does not. Cloudflare terminates TLS for the deployment hostname, so it already observes both peers' addresses on every signalling connection. Using `stun.cloudflare.com` gives it nothing it did not already have.
+
+Self hosting looked like the private option but is actually the more exposing one, because a self hosted STUN server must be reachable over UDP at a public address. Cloudflare Tunnel carries only TCP, so that means a DNS record publishing the home IP permanently plus a router port forward. That is a strictly larger disclosure than reusing a party already in the path.
+
+Change: advertise `stun:stun.cloudflare.com:3478`. No DNS record, no port forward, no home IP exposure, no new party. Verified: with no STUN the browser gathers `host` candidates only, and with it a `srflx` candidate appears, which is what makes a cross network connection possible. The in-process responder in `server/stun.js` stays in the tree behind `WG_STUN_ENABLED`, for a deployment that does have a public UDP endpoint.
 
 ### 1.3 WebRTC P2P inherently reveals each peer's IP address to the other peer. This contradicts the stated primary use case.
 
@@ -582,7 +589,7 @@ sequenceDiagram
 | 1 | Encrypt signaling payloads under a key derived from `S` | SDP and ICE candidates are IP addresses; the spec leaked them to the server and Cloudflare (1.4) |
 | 2 | Drop the optional human password. Ship a 128 bit fragment secret plus an optional 5 digit SAS | A single-hashed spoken password is offline attackable by the exact adversary section 19 names; no vetted browser PAKE is obtainable under the no-npm rule (1.5) |
 | 3 | Web Crypto (ECDH P-256, HKDF, AES-256-GCM) instead of libsodium XChaCha20 | Zero dependencies under the npm blacklist, plus non extractable keys make section 17's "destroy key material" actually true (1.11, 3.1) |
-| 4 | Self host STUN. Never use a public STUN server | A public STUN server is a third party IP disclosure on the default path, contradicting section 15 (1.2) |
+| 4 | Use STUN run by a party already in the TLS path, not an unrelated one and not a self hosted one | An unrelated STUN operator learns an address it had no reason to see. Self hosting sounds private but needs the home IP published in DNS plus a port forward, a larger disclosure than reusing Cloudflare, which already sees both peers (1.2) |
 | 5 | Keep TURN out of v1 but not out of the architecture. ICE config is data | Banning TURN buys no confidentiality once payloads are E2E encrypted, and costs 8 to 20 percent of connections on exactly the mobile networks that are the primary use case (1.1) |
 | 6 | Two TTLs: 5 minutes unclaimed, 10/30/60 minutes paired | A short room TTL breaks the WiFi to LTE ICE restart the spec asks us to test (1.6) |
 | 7 | Exactly two peers in v1 | The intro's "two or more" contradicts the rest of the document (1.7) |

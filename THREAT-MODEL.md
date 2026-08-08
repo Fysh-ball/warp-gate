@@ -43,7 +43,14 @@ These are real limits, not hypotheticals.
   want kept apart. It is stated in the onboarding for that reason.
 - **Cloudflare metadata**, when served through a tunnel: client IPs, timing, room ids,
   request sizes and session duration. Cloudflare terminates TLS in that topology. The
-  payloads it carries are ciphertext, but the metadata is real.
+  payloads it carries are ciphertext, but the metadata is real. The same applies to the
+  STUN server, which is deliberately Cloudflare's: it learns each device's public
+  address, which Cloudflare already observes from the signalling connection itself. The
+  point of choosing it is that it adds no party that was not already there.
+- **Your real address, even behind a proxy.** WebRTC discovers the network address of
+  the interface it actually sends from. Loading the page through a proxy does not
+  change that, which is why the onboarding says Warp Gate is confidential, not
+  anonymous.
 - **Traffic analysis.** Nothing is padded, delayed or covered. Message and file sizes and
   timings are observable to anyone watching the network.
 - **Browser memory hygiene.** The operating system may page a tab's memory to disk. No

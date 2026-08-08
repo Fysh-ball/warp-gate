@@ -19,10 +19,17 @@ services:
       - WG_HTTP_PORT=3095
       - WG_HTTP_HOST=0.0.0.0
       - WG_STUN_PORT=3479
-      # Advertised to browsers. Leave unset until a publicly reachable UDP endpoint
-      # exists: with no STUN, only same-network pairs can connect. Never point this at
-      # a public STUN server, which would disclose every user's IP to a third party.
-      - WG_STUN_URL=${WG_STUN_URL:-}
+      # The built-in STUN responder is off: it is only useful if a publicly reachable
+      # UDP port is forwarded to this host, which would require publishing the home IP
+      # in DNS. Cloudflare's STUN is used instead (see WG_STUN_URL). Set to 1 and
+      # re-add the 3479/udp publish below to go back to self-hosting.
+      - WG_STUN_ENABLED=${WG_STUN_ENABLED:-0}
+      # Cloudflare already terminates TLS for this hostname and therefore already sees
+      # both peers' addresses from the signalling connections. Using its STUN server
+      # adds no new party to the threat model, needs no port forward, and keeps the
+      # home IP out of public DNS. Port 53/udp is an documented alternate that gets
+      # through networks which block 3478.
+      - WG_STUN_URL=${WG_STUN_URL:-stun:stun.cloudflare.com:3478}
       # Traffic arrives through cloudflared (an existing connector tunnel, host networking) as of
       # 2026-08-08, so CF-Connecting-IP must be trusted: without it every request looks
       # like 127.0.0.1 and all users share a single rate-limit bucket. Safe here only
@@ -36,9 +43,9 @@ services:
       # HTTP stays on loopback: cloudflared runs with host networking and reaches it
       # at 127.0.0.1:3095. Nothing else should be able to.
       - "127.0.0.1:3095:3095"
-      # STUN must be reachable by both browsers directly. Cloudflare cannot carry UDP,
-      # so this port has to be reached without it.
-      - "3479:3479/udp"
+      # No UDP publish: the built-in STUN responder is disabled in favour of
+      # Cloudflare's. Re-add "3479:3479/udp" alongside WG_STUN_ENABLED=1 to self-host,
+      # which additionally needs a router forward and a DNS record exposing the home IP.
     mem_limit: 128m
     memswap_limit: 128m
     oom_score_adj: 100
