@@ -1,0 +1,1662 @@
+:root {
+  --bg: #0b0d10;
+  --panel: #14181d;
+  --panel-2: #1b2027;
+  --line: #2a323c;
+  --text: #e6ebf0;
+  --muted: #8b98a6;
+  --accent: #e8a33d;
+  --accent-dim: #6d4a12;
+  /* Teal is no longer the brand colour, it means "connected". */
+  --live: #4bd0c0;
+  --danger: #ff6b5e;
+  --warn: #ffc857;
+  --ok: #57d977;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-pill: 999px;
+
+  /* ---- one type system, named once ------------------------------------------------
+     Prose is the sans stack. Anything that is DATA rather than prose is the mono stack
+     with tabular figures: gate codes, byte counts, timers, verification codes, ports,
+     and the uppercase eyebrows that open a section. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Comfortable reading measure. Prose wider than this is harder to read on a big
+     screen, which is why widening a page is never just raising its max-width. */
+  --measure: 68ch;
+
+  /* ---- semantic lines and washes --------------------------------------------------
+     These used to be six copies of #5a4a20 and friends scattered through the file, so
+     the light palette could not restate them and a warn border stayed dark-on-white.
+     Every one of them is a token now, and every token has a light value below. */
+  --line-warn: #5a4a20;
+  --line-live: #1f5b54;
+  --line-danger: #6b2b26;
+  --line-ok: #245c33;
+  --warn-wash: rgba(255, 200, 87, 0.10);
+  --warn-wash-strong: rgba(255, 200, 87, 0.16);
+  --accent-wash: rgba(232, 163, 61, 0.07);
+  /* Text printed ON the accent. Amber is light, so the dark theme puts near-black on
+     it; the light theme's accent is a dark amber and needs white. Without this token
+     a.kofi shipped #231703 on #8a5410 in light mode, which is 2.6:1. */
+  --on-accent: #231703;
+  /* Small accent-coloured text (10-13px labels). The light accent is 3.99:1 on a card,
+     which is fine for a 28px word and short of AA for a 10.5px label. */
+  --accent-text: var(--accent);
+  /* Always paper, in both themes: a QR code is only scannable as dark-on-white. */
+  --qr-paper: #ffffff;
+  /* Full-bleed scrim over the page (drop veil, status log). */
+  --scrim: rgba(11, 13, 16, 0.96);
+  --scrim-veil: rgba(11, 13, 16, 0.86);
+  --shadow-lift: 0 24px 60px -40px rgba(0, 0, 0, 0.55);
+
+  /* The height the status log may grow to. It is the bottom row of the page's flex
+     column, so this bounds the row rather than reserving space under an overlay. */
+  --log-max: 26vh;
+}
+
+* { box-sizing: border-box; }
+
+/* The UA stylesheet gives [hidden] display:none, but any author rule setting an
+   explicit display silently beats it. That left the donation QR box showing as a blank
+   white rectangle, and would have done the same to the pairing QR on the join screen.
+   Anything hidden must actually be hidden. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.55 var(--font-sans);
+  -webkit-text-size-adjust: 100%;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.bar-right { display: flex; align-items: center; gap: 10px; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge-idle { color: var(--muted); }
+.badge-work { color: var(--warn); border-color: var(--line-warn); }
+.badge-direct { color: var(--live); border-color: var(--line-live); }
+.badge-relay { color: var(--warn); border-color: var(--line-warn); }
+.badge-bad { color: var(--danger); border-color: var(--line-danger); }
+
+.ttl { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+
+main { max-width: 640px; margin: 0 auto; padding: 20px 16px 4px; }
+
+h1 { font-size: 20px; line-height: 1.35; margin: 8px 0 18px; font-weight: 650; }
+h2 { font-size: 15px; margin: 0 0 6px; font-weight: 650; }
+
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+.card, .note {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.note p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+.note ul { margin: 6px 0 0 18px; color: var(--muted); font-size: 14px; }
+.note.warn { border-color: var(--line-warn); }
+.note.warn h2 { color: var(--warn); }
+
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+
+/* Gives a control a real <label for> that screen readers announce without adding
+   anything to the layout. A placeholder is not an accessible name: it disappears the
+   moment the field is typed into. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+input[type=text], input[type=password], input[type=file], select, textarea {
+  width: 100%;
+  padding: 11px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  margin-bottom: 10px;
+}
+textarea { resize: vertical; font-family: var(--font-mono); font-size: 14px; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+
+button {
+  font: inherit;
+  font-weight: 600;
+  border-radius: var(--radius);
+  padding: 11px 16px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  width: 100%;
+}
+button.primary { background: var(--accent); color: var(--on-accent); }
+button.secondary { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+button.danger { background: transparent; color: var(--danger); border-color: var(--line-danger); margin-top: 20px; }
+button.link { background: none; border: none; color: var(--accent); padding: 0; width: auto; text-decoration: underline; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.row { display: flex; gap: 10px; margin-bottom: 10px; }
+.row button { flex: 1; }
+
+.qr-wrap {
+  display: flex;
+  justify-content: center;
+  background: var(--qr-paper);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 16px;
+}
+#qr { width: 100%; max-width: 300px; height: auto; image-rendering: pixelated; }
+
+.code-block {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.code-block .label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.code {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  word-break: break-all;
+  color: var(--accent);
+}
+
+.route-line { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
+#sas { font-family: var(--font-mono); color: var(--text); letter-spacing: 0.15em; }
+
+/* Who is in the gate. One pill per participant, this device first. It lives inside
+   .route-line rather than as a grid child of #screen-connected, because that grid places
+   every one of its children by hand and an unplaced item would land in somebody's cell.
+   [hidden] is display:none !important globally, so an empty roster really disappears. */
+.roster { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.roster .who-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* The name is set in the page font. The pill's monospace and letter-spacing exist for
+   codes, and a two-word name typeset in them reads as a serial number rather than as
+   something you would say out loud. The verification code keeps them, because it is one. */
+.roster .who-name {
+  font-family: var(--font-sans);
+  letter-spacing: normal;
+}
+.roster .who-sas { font-variant-numeric: tabular-nums; }
+.roster .who-chip.self { border-color: var(--accent); color: var(--accent); }
+.roster .who-chip.live { border-color: var(--line-ok); color: var(--text); }
+/* A peer that is not connected right now must not read the same as one that is. */
+.roster .who-chip.away { opacity: 0.6; font-style: italic; }
+
+/* With more than two people in the gate, a message says which of them it came from. */
+.msg .who.from-peer { color: var(--muted); }
+
+.tabs { display: flex; gap: 6px; margin: 16px 0 12px; }
+.tab {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 9px 8px;
+  font-size: 14px;
+}
+.tab.active { color: var(--text); border-color: var(--accent-dim); background: var(--panel-2); }
+
+.messages {
+  min-height: 180px;
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.msg { margin-bottom: 9px; font-size: 15px; word-wrap: break-word; overflow-wrap: anywhere; }
+.msg .who { font-size: 12px; color: var(--muted); display: block; }
+.msg.me .who { color: var(--accent); }
+
+/* ---------------------------------------------- one composer for everything */
+
+.composer-box {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+.composer-box textarea {
+  margin-bottom: 8px;
+  min-height: 76px;
+  max-height: 220px;
+  /* Without this, one unbreakable token locks up the tab: Chromium laying out a
+     64 KiB word blocked the main thread for 8.5 seconds, and 200 KiB for 29. The
+     same bytes with newlines cost 377ms. A pasted key, JWT or password is exactly
+     that shape, so this is the composer's most common input, not an edge case.
+     .msg-text already wraps this way; the composer was simply missed. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 15px;
+  background: var(--panel-2);
+  resize: none;
+  overflow-y: auto;
+}
+.composer-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.composer-actions button { width: auto; flex: 0 0 auto; padding: 9px 14px; font-size: 14px; }
+.composer-actions .primary { margin-left: auto; }
+#compose-hint { flex: 1 1 100%; order: 9; margin-top: 2px; }
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toggle input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
+
+.drop-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim-veil);
+  border: 3px dashed var(--accent);
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------- message stream */
+
+.msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.is-file, .msg.is-secret {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+.file-title { font-size: 14px; margin-bottom: 4px; overflow-wrap: anywhere; }
+.msg-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 6px;
+  margin: 6px 0;
+}
+.msg.is-file button, .msg.is-secret button { width: auto; padding: 6px 12px; font-size: 13px; }
+.chip {
+  display: inline-block;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+  border: 1px solid var(--line-warn);
+  border-radius: var(--radius-pill);
+  padding: 1px 7px;
+  margin-bottom: 5px;
+}
+
+.secrets, .transfers { margin-top: 12px; }
+.secret-item, .transfer-item {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.secret-value {
+  font-family: var(--font-mono);
+  word-break: break-all;
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 6px 0;
+  white-space: pre-wrap;
+}
+/* While masked the plaintext is not in the DOM at all: a fixed placeholder stands in
+   for it. So this styles the placeholder, and deliberately does not blur real text.
+   A blur still shows length and word shape on screen and in any screenshot; an even
+   run of dots shows neither. */
+.secret-value.masked {
+  color: var(--muted);
+  letter-spacing: 0.22em;
+  user-select: none;
+}
+.secret-actions { display: flex; gap: 8px; }
+.secret-actions button { width: auto; flex: 1; padding: 7px 10px; font-size: 13px; }
+
+progress { width: 100%; height: 6px; margin-top: 6px; }
+
+.error { color: var(--danger); font-size: 14px; }
+
+/* ---------------------------------------------- status log, and not covering things
+
+   The log used to be a fixed overlay with a padding reservation under the footer. That
+   reserves space at the END of the document and does nothing about the middle of it: at
+   any other scroll position the panel simply painted over whatever was beneath it. On a
+   browser without showSaveFilePicker the capability sentence made the panel permanent,
+   so the bottom 60px of EVERY screen was covered for the whole session.
+
+   It is a layout row now, not an overlay. `body` is a viewport-tall flex column of
+   [ .page | .log ], `.page` is the scroll container, and the log is the bottom row. The
+   scrollable area is therefore the viewport minus the log, and the two cannot intersect
+   at any scroll offset. `position: fixed` is kept as the default so that engines without
+   :has(), and the legal pages which have no `.page`, still get a visible log. */
+.log {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  padding: 8px 14px;
+  background: var(--scrim);
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-height: var(--log-max);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Above the sticky bar, below the drop veil. */
+  z-index: 40;
+}
+.log:empty { display: none; }
+
+@supports selector(:has(*)) {
+  body:has(> .page) {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  body:has(> .page) > .page {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    /* A flex column so that `order` can move a page-level note without moving it in the
+       DOM. Everything defaults to order 0 and stays exactly where it was written. */
+    display: flex;
+    flex-direction: column;
+  }
+  /* A block child of a flex column with `margin: 0 auto` is sized to its CONTENT, not
+     stretched: auto cross-axis margins switch stretch off. Without this, `main` stopped
+     honouring its own max-width and shrank to whatever its widest line happened to be. */
+  body:has(> .page) > .page > * { width: 100%; }
+  body:has(> .page) > .page > #extras { order: 1; }
+  body:has(> .page) > .page > .foot { order: 2; }
+  body:has(> .page) > .log {
+    position: static;
+    flex: 0 0 auto;
+  }
+}
+
+/* Engines without :has() keep the overlay, so they keep the reservation that goes with
+   it: better a strip of dead space at the foot than a buried Sever button. */
+@supports not selector(:has(*)) {
+  .foot { padding-bottom: calc(var(--log-max) + 16px); }
+}
+.log div { margin: 2px 0; }
+.log .bad { color: var(--danger); }
+.log .warn { color: var(--warn); }
+.log .ok { color: var(--ok); }
+
+/* ---------------------------------------------- progressive disclosure */
+
+.lede { color: var(--muted); margin: -8px 0 18px; }
+
+details.disc {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+details.disc.warn { border-color: var(--line-warn); }
+details.disc.compact { margin-top: 14px; background: transparent; }
+
+details.disc > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 13px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+  padding-right: 40px;
+}
+details.disc > summary::-webkit-details-marker { display: none; }
+details.disc > summary::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  top: 19px;
+  width: 8px; height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+details.disc[open] > summary::after { transform: rotate(-135deg); top: 22px; }
+details.disc > summary:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -2px; }
+
+.disc-title { font-weight: 620; font-size: 15px; line-height: 1.35; }
+.disc-hint { font-size: 12.5px; color: var(--muted); }
+details.disc.warn .disc-title { color: var(--warn); }
+
+.disc-body { padding: 0 14px 13px; border-top: 1px solid var(--line); }
+.disc-body p, .disc-body ul { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+.disc-body ul { padding-left: 18px; }
+.disc-body li { margin-bottom: 4px; }
+.disc-body a { color: var(--accent); }
+
+/* ---------------------------------------------- agreement */
+
+.agreement {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-top: 18px;
+}
+.check { display: flex; gap: 11px; align-items: flex-start; margin-bottom: 14px; }
+.check input { margin-top: 3px; width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); }
+.check span { font-size: 13.5px; line-height: 1.5; color: var(--text); }
+.check a { color: var(--accent); }
+.agreement .muted { margin: 8px 0 0; text-align: center; }
+
+/* ---------------------------------------------- diagnostics */
+
+pre.diag {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 10px 0 0;
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+}
+
+/* ---------------------------------------------- footer and legal pages */
+
+.foot {
+  display: flex;
+  gap: 18px;
+  justify-content: center;
+  padding: 18px 16px 26px;
+  font-size: 12.5px;
+  border-top: 1px solid var(--line);
+  margin-top: 30px;
+}
+.foot a { color: var(--muted); text-decoration: none; }
+.foot a:hover { color: var(--accent); text-decoration: underline; }
+
+.brand a { color: inherit; text-decoration: none; }
+
+main.legal { max-width: 720px; margin: 0 auto; padding: 24px 18px 80px; }
+main.legal h1 { font-size: 24px; margin-bottom: 4px; }
+main.legal h2 { font-size: 16px; margin: 26px 0 8px; color: var(--text); }
+main.legal p, main.legal li { color: var(--muted); font-size: 14.5px; line-height: 1.65; }
+main.legal ul { padding-left: 20px; }
+main.legal li { margin-bottom: 6px; }
+main.legal a { color: var(--accent); }
+main.legal strong { color: var(--text); }
+
+.fillme {
+  background: var(--warn-wash-strong);
+  border: 1px dashed var(--warn);
+  border-radius: 4px;
+  padding: 0 5px;
+  color: var(--warn);
+  font-size: 13px;
+}
+
+/* ---------------------------------------------- capability banner */
+
+.banner {
+  max-width: 640px;
+  margin: 14px auto 0;
+  padding: 12px 14px;
+  background: var(--warn-wash);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.banner strong { display: block; color: var(--warn); margin-bottom: 4px; }
+/* Informational variant: a limitation worth knowing, not a failure. */
+.banner.note { background: var(--accent-wash); border-color: var(--accent-dim); }
+.banner.note strong { color: var(--accent); }
+.banner code { font-family: var(--font-mono); }
+.banner-steps { margin: 8px 0 10px; padding-left: 20px; color: var(--muted); }
+.banner-steps li { margin-bottom: 3px; }
+.banner .muted { margin: 6px 0; }
+.banner button { width: auto; padding: 7px 14px; font-size: 13px; margin-top: 4px; }
+
+.path-row { display: flex; gap: 8px; align-items: stretch; margin: 8px 0 4px; }
+.path-row code {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--accent);
+  word-break: break-all;
+  user-select: all;
+}
+.path-row button { flex: 0 0 auto; margin-top: 0; }
+
+/* ---------------------------------------------- header flourish */
+
+.bar { position: sticky; }
+.bar::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 220% 100%;
+  opacity: 0.55;
+  animation: sweep 9s linear infinite;
+}
+@keyframes sweep {
+  0% { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
+/* ---------------------------------------------- extras: bridge, steps, support */
+
+.extras { max-width: 640px; margin: 0 auto; padding: 8px 16px 8px; }
+
+.bridge { text-align: center; margin: 6px 0 20px; }
+.bridge svg { width: 100%; max-width: 380px; height: auto; }
+.bridge .node { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
+.bridge .screen-glow { fill: var(--accent); opacity: 0.22; }
+.bridge .wire { stroke: var(--line); stroke-width: 2; }
+.bridge .flow {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 10 16;
+  animation: flow 2.6s linear infinite;
+}
+@keyframes flow { to { stroke-dashoffset: -52; } }
+.bridge .lock rect { fill: var(--bg); stroke: var(--accent); stroke-width: 1.6; }
+.bridge .lock path { stroke: var(--accent); stroke-width: 1.6; }
+.bridge-cap { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+
+.steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 0;
+  margin: 0 0 16px;
+}
+.step {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 11px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.step-n {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+}
+.step b { font-size: 13.5px; }
+.step span:last-child { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+@media (max-width: 560px) {
+  .steps { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ---------------------------------------------- support */
+
+/* Selector must out-specify `.disc-body a`, which would otherwise colour this link
+   accent-on-accent and render the label invisible. */
+.disc-body a.kofi, a.kofi {
+  display: block;
+  text-align: center;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 650;
+  padding: 11px 16px;
+  border-radius: var(--radius);
+  text-decoration: none;
+  margin: 12px 0 14px;
+}
+a.kofi:hover { filter: brightness(1.08); }
+
+.coin {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 11px 12px;
+  margin-bottom: 10px;
+}
+.coin-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.coin-name { font-weight: 620; font-size: 14px; }
+.coin-tick {
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-pill);
+  padding: 1px 7px;
+}
+.coin-addr {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  word-break: break-all;
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+.coin-actions { display: flex; gap: 8px; }
+.coin-actions button { flex: 1; padding: 8px 10px; font-size: 13px; }
+.coin-qr {
+  display: flex;
+  justify-content: center;
+  background: var(--qr-paper);
+  border-radius: 8px;
+  padding: 10px;
+  margin-top: 10px;
+}
+.coin-qr canvas { width: 100%; max-width: 220px; height: auto; image-rendering: pixelated; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bar::after, .bridge .flow { animation: none; }
+}
+
+/* The light palette. Every token the dark one defines is restated here, including the
+   semantic ones: --warn and --ok used to be left alone on the theory that they only ever
+   appeared on a dark panel, and #ffc857 on a white card is 1.7:1. A tag, a chip, a warn
+   heading and every 'warn' line in the status log were all unreadable in light mode. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fa; --panel: #ffffff; --panel-2: #eef2f6; --line: #d3dbe3;
+    --text: #101418; --muted: #55616d; --accent: #8a5410; --accent-dim: #e3c391; --live: #0b7a6b;
+    --warn: #8a6100; --ok: #16704a; --danger: #b3261e;
+    --line-warn: #d0a83a; --line-live: #7fbdb4; --line-danger: #e0a49c; --line-ok: #4aa863;
+    --warn-wash: rgba(180, 130, 0, 0.10);
+    --warn-wash-strong: rgba(180, 130, 0, 0.16);
+    --accent-wash: rgba(138, 84, 16, 0.06);
+    --on-accent: #ffffff;
+    --accent-text: #7a490e;
+    --scrim: rgba(246, 248, 250, 0.97);
+    --scrim-veil: rgba(246, 248, 250, 0.90);
+    --shadow-lift: 0 24px 60px -42px rgba(16, 20, 24, 0.35);
+  }
+}
+
+/* ---------------------------------------------- post-sever transcript */
+
+#transcript-holder { margin: 18px 0 4px; }
+#transcript-holder h2 { color: var(--text); }
+.messages.transcript {
+  max-height: 50vh;
+  background: var(--panel-2);
+  opacity: 0.95;
+}
+#clear-transcript { margin-top: 12px; }
+
+/* ---------------------------------------------------------------------------
+   Desktop layout for the connected screen.
+
+   Everything above is built mobile-first around `main { max-width: 640px }`, which
+   is right for a phone and suffocating on a desktop: a 640px column stranded in the
+   middle of a 1900px window, with the transcript trapped in a 46vh inner scroller
+   while most of the page sits empty.
+
+   Wide viewports get two columns instead: the conversation takes the space, and the
+   things you consult rather than read (the verification explainer, connection
+   details, the burn button) move into a side rail. The transcript then fills the
+   column height, so there is ONE scrollbar instead of a small box inside a big page.
+
+   Connected screen only. Every other screen is a short form that genuinely wants a
+   narrow measure, and stretching those to 1200px would make them worse.
+   --------------------------------------------------------------------------- */
+@media (min-width: 1024px) {
+  /* :has() lets the width follow the screen actually on show, without app.js help. */
+  main:has(> #screen-connected:not([hidden])) {
+    max-width: 1180px;
+    padding-bottom: 12px;
+  }
+
+  #screen-connected {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-rows: auto 1fr auto;
+    gap: 14px 22px;
+    align-items: start;
+    /* Fill the viewport below the header. The log is a layout row now, so the space it
+       takes is the space it actually occupies: app.js publishes that as --log-h and it
+       is 0px while the log is empty. Subtracting the 26vh MAXIMUM, as this used to,
+       left a dead strip under the composer whenever the log held a single line. */
+    min-height: calc(100vh - 132px - var(--log-h, 0px));
+  }
+
+  #screen-connected > .route-line { grid-column: 1; grid-row: 1; margin: 0; }
+  #screen-connected > #messages   { grid-column: 1; grid-row: 2; }
+  #screen-connected > #chat-form  { grid-column: 1; grid-row: 3; }
+
+  /* The side rail: stacked, sticky, and scrollable on its own if it ever overflows. */
+  #screen-connected > .disc,
+  #screen-connected > #sever {
+    grid-column: 2;
+    width: 100%;
+    margin: 0;
+  }
+  #screen-connected > .disc:nth-of-type(1) { grid-row: 1 / span 2; align-self: start; }
+  #screen-connected > .disc:nth-of-type(2) { grid-row: 2; align-self: end; }
+  #screen-connected > #sever { grid-row: 3; align-self: end; }
+
+  /* The transcript fills its cell instead of capping at 46vh. min-height:0 is what
+     lets a grid item actually shrink so the inner overflow works. */
+  #screen-connected > #messages {
+    max-height: none;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* More room means a received image can be worth looking at. */
+  #screen-connected .msg img { max-height: 420px; }
+
+  /* A wide composer that is one line tall reads as an afterthought. */
+  #screen-connected #chat-input { min-height: 96px; }
+}
+
+@media (min-width: 1500px) {
+  main:has(> #screen-connected:not([hidden])) { max-width: 1360px; }
+  #screen-connected { grid-template-columns: minmax(0, 1fr) 360px; }
+}
+
+/* Fallback for engines without :has(). They keep the narrow column rather than
+   getting a broken grid, which is the safe direction to fail in. */
+@supports not selector(:has(*)) {
+  @media (min-width: 1024px) {
+    #screen-connected { display: block; }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Landing content on the home screen.
+
+   The home screen carries the pitch as well as the controls, so it is the one
+   screen that wants more than the 640px column the rest of the app is built
+   around. Everything here is prefixed `lp-` because the app already owns
+   `.card`, `.steps`, `.step`, `.code`, `.lede` and `.tag`, and a landing rule
+   that reached those would repaint the extras strip and the connected screen.
+
+   No new palette: the mockup's amber is dropped in favour of the app's own
+   tokens, so light mode is inherited rather than re-implemented.
+   --------------------------------------------------------------------------- */
+
+/* Wider measure, but only while the home screen is the one on show. Mirrors how
+   the connected screen widens itself, and leaves every other screen narrow. */
+@media (min-width: 900px) {
+  main:has(> #screen-home:not([hidden])) { max-width: 1080px; }
+  body:has(#screen-home:not([hidden])) .extras { max-width: 1080px; }
+}
+
+.lp-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ---------------------------------------------- hero */
+
+/* Phone order: headline, controls, then everything that supports them. The gate is
+   what the page is for, so nothing optional is allowed above it. */
+.lp-hero { display: flex; flex-direction: column; gap: 16px; }
+.lp-hero-head { order: 1; }
+.lp-hero-gate { order: 2; }
+.lp-hero-tail { order: 3; }
+.lp-hero-brow { order: 4; }
+
+.lp-h1 {
+  /* Capped at 46px, not the mockup's 56px: the headline shares its row with the
+     gate controls, so a larger size wraps "A portal for your data." onto a second
+     line and the three deliberate line breaks stop reading as three. */
+  font-size: clamp(25px, 4.4vw, 46px);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  margin: 6px 0 0;
+  text-wrap: balance;
+}
+
+/* An inline-block baselines on its bottom edge, which lifts the whole box out of
+   line with the word beside it. Centre the two on the cross axis instead. */
+.lp-for-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 0.32em;
+  margin-top: 14px;
+}
+.lp-for {
+  font-size: clamp(19px, 3.4vw, 28px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* The flipping box. A gate opens, shows one thing, closes: the same gesture.
+   Width and height are set from landing.js, measured off the widest word so the
+   headline does not jump on every flip. */
+.lp-flipper {
+  display: inline-block;
+  perspective: 800px;
+  vertical-align: baseline;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.lp-flip-box {
+  position: relative;
+  display: block;
+  transform-style: preserve-3d;
+  transition: transform 0.62s cubic-bezier(0.19, 1, 0.22, 1);
+  will-change: transform;
+}
+/* One line of text centred by its own line-height. Flex centring inside a box
+   that was itself mis-measured only hid the sizing bug; this way the height IS
+   the line box. */
+.lp-flip-face {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  backface-visibility: hidden;
+  color: var(--accent);
+  white-space: nowrap;
+  padding: 0 0.14em;
+  text-align: center;
+  font-size: clamp(19px, 3.4vw, 28px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.lp-sub {
+  color: var(--muted);
+  font-size: 16.5px;
+  max-width: 48ch;
+  margin: 0;
+}
+
+.lp-assurances {
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+.lp-assurances li::before { content: "- "; color: var(--accent); }
+
+/* The gate controls keep the app's own card styling. Only the vertical rhythm
+   changes: the explanatory paragraphs were inheriting the UA's 1em margins, which
+   is 64px of dead space in the create card alone and pushed Join below the fold on
+   a 390x844 phone. */
+.lp-hero-gate .card { margin-bottom: 10px; padding: 13px; }
+.lp-hero-gate .card p { margin: 5px 0 11px; line-height: 1.45; }
+.lp-hero-gate .card label { margin-bottom: 4px; }
+.lp-hero-gate .card select,
+.lp-hero-gate .card input { margin-bottom: 8px; }
+.lp-hero-gate .card:last-of-type { margin-bottom: 0; }
+
+/* The create card's optional settings. Quieter than details.disc, which is a panel
+   in its own right; this one lives inside a card and should read as a row. */
+.lp-options { margin: 0 0 11px; }
+.lp-options > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 22px 6px 0;
+  position: relative;
+}
+.lp-options > summary::-webkit-details-marker { display: none; }
+.lp-options > summary::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  top: 11px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.lp-options[open] > summary::after { transform: rotate(-135deg); top: 14px; }
+.lp-options > summary:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 2px; }
+.lp-options-title { font-size: 13.5px; font-weight: 620; color: var(--text); }
+.lp-options-hint { font-size: 12.5px; color: var(--muted); }
+.lp-options-body { padding-top: 8px; }
+.lp-options-body > *:last-child { margin-bottom: 0; }
+.lp-hero-gate #home-error { display: block; margin: 10px 0 0; }
+
+/* Phone. The whole point of this block is that "Create gate" and "Join gate" are
+   both inside the first 844px of a 390px-wide viewport, measured, not assumed. It
+   buys that back from spacing rather than from content: nothing here is hidden,
+   only tightened. */
+@media (max-width: 899px) {
+  main:has(> #screen-home:not([hidden])) { padding-top: 12px; }
+  .lp-hero { gap: 12px; }
+  .lp-h1 { font-size: clamp(24px, 5.2vw, 52px); margin-top: 2px; }
+  .lp-for-line { margin-top: 8px; }
+  .lp-hero-gate .card { padding: 11px; }
+  .lp-hero-gate .card p { margin-bottom: 9px; }
+  .lp-hero-gate .card button { padding: 10px 16px; }
+}
+
+@media (min-width: 900px) {
+  .lp-hero {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    grid-template-areas:
+      "brow gate"
+      "head gate"
+      "tail gate";
+    /* The gate column spans all three rows and is the taller of the two, so its
+       overflow has to land somewhere. Without this it is shared out between the
+       rows and opens a hole under the headline; `1fr` on the last row sends all of
+       it below the supporting copy instead. */
+    grid-template-rows: auto auto 1fr;
+    column-gap: 48px;
+    row-gap: 0;
+    align-items: start;
+    margin-top: 12px;
+  }
+  .lp-hero-brow { grid-area: brow; }
+  .lp-hero-head { grid-area: head; }
+  .lp-hero-tail { grid-area: tail; margin-top: 26px; }
+  .lp-hero-gate { grid-area: gate; }
+  .lp-hero-gate .card { padding: 14px; margin-bottom: 14px; }
+  .lp-sub { font-size: 18px; }
+}
+
+/* ---------------------------------------------- landing sections */
+
+.lp-section {
+  padding: 44px 0 0;
+  border-top: 1px solid var(--line);
+  margin-top: 40px;
+}
+.lp-section + .lp-section { margin-top: 44px; }
+
+.lp-h2 {
+  font-size: clamp(21px, 3.6vw, 31px);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  margin: 10px 0 0;
+  text-wrap: balance;
+}
+.lp-lede { color: var(--muted); max-width: 62ch; margin: 12px 0 0; font-size: 15px; }
+
+/* Numbered because it genuinely is a sequence. */
+.lp-steps {
+  display: grid;
+  gap: 24px;
+  margin-top: 30px;
+  grid-template-columns: 1fr;
+  counter-reset: lpstep;
+}
+@media (min-width: 760px) { .lp-steps { grid-template-columns: repeat(3, 1fr); } }
+.lp-step { border-top: 2px solid var(--line); padding-top: 14px; counter-increment: lpstep; }
+.lp-step::before {
+  content: counter(lpstep, decimal-leading-zero);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+}
+.lp-step h3 { margin: 7px 0 5px; font-size: 16px; letter-spacing: -0.01em; font-weight: 650; }
+.lp-step p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+/* ---------------------------------------------- funding */
+
+.lp-slots { display: grid; gap: 16px; margin-top: 28px; grid-template-columns: 1fr; }
+@media (min-width: 820px) { .lp-slots { grid-template-columns: 1fr 1fr; } }
+.lp-slot {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  background: var(--panel);
+}
+.lp-slot-free { border-style: solid; border-color: var(--accent-dim); }
+.lp-slot-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lp-slot-free .lp-slot-label { color: var(--accent); }
+.lp-list { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 14.5px; }
+.lp-list li { margin-bottom: 7px; }
+.lp-list li:last-child { margin-bottom: 0; }
+.lp-list strong { color: var(--text); }
+
+/* ---------------------------------------------- roadmap */
+
+.lp-road { display: grid; gap: 12px; margin-top: 28px; grid-template-columns: 1fr; }
+@media (min-width: 800px) { .lp-road { grid-template-columns: 1fr 1fr; } }
+.lp-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 15px 17px;
+}
+.lp-card h3 { margin: 8px 0 5px; font-size: 15.5px; letter-spacing: -0.01em; font-weight: 650; }
+.lp-card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+.lp-tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.lp-tag-gap { color: var(--warn); border-color: var(--line-warn); }
+.lp-tag-live { color: var(--ok); border-color: var(--line-ok); }
+
+/* ---------------------------------------------- pledge */
+
+.lp-pledge blockquote {
+  margin: 22px 0 0;
+  padding: 18px 20px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--panel);
+  font-size: 16.5px;
+  max-width: 62ch;
+}
+
+.lp-tail-disc { margin-top: 34px; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* The 3D tumble degrades to a crossfade; landing.js swaps the word at the
+     bottom of the fade rather than rotating the box. */
+  .lp-flip-box { transition: opacity 0.3s ease; }
+}
+
+/* The three light-mode patches that used to live here are gone: --warn, --ok and
+   --accent-text are tokens now, so .lp-tag-gap, .lp-tag-live and .lp-slot-label pick up
+   legible light values from the palette instead of from one-off rules that had to be
+   remembered every time a warn or ok colour was used somewhere new. The teal that used
+   to sit on .lp-slot-label went with them: teal means live, it is not a second accent. */
+.lp-slot-free .lp-slot-label { color: var(--accent-text); }
+
+/* Engines without :has() never widen `main`, so the hero would be a two column grid
+   squeezed into a 640px column. They keep the phone layout at every width instead,
+   which is narrow but correct: the same direction the connected screen fails in. */
+@supports not selector(:has(*)) {
+  @media (min-width: 900px) {
+    .lp-hero {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .lp-hero-tail { margin-top: 0; }
+  }
+}
+
+/* ------------------------------------------- hero gate preview and CTAs
+
+   The hero's right column is a picture of a gate mid-transfer, matching the approved
+   direction. It is decorative: nothing here is interactive, and the whole block carries
+   a single aria-label so assistive tech gets one description instead of a pile of
+   meaningless numbers. The working controls live in #gate-controls below. */
+
+.lp-preview {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: var(--shadow-lift);
+}
+.lp-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.lp-preview-label {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lp-preview-code {
+  font-family: var(--font-mono);
+  font-size: clamp(14px, 3.2vw, 19px);
+  letter-spacing: 0.06em;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 13px 14px;
+  /* A long code must scroll inside its own box, never widen the page. */
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.lp-preview-meter { margin-top: 14px; }
+.lp-preview-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.lp-preview-bar {
+  height: 4px;
+  background: var(--panel-2);
+  border-radius: var(--radius-pill);
+  margin: 7px 0 12px;
+  overflow: hidden;
+}
+.lp-preview-bar > i { display: block; height: 100%; width: 62%; background: var(--accent); }
+
+.lp-cta-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; }
+.lp-cta-row button { width: auto; flex: 0 0 auto; padding: 12px 20px; }
+
+/* ------------------------------------------- the working controls */
+
+.lp-gate-cards { display: grid; grid-template-columns: 1fr; gap: 0; }
+@media (min-width: 760px) {
+  .lp-gate-cards { grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  .lp-gate-cards .card { margin-bottom: 0; }
+}
+
+/* Landing on this section from the CTA should not tuck its heading under the sticky
+   header, and a focused Create button should not sit hard against the viewport edge. */
+#gate-controls { scroll-margin-top: 72px; }
+
+/* ===========================================================================
+   THE DESIGN SYSTEM
+   ===========================================================================
+
+   The landing hero was the only part of the product designed rather than
+   assembled, so it is now the language for all of it. Four moves, applied
+   everywhere:
+
+     1. TYPE IS THE STRUCTURE. A section opens with a monospace uppercase
+        eyebrow, then a heavy display heading with negative tracking, then a
+        muted lede at a comfortable measure. `.eyebrow` / `.wg-h1` / `.wg-h2` /
+        `.lede`. `.lp-*` are the hero's originals and share the same values.
+     2. AMBER IS THE ACCENT. Teal means "connected" and nothing else. Warn, ok
+        and danger stay semantic and are never used decoratively.
+     3. DATA IS MONOSPACE with tabular figures: gate codes, byte counts,
+        timers, verification codes, ports, badges. Prose never is.
+     4. CARDS ARE PANEL + ONE PIXEL OF LINE + THE SHARED RADIUS, and space is
+        the main tool. Only the hero preview carries a shadow.
+   =========================================================================== */
+
+.eyebrow,
+.lp-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* Display headings. The hero's own .lp-h1 is capped at 46px because it shares a
+   row with the gate preview; a screen headline runs longer, so it caps lower and
+   stays on two lines instead of four. */
+.wg-h1 {
+  /* Capped in em, not ch: a `ch` is a character of the BODY font, so a 22ch cap on a
+     38px headline is 350px and every word lands on its own line. */
+  max-width: 17em;
+  font-size: clamp(23px, 3.1vw, 38px);
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  margin: 10px 0 0;
+  text-wrap: balance;
+}
+.wg-h2 {
+  font-size: clamp(19px, 2.6vw, 26px);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  margin: 8px 0 0;
+  text-wrap: balance;
+}
+.wg-h3 {
+  font-size: 16.5px;
+  letter-spacing: -0.01em;
+  font-weight: 650;
+  margin: 6px 0 0;
+}
+
+/* One lede rule for the whole product. It used to carry a negative top margin to
+   pull itself under a 20px h1; the eyebrow/headline/lede triad sets its own
+   rhythm, so it does not need to fight the block above it any more. */
+.lede {
+  color: var(--muted);
+  font-size: 16px;
+  max-width: 60ch;
+  margin: 12px 0 0;
+}
+
+/* Prose never runs wider than a comfortable measure, however wide the screen. */
+.disc-body p,
+.disc-body ul,
+.banner .muted,
+main.legal p,
+main.legal li { max-width: var(--measure); }
+
+/* Data, everywhere it appears. */
+.badge,
+.step-n,
+.lp-slot-label,
+.lp-preview-label {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.badge {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 11px;
+  font-weight: 600;
+}
+#sas,
+.ttl,
+.code,
+.coin-addr,
+pre.diag,
+.file-title,
+.file-status,
+.lp-preview-row,
+.secret-value { font-variant-numeric: tabular-nums; }
+/* The session timer counts down in place; a proportional font makes it jitter. */
+.ttl { font-family: var(--font-mono); }
+progress { accent-color: var(--accent); }
+
+/* A short screen (a prompt, a result, a waiting state) is a single column of
+   content, not a full-width layout. Centred so it does not hang off the left of a
+   wide window, and capped at a measure that stays readable. */
+.pane { max-width: 560px; margin: 0 auto; }
+.pane > .eyebrow { margin-bottom: 2px; }
+.pane .wg-h1 { margin-bottom: 4px; }
+.pane > .lede { margin-bottom: 22px; }
+
+/* Screens open with the triad, so the old bare-h1 top margin would double it up. */
+.screen > .pane,
+.ob-grid { padding-top: 6px; }
+
+/* ---------------------------------------------------------------------------
+   ONBOARDING
+
+   Measured before: at 1900x1000 `main` was 640px with 630px of dead margin on
+   each side, five collapsed cards filled the viewport, and the whole consent gate
+   was a phone column on a widescreen.
+
+   Now: the headline and the disclosures take the main column, the agreement is a
+   sticky rail beside them, and the disclosures ship OPEN and split into two
+   columns at 1440px. More of the disclosure is visible on a wide screen than
+   before, not less, and the primary action is above the fold without collapsing
+   anything to get it there.
+   --------------------------------------------------------------------------- */
+
+.ob-head { max-width: 46ch; }
+.ob-notes-brow { margin: 26px 0 10px; }
+.ob-agree { margin-top: 20px; }
+
+/* The agreement is the one card on the page that is an ACTION, so it is the one
+   card that carries the accent line. Nothing else on this screen does. */
+#screen-onboarding .agreement {
+  margin-top: 0;
+  border-color: var(--accent-dim);
+  padding: 16px 16px 14px;
+}
+#screen-onboarding .agreement .eyebrow { margin-bottom: 12px; }
+#screen-onboarding .agreement .check span { font-size: 13.5px; }
+#screen-onboarding .agreement .muted { text-align: left; }
+
+/* The disclosures. Open, they are five stacked panels of prose, so the summary
+   needs to read as a heading rather than as a row with an arrow on it. */
+#screen-onboarding details.disc > summary { padding: 14px 40px 12px 15px; }
+#screen-onboarding .disc-title { font-size: 15.5px; letter-spacing: -0.01em; }
+#screen-onboarding .disc-body { padding: 0 15px 15px; }
+
+@media (min-width: 1024px) {
+  main:has(> #screen-onboarding:not([hidden])) { max-width: 1180px; }
+  body:has(#screen-onboarding:not([hidden])) .extras,
+  body:has(#screen-onboarding:not([hidden])) .banner { max-width: 1180px; }
+
+  .ob-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 372px;
+    grid-template-rows: auto 1fr;
+    column-gap: 46px;
+    align-items: start;
+  }
+  .ob-head { grid-column: 1; grid-row: 1; max-width: none; }
+  .ob-head .lede { max-width: 44ch; }
+  .ob-notes { grid-column: 1; grid-row: 2; }
+  .ob-agree {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: start;
+    margin-top: 0;
+    /* Sticky against the page scroller, clearing the sticky header. The reason
+       the agreement is a rail at all: it has to be reachable without scrolling
+       past five open disclosures, and it has to stay reachable while they are
+       being read. */
+    position: sticky;
+    top: 8px;
+  }
+  .ob-notes-brow { margin-top: 30px; }
+}
+
+@media (min-width: 1500px) {
+  main:has(> #screen-onboarding:not([hidden])) { max-width: 1280px; }
+  body:has(#screen-onboarding:not([hidden])) .extras,
+  body:has(#screen-onboarding:not([hidden])) .banner { max-width: 1280px; }
+
+  /* Two columns of disclosures. Each is about 60 characters wide, which is a
+     better measure for 14px prose than one 870px column would be, and it puts
+     four of the five panels on screen at once. */
+  .ob-notes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    align-items: start;
+  }
+  .ob-notes-brow { grid-column: 1 / -1; }
+  .ob-notes > details.disc { margin-bottom: 0; }
+}
+
+/* ---------------------------------------------------------------------------
+   WAITING, PASSWORD, SEVERED, FAILED
+
+   Same triad, same cards. The waiting screen gets the QR and the code side by
+   side once there is room, because a 320px QR above a code block wastes half the
+   width of a laptop and pushes Cancel off the bottom.
+   --------------------------------------------------------------------------- */
+
+#screen-waiting .qr-wrap { padding: 16px; }
+#screen-waiting .code-block { border-color: var(--accent-dim); }
+#screen-severed .messages.transcript { max-height: 40vh; }
+#transcript-holder .eyebrow { margin-top: 26px; }
+
+@media (min-width: 900px) {
+  main:has(> #screen-waiting:not([hidden])) { max-width: 940px; }
+  #screen-waiting .pane { max-width: 760px; }
+  #share-shown {
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr);
+    column-gap: 26px;
+    align-items: start;
+  }
+  #share-shown > .qr-wrap { grid-column: 1; grid-row: 1 / span 3; margin-bottom: 0; }
+  #share-shown > .code-block,
+  #share-shown > .row,
+  #share-shown > .muted { grid-column: 2; }
+
+  main:has(> #screen-severed:not([hidden])) { max-width: 860px; }
+  #screen-severed .pane { max-width: 720px; }
+}
+
+/* ---------------------------------------------------------------------------
+   CONNECTED
+
+   Finish only. The two column layout, the transcript filling the column height
+   and the burn control never being buried are all deliberate and are left alone.
+   --------------------------------------------------------------------------- */
+
+#screen-connected .route-line { padding-bottom: 2px; }
+#screen-connected #messages { background: var(--panel); }
+.msg .who { letter-spacing: 0.01em; font-weight: 600; }
+.file-title { letter-spacing: -0.005em; }
+.chip { font-family: var(--font-mono); }
+
+/* ---------------------------------------------------------------------------
+   THE LEGAL PAGES
+
+   Same language: eyebrow, display heading, lede, hairline-ruled sections, prose
+   at a measure. Presentation only. Not one word of any obligation, disclosure or
+   policy changed, because those were audited claim by claim against the code.
+   --------------------------------------------------------------------------- */
+
+main.legal { max-width: 800px; padding: 26px 18px 40px; }
+main.legal > .eyebrow { margin-bottom: 2px; }
+main.legal h1 {
+  font-size: clamp(26px, 3.4vw, 40px);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  margin: 8px 0 0;
+  text-wrap: balance;
+}
+/* The one-line intro under a policy title reads as a lede, not as fine print. */
+main.legal > .doc-meta {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  margin: 14px 0 0;
+  max-width: var(--measure);
+}
+main.legal > .doc-lede {
+  color: var(--muted);
+  font-size: 16.5px;
+  line-height: 1.6;
+  max-width: 58ch;
+  margin: 16px 0 0;
+}
+/* A hairline above every section is the same rule the landing sections use, and
+   it is what turns a wall of policy into something you can scan. */
+main.legal h2 {
+  font-size: clamp(18px, 2.4vw, 23px);
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  color: var(--text);
+  border-top: 1px solid var(--line);
+  margin: 42px 0 0;
+  padding-top: 24px;
+}
+main.legal h2 + p { margin-top: 12px; }
+main.legal p, main.legal li { font-size: 15px; line-height: 1.7; }
+main.legal strong { color: var(--text); }
+main.legal code {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+}
+main.legal pre.diag {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 16px 0 0;
+  max-width: var(--measure);
+}
+main.legal pre.diag code { background: none; border: 0; padding: 0; }
+/* The link row at the foot of a policy page is navigation, so it gets the footer
+   treatment the app's own pages have rather than looking like a stray sentence. */
+main.legal > .doc-foot {
+  border-top: 1px solid var(--line);
+  margin-top: 46px;
+  padding-top: 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+main.legal > .doc-foot a { color: var(--muted); text-decoration: none; }
+main.legal > .doc-foot a:hover { color: var(--accent); text-decoration: underline; }
+
+@media (min-width: 1100px) {
+  main.legal { max-width: 880px; padding-top: 40px; }
+}
+
+/* ---------------------------------------------------------------------------
+   HOME
+
+   1080px was right when the alternative was 640, and it is still close: the
+   headline caps at 46px, the ledes cap at 62ch and the card grids are two-up, so
+   past about 1200px extra width only buys longer lines inside the cards. It
+   breathes to 1200 on a genuinely wide screen and stops there. The dead margin at
+   1900px goes from 410px a side to 350px, which is deliberate: this is a reading
+   page with a picture on it, not a dashboard.
+   --------------------------------------------------------------------------- */
+@media (min-width: 1500px) {
+  main:has(> #screen-home:not([hidden])) { max-width: 1200px; }
+  body:has(#screen-home:not([hidden])) .extras,
+  body:has(#screen-home:not([hidden])) .banner { max-width: 1200px; }
+}
+
+/* The capability banner follows the width of the screen it sits above, rather
+   than staying at the phone measure while the page around it is 1300px wide. */
+.banner { max-width: 640px; }
+
+/* The receive note is a standing fact about the browser, not an alarm. On a phone it is
+   eight lines of it, which is no way to open a consent gate, so below 900px it sits after
+   the screen instead of before it: same page, same words, out of the way of the headline.
+   `order` on the page's flex column moves it without moving it in the DOM, so the reading
+   order for a screen reader is unchanged on a wide screen where it is genuinely first. */
+@media (max-width: 899px) {
+  body:has(> .page) > .page > #receive-note { order: 1; }
+  #receive-note { font-size: 13px; }
+  /* The triad costs vertical space, and on a phone every pixel above the agreement is a
+     pixel of scrolling before you can act. Tightened, not removed: the structure is what
+     makes the screen legible, the spacing is what makes it long. */
+  .ob-grid { padding-top: 0; }
+  #screen-onboarding .wg-h1 { margin-top: 6px; }
+  #screen-onboarding .lede { font-size: 15px; margin-top: 8px; }
+  .ob-notes-brow { margin: 16px 0 8px; }
+  .ob-agree { margin-top: 14px; }
+  #screen-onboarding .agreement .eyebrow { margin-bottom: 9px; }
+  #screen-onboarding details.disc { margin-bottom: 8px; }
+}
+
+/* The receive note is one sentence of standing fact. It gets one sentence of room: a
+   heading on its own line above the hero would announce a browser limitation as if it
+   were the page's headline. */
+#receive-note { font-size: 13px; padding: 10px 14px; }
+#receive-note strong { display: inline; margin-right: 7px; }
+
+/* The assurance strip under the agreement. Same component as the home hero, one column
+   in the rail rather than a row across it. */
+.ob-assurances { margin-top: 18px; flex-direction: column; gap: 4px; }
+@media (max-width: 1023px) { .ob-assurances { flex-direction: row; gap: 6px 18px; } }
+
+/* Engines without :has() never widen `main`, so the onboarding rail and the two-up
+   disclosures would be squeezed into a 640px column: a 372px rail beside a 268px column
+   of prose. They keep the phone stack at every width instead, which is narrow but
+   correct, and is the direction the hero and the connected screen already fail in. */
+@supports not selector(:has(*)) {
+  @media (min-width: 1024px) {
+    .ob-grid { display: block; }
+    .ob-notes { display: block; }
+    .ob-agree { position: static; margin-top: 20px; }
+  }
+  @media (min-width: 900px) {
+    #share-shown { display: block; }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The disclosures are the centre of the consent screen now, so their marker is the
+     one piece of motion a person on this screen cannot avoid seeing. */
+  details.disc > summary::after,
+  .lp-options > summary::after { transition: none; }
+}

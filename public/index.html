@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>Warp Gate</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<!-- Everything except the status log lives inside .page, which is the scroll container
+     on engines with :has(). That is what stops the fixed status panel painting over the
+     page: instead of floating above the document it becomes the bottom row of a viewport
+     sized flex column, so the scrollable area is the viewport MINUS the panel and the two
+     can never intersect. Engines without :has() keep the old overlay, which is the safe
+     direction to fail in, and the legal pages have no .page so they scroll normally. -->
+<div class="page">
+
+<header class="bar">
+  <div class="brand">WARP GATE</div>
+  <div class="bar-right">
+    <span id="status-badge" class="badge badge-idle">idle</span>
+    <span id="ttl" class="ttl" hidden></span>
+  </div>
+</header>
+
+<div id="webrtc-warning" class="banner" hidden>
+  <strong id="webrtc-warning-title">This browser cannot make direct connections.</strong>
+  <span id="webrtc-warning-text"></span>
+  <ol id="webrtc-steps" class="banner-steps"></ol>
+  <div id="webrtc-path-row" class="path-row" hidden>
+    <code id="webrtc-settings-path"></code>
+    <button id="webrtc-copy-path" class="secondary">Copy</button>
+  </div>
+  <p id="webrtc-path-note" class="muted small" hidden>Browsers do not allow a web page to
+  link to their own settings, so this has to be pasted into the address bar yourself.</p>
+  <p id="webrtc-reassurance" class="muted small"></p>
+  <button id="webrtc-recheck" class="secondary">Re-check</button>
+</div>
+
+<!-- What this browser can RECEIVE. A standing fact about the browser, not an event, so
+     it belongs in the page rather than in the transient status log at the bottom: on any
+     browser without showSaveFilePicker the log was permanently non-empty and permanently
+     covering the last 60px of every screen. app.js fills this in from describeLimit(),
+     which is still the only place that knows the answer. -->
+<div id="receive-note" class="banner note" hidden>
+  <strong id="receive-note-title">What this browser can receive</strong>
+  <span id="receive-note-text"></span>
+</div>
+
+<main id="main">
+
+  <!-- onboarding ------------------------------------------------------->
+  <!-- The consent gate, and the first thing a new visitor sees.
+
+       Three blocks: the headline, the five disclosures, and the agreement. On a phone
+       they stack in that order, which is the order you read them in. From 1024px up the
+       agreement becomes a sticky rail beside the disclosures, so the primary action is
+       above the fold on a normal desktop WITHOUT hiding anything: the disclosures ship
+       open and get two columns at 1440px, which shows more of the informed part of
+       informed consent on a wide screen, not less. app.js collapses them on a narrow
+       viewport, so the failure mode with no script is "everything is shown".
+
+       The button stays disabled until the box is ticked, and the agreement text is not
+       abbreviated for either layout. -->
+  <section id="screen-onboarding" class="screen" hidden>
+   <div class="ob-grid">
+    <div class="ob-head">
+    <p class="eyebrow">Before you open a gate</p>
+    <h1 class="wg-h1">A temporary encrypted bridge between your devices.</h1>
+    <p class="lede">Open a gate, send what you need, close it. Nothing is stored anywhere.</p>
+    </div>
+
+    <div class="ob-notes">
+    <p class="eyebrow ob-notes-brow">Five things worth knowing first</p>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">Your messages and files are encrypted here, in this browser</span>
+        <span class="disc-hint">what the server can and cannot see</span></summary>
+      <div class="disc-body">
+        <p>Everything is encrypted before it leaves your device. The server relays an
+        encrypted handshake and then steps out of the way entirely. It never receives
+        the keys, the file contents, the messages, or even the file names.</p>
+        <p>The secret that unlocks the gate lives after the <code>#</code> in the link,
+        which browsers never send to a server.</p>
+      </div>
+    </details>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">Anyone with the link can join</span>
+        <span class="disc-hint">treat it like a password</span></summary>
+      <div class="disc-body">
+        <p>There are no accounts and no identity checks. The link is the only credential.
+        Send it the way you would send a password, and only to the person you mean to.</p>
+        <p id="cap-note">A gate holds a small group of devices. Once it is full, any further
+        device is refused.</p>
+      </div>
+    </details>
+
+    <details class="disc warn" open>
+      <summary><span class="disc-title">Everyone in a gate sees everyone else's IP address</span>
+        <span class="disc-hint">Warp Gate is confidential, not anonymous</span></summary>
+      <div class="disc-body">
+        <p>Warp Gate connects your devices directly to each other. That is what keeps the
+        server out of the data path, but it means every device in a gate learns the network
+        address of every other device in it.</p>
+        <p>This applies even if you loaded this page through a proxy. If hiding your
+        network address matters, use a VPN or Tor that you trust.</p>
+      </div>
+    </details>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">What this does not protect you from</span>
+        <span class="disc-hint">the honest limits</span></summary>
+      <div class="disc-body">
+        <ul>
+          <li>A compromised device, browser or extension on either end.</li>
+          <li>Screenshots, or a recipient who saves and forwards what you sent.</li>
+          <li>Anyone you choose to give the link to.</li>
+          <li>Traffic analysis: sizes and timings are visible to the network.</li>
+        </ul>
+        <p>For something extremely sensitive, encrypt it yourself before sending it as
+        well. Full detail is in the <a href="/privacy.html">Privacy Policy</a>.</p>
+      </div>
+    </details>
+
+    <details class="disc" id="instance-disc" open>
+      <summary><span class="disc-title" id="instance-title">Who is serving you this page</span>
+        <span class="disc-hint">worth knowing</span></summary>
+      <div class="disc-body">
+        <p id="instance-body">The only instance the authors run is
+        <strong>https://warpgate.fysh.site</strong>. The source is public so anyone may host
+        their own copy, which is encouraged, but an instance run by somebody else
+        inherits none of the authors' trust.</p>
+        <p><strong>Whoever serves this page controls the code that does the
+        encryption.</strong> That is true of every website that encrypts in the browser.
+        A hostile operator could serve a modified page and nothing here would reveal it.
+        If you need certainty, host it yourself from source you have read: there are no
+        dependencies and no build step, so the files served are the files in the
+        repository. Full detail in the <a href="/faq.html">FAQ</a>.</p>
+      </div>
+    </details>
+
+    </div><!-- /.ob-notes -->
+
+    <div class="ob-agree">
+    <div class="agreement">
+      <p class="eyebrow">The agreement</p>
+      <label class="check">
+        <input type="checkbox" id="agree-check">
+        <span>I have read and agree to the <a href="/terms.html" target="_blank" rel="noopener">Terms of Use</a>,
+        the <a href="/acceptable-use.html" target="_blank" rel="noopener">Acceptable Use Policy</a> and the
+        <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>. I understand that
+        <strong>I am solely responsible and liable for everything I send, receive or do using Warp Gate</strong>,
+        that the service is provided with no warranty of any kind, and that I will not use it for
+        any unlawful purpose.</span>
+      </label>
+      <button id="onboarding-done" class="primary" disabled>Agree and continue</button>
+      <p id="agree-hint" class="muted small">Tick the box above to continue.</p>
+    </div>
+    <!-- The same assurance strip the home hero carries, in the same monospace, saying
+         the same four things. It is the product's summary of itself, so the consent
+         gate and the front page should not be making it in two different voices. -->
+    <ul class="lp-assurances ob-assurances">
+      <li>no account</li>
+      <li>no upload</li>
+      <li>nothing stored</li>
+      <li>runs in the browser</li>
+    </ul>
+    </div><!-- /.ob-agree -->
+   </div><!-- /.ob-grid -->
+  </section>
+
+  <!-- home ------------------------------------------------------------->
+  <section id="screen-home" class="screen" hidden>
+
+    <!-- Hero. On a phone this is one column in DOM order: headline, then the gate
+         controls, then the supporting copy. The controls are the point of the page and
+         have to be reachable without scrolling, so nothing decorative sits above them.
+         From 900px up the same three blocks become a two column grid. -->
+    <div class="lp-hero">
+
+      <!-- Which instance you are on is worth stating, but it is metadata, not the
+           headline. It sits above the fold on a desktop and below the controls on a
+           phone, where every pixel above them is a pixel of scrolling. -->
+      <p class="lp-eyebrow lp-hero-brow">warpgate.fysh.site &nbsp;/&nbsp; the only official instance</p>
+
+      <div class="lp-hero-head">
+        <h1 class="lp-h1">A portal for your data.<br>Drop it to whoever.<br>Keep your privacy.</h1>
+        <div class="lp-for-line">
+          <span class="lp-for">For</span>
+          <!-- The rotating word is decorative repetition of one idea. The shell carries
+               a fixed accessible name; the box itself is hidden from assistive tech so a
+               new word every few seconds is not announced forever. -->
+          <span class="lp-flipper" id="flipper"
+                aria-label="For friends, sysadmins, regular people, family, photographers, and yourself">
+            <span class="lp-flip-box" id="flipbox" aria-hidden="true">
+              <span class="lp-flip-face">Friends</span>
+              <span class="lp-flip-face">Sysadmins</span>
+              <span class="lp-flip-face">Regular people</span>
+              <span class="lp-flip-face">Family</span>
+            </span>
+          </span>
+        </div>
+      </div>
+
+      <!-- A picture of a gate mid-transfer, not a control. Purely decorative, so it is
+           one image to assistive tech rather than a pile of meaningless fragments. -->
+      <div class="lp-hero-gate">
+        <div class="lp-preview" role="img"
+             aria-label="Illustration of a live gate: a direct peer-to-peer connection, a gate code, and a file transferring at 62 percent with 28 minutes left.">
+          <div class="lp-preview-head">
+            <span class="lp-preview-label">Gate</span>
+            <span class="badge badge-direct">Direct P2P</span>
+          </div>
+          <div class="lp-preview-code">WARP-M4V6-04TY-8XQK-2BND</div>
+          <div class="lp-preview-meter">
+            <div class="lp-preview-row"><span>site-visit-2026.zip</span><span>62%</span></div>
+            <div class="lp-preview-bar"><i></i></div>
+            <div class="lp-preview-row"><span>expires in</span><span>28:04</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lp-hero-tail">
+        <p class="lp-sub">A small group, direct encrypted links. Send a file, a password, a
+        photo, a sentence. We don't third wheel: we point you at each other, and that is
+        it.</p>
+        <div class="lp-cta-row">
+          <button id="cta-open" class="primary">Open a gate</button>
+          <button id="cta-how" class="secondary">Read how it works</button>
+        </div>
+        <ul class="lp-assurances">
+          <li>no account</li>
+          <li>no upload</li>
+          <li>nothing stored</li>
+          <li>runs in the browser</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- The working controls. Moved out of the hero so the hero can be the mockup's
+         picture, which costs one scroll before a gate exists. "Open a gate" scrolls here
+         and focuses Create, so the keyboard path is one key, not a hunt. -->
+    <section class="lp-section" id="gate-controls">
+      <p class="lp-eyebrow">Start here</p>
+      <h2 class="lp-h2">Open a gate, or join one.</h2>
+      <div class="lp-gate-cards">
+        <div class="card">
+          <h2>Create a gate</h2>
+          <p class="muted small">You will get a link and a QR code to give to the other device.</p>
+
+          <!-- Expiry and password are settings with working defaults, and on a phone
+               they cost enough height to push "Join gate" off the screen. Ships closed
+               and landing.js opens it on a wide viewport: the initial state is the
+               smaller one, so no layout jumps under the Create button on the load
+               where it matters. A <details> is operable with no script at all, and
+               nothing else on this page works without script anyway. -->
+          <details id="create-options" class="lp-options">
+            <summary><span class="lp-options-title">Expiry and room password</span>
+              <span class="lp-options-hint">optional, sensible defaults</span></summary>
+            <div class="lp-options-body">
+              <label for="ttl-select">Destroy the gate after</label>
+              <select id="ttl-select"></select>
+              <label for="room-password">Room password (optional)</label>
+              <input id="room-password" type="password" autocomplete="new-password"
+                     placeholder="Leave blank for none">
+              <p class="muted small">A second factor on top of the link. Useful if the link might be
+              seen by someone else, for example in a group chat. Tell it to the other person
+              separately.</p>
+            </div>
+          </details>
+
+          <button id="create-btn" class="primary">Create gate</button>
+        </div>
+
+        <div class="card">
+          <h2>Join a gate</h2>
+          <p class="muted small">Paste the link, or type the code shown on the other device.</p>
+          <label class="sr-only" for="join-input">Gate link or gate code</label>
+          <input id="join-input" type="text" inputmode="latin" autocomplete="off"
+                 autocapitalize="characters" spellcheck="false" placeholder="WARP-XXXX-XXXX-...">
+          <label class="sr-only" for="join-password">Room password, if the gate has one</label>
+          <input id="join-password" type="password" autocomplete="current-password"
+                 placeholder="Room password, if the gate has one">
+          <button id="join-btn" class="primary">Join gate</button>
+        </div>
+      </div>
+      <p id="home-error" class="error" hidden></p>
+    </section>
+
+    <section class="lp-section" id="how-it-works">
+      <p class="lp-eyebrow">How it works</p>
+      <h2 class="lp-h2">Three steps, and the server sees none of it.</h2>
+      <p class="lp-lede">The server introduces the browsers to each other and then gets out
+      of the way. Your files never touch it.</p>
+      <div class="lp-steps">
+        <div class="lp-step">
+          <h3>Open a gate</h3>
+          <p>You get a code and a QR. The secret in it is generated in your browser and is
+          never sent to the server.</p>
+        </div>
+        <div class="lp-step">
+          <h3>The other device joins</h3>
+          <p>Scan or paste. Each pair of browsers agrees a key directly with each other, and adds a
+          room password if you set one.</p>
+        </div>
+        <div class="lp-step">
+          <h3>Burn it</h3>
+          <p>Keys, messages and the room are gone. What is left is whatever the two of you
+          chose to save.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="lp-section">
+      <p class="lp-eyebrow">Paying for it</p>
+      <h2 class="lp-h2">No ads. Not one script that is not ours.</h2>
+      <p class="lp-lede">An ad network needs its JavaScript on the page. On a page that holds
+      your decryption key, that script could read it, and no promise in a privacy policy
+      changes what code is able to do. So the money comes from somewhere else.</p>
+
+      <div class="lp-slots">
+        <div class="lp-slot">
+          <span class="lp-slot-label">What we charge for</span>
+          <ul class="lp-list">
+            <li><strong>A licence for closed products.</strong> Warp Gate is AGPL. If a
+            company wants it inside something they do not publish the source of, they buy an
+            exception.</li>
+            <li><strong>Running it for you.</strong> Your own gate on your own domain, kept
+            patched, for teams who want one and do not want to operate it.</li>
+            <li><strong>Relay, when a direct link is impossible.</strong> Some corporate and
+            mobile networks refuse to let two devices meet. Bandwidth through us costs real
+            money, so that part is paid.</li>
+          </ul>
+        </div>
+        <div class="lp-slot lp-slot-free">
+          <span class="lp-slot-label">What stays free, permanently</span>
+          <ul class="lp-list">
+            <li>Every feature that exists today, with no limit added later</li>
+            <li>No cap on gate size, file size, or how many you open</li>
+            <li>No account, ever, including for the paid tiers' free users</li>
+            <li>No third-party script, tracker, pixel or analytics anywhere on the site</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="lp-section">
+      <p class="lp-eyebrow">Candidates</p>
+      <h2 class="lp-h2">What is missing, and what would be nice.</h2>
+      <p class="lp-lede">Marked by whether it is a real gap in what the product already claims,
+      or an addition worth considering.</p>
+      <div class="lp-road">
+        <div class="lp-card">
+          <span class="lp-tag lp-tag-live">Shipped</span>
+          <h3>More than two people</h3>
+          <p>A gate is a small full mesh now. Every pair runs its own connection and its own
+          keys, so nobody relays anybody else's traffic. Capped deliberately: the number of
+          connections grows with the square of the group.</p>
+        </div>
+        <div class="lp-card">
+          <span class="lp-tag lp-tag-gap">Real gap</span>
+          <h3>Survive a phone reload on a password gate</h3>
+          <p>The key schedule takes a password, but the reload path does not carry it, so a
+          refresh drops you out.</p>
+        </div>
+        <div class="lp-card">
+          <span class="lp-tag lp-tag-gap">Real gap</span>
+          <h3>Resume a big transfer</h3>
+          <p>A dropped connection restarts the file. Chunk-level resume is the difference
+          between usable and not on mobile data.</p>
+        </div>
+        <div class="lp-card">
+          <span class="lp-tag">Nice to have</span>
+          <h3>Install it, and share into it</h3>
+          <p>A PWA with a share target: hold a photo in the gallery, share to Warp Gate, gate
+          opens with it already attached.</p>
+        </div>
+        <div class="lp-card">
+          <span class="lp-tag">Nice to have</span>
+          <h3>Scan a code with the camera</h3>
+          <p>Today the phone shows the QR and the laptop reads it. The reverse direction needs
+          the camera.</p>
+        </div>
+        <div class="lp-card">
+          <span class="lp-tag">Nice to have</span>
+          <h3>Say the same two words</h3>
+          <p>A short pair of words derived from the live key. If both screens match, nobody is
+          sitting in the middle.</p>
+        </div>
+        <div class="lp-card">
+          <span class="lp-tag lp-tag-live">Already true</span>
+          <h3>Works when both of you are behind the same router</h3>
+          <p>The awkward case that breaks most tools. It was broken here too, and is fixed.</p>
+        </div>
+        <div class="lp-card">
+          <span class="lp-tag">Nice to have</span>
+          <h3>Run your own</h3>
+          <p>One container, no build step, no dependencies. The trust question is who serves
+          the page, so self-hosting is the honest answer to it.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="lp-section lp-pledge">
+      <p class="lp-eyebrow">The pledge</p>
+      <h2 class="lp-h2">Free forever, and that's a promise.</h2>
+      <blockquote>Every feature that exists today stays free, permanently. Nothing that
+      works now will later need a subscription. We charge companies for commercial use and
+      for the things that cost us bandwidth, and if that ever stops covering the bill, the
+      site gets smaller before it gets paywalled.</blockquote>
+    </section>
+
+    <details class="disc lp-tail-disc">
+      <summary><span class="disc-title">How this works</span><span class="disc-hint">in one paragraph</span></summary>
+      <div class="disc-body">
+        <p>Creating a gate generates a secret in your browser and puts it in the link,
+        where the server never sees it. The other device derives the same keys from that
+        link, both sides prove to each other that they hold it, and then your devices talk
+        directly. Closing the gate destroys the keys and the room.</p>
+      </div>
+    </details>
+
+    <p class="muted small"><button id="show-onboarding" class="link">Read the security notes again</button></p>
+  </section>
+
+  <!-- password prompt -------------------------------------------------->
+  <section id="screen-password" class="screen" hidden>
+    <div class="pane">
+    <p class="eyebrow">Locked gate</p>
+    <h1 class="wg-h1">This gate needs a password</h1>
+    <p class="lede">The person who created it set one. Ask them for it: it is not in the
+    link, and the server does not have it.</p>
+    <label class="sr-only" for="password-input">Room password</label>
+    <input id="password-input" type="password" autocomplete="current-password"
+           placeholder="Room password">
+    <button id="password-submit" class="primary">Continue</button>
+    <p id="password-error" class="error" hidden></p>
+    <button id="password-cancel" class="danger">Cancel</button>
+    </div>
+  </section>
+
+  <!-- waiting ---------------------------------------------------------->
+  <section id="screen-waiting" class="screen" hidden>
+    <div class="pane">
+    <p class="eyebrow">Gate open</p>
+    <h1 id="waiting-title" class="wg-h1">Waiting for the other device</h1>
+    <p class="lede">Scan this with the other device's camera, or send it the link.</p>
+
+    <div id="share-hidden">
+      <p class="muted">The gate code is hidden until you choose to show it, so it is not
+      sitting on your screen for anyone nearby to read.</p>
+      <button id="reveal-share" class="primary">Show the code and QR</button>
+      <div class="row">
+        <button id="copy-link" class="secondary">Copy link</button>
+        <button id="copy-code" class="secondary">Copy code</button>
+      </div>
+      <p class="muted small">Copying does not put it on screen.</p>
+    </div>
+
+    <div id="share-shown" hidden>
+      <div class="qr-wrap" id="qr-wrap">
+        <canvas id="qr" width="320" height="320" aria-label="QR code containing the gate link"></canvas>
+      </div>
+
+      <div class="code-block">
+        <div class="label">Gate code</div>
+        <div id="room-code" class="code"></div>
+      </div>
+
+      <div class="row">
+        <button id="hide-share" class="secondary">Hide again</button>
+        <button id="copy-link-2" class="secondary">Copy link</button>
+      </div>
+
+      <p class="muted small">Anyone who can read this, including over your shoulder or in a
+      photograph, can join this gate until it is full. Add a room password if that worries
+      you.</p>
+    </div>
+
+    <button id="waiting-sever" class="danger">Cancel</button>
+    </div>
+  </section>
+
+  <!-- connected -------------------------------------------------------->
+  <section id="screen-connected" class="screen" hidden>
+    <div class="route-line">
+      <span id="route-badge" class="badge">connecting</span>
+      <span class="muted small">Verification code <strong id="sas">-----</strong></span>
+      <!-- Who is in this gate, this device included. Each participant's name is DERIVED
+           from the room secret and that participant's server-assigned slot id, so every
+           device computes the same name for the same person and no name is ever typed,
+           stored or sent. There is deliberately no way to choose one: the easy path has
+           to be the private one on a tool whose premise is that it does not know who you
+           are. Names last exactly as long as the gate does. -->
+      <span id="roster" class="roster" aria-label="Who is in this gate" hidden></span>
+    </div>
+
+    <details class="disc compact">
+      <summary><span class="disc-title">What the verification code is for</span>
+        <span class="disc-hint">optional check</span></summary>
+      <div class="disc-body">
+        <p>Both devices should show the same five digits. If you read them aloud and they
+        match, nothing has been substituted between you. If they differ, burn the gate.</p>
+      </div>
+    </details>
+
+    <div id="messages" class="messages" aria-live="polite"></div>
+
+    <form id="chat-form" class="composer-box">
+      <label class="sr-only" for="chat-input">Message to send</label>
+      <!-- maxlength is the cheap half of the limit: it clamps a paste in the browser
+           before any layout happens. app.js enforces the same number for programmatic
+           input and explains it. The number is bounded by what a single data channel
+           message can actually carry, so anything longer could never have been sent. -->
+      <textarea id="chat-input" rows="3" maxlength="16000"
+                placeholder="Write a message, paste an image, or drop files here"></textarea>
+      <div class="composer-actions">
+        <button type="button" id="attach-btn" class="secondary" title="Attach files">Attach</button>
+        <label class="toggle" title="Hide the message until the other side chooses to reveal it">
+          <input type="checkbox" id="secret-toggle">
+          <span>Secret</span>
+        </label>
+        <span id="compose-hint" class="muted small"></span>
+        <button type="submit" class="primary">Send</button>
+      </div>
+      <input type="file" id="file-input" multiple hidden>
+    </form>
+    <div id="drop-veil" class="drop-veil" hidden>Drop to send</div>
+
+    <details class="disc compact">
+      <summary><span class="disc-title">Connection details</span>
+        <span class="disc-hint" id="conn-hint">how your data is routed</span></summary>
+      <div class="disc-body"><pre id="conn-detail" class="diag">gathering...</pre></div>
+    </details>
+
+    <button id="sever" class="danger">Burn the gate</button>
+  </section>
+
+  <!-- severed ---------------------------------------------------------->
+  <section id="screen-severed" class="screen" hidden>
+    <div class="pane">
+    <p class="eyebrow">Gate closed</p>
+    <h1 class="wg-h1">Gate burned.</h1>
+    <p id="severed-reason" class="lede"></p>
+    <p class="muted small">The gate, the room and the keys are gone. Nothing further can be
+    sent or received.</p>
+
+    <div id="transcript-holder" hidden>
+      <p class="eyebrow">Kept in this tab</p>
+      <h2 class="wg-h3">What was exchanged</h2>
+      <p class="muted small">Kept so you do not have to run the whole thing again if the
+      connection dropped mid-way. This is held in this tab only: it was never written to
+      disk, never sent anywhere, and it disappears when you close or reload this page.</p>
+      <div id="transcript-mount"></div>
+      <button id="clear-transcript" class="danger">Clear this now</button>
+    </div>
+
+    <button id="restart" class="primary">Open a new gate</button>
+    </div>
+  </section>
+
+  <!-- failure ---------------------------------------------------------->
+  <section id="screen-failed" class="screen" hidden>
+    <div class="pane">
+    <p class="eyebrow">Connection failed</p>
+    <h1 id="failed-title" class="wg-h1">Unable to establish a direct connection</h1>
+    <p id="failed-detail" class="lede"></p>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">What to try</span><span class="disc-hint">most likely fixes</span></summary>
+      <div class="disc-body">
+        <ul>
+          <li>Put both devices on the same network, which almost always works.</li>
+          <li>Try a different network on either device: mobile data instead of WiFi, or the reverse.</li>
+          <li>Turn off a VPN on either device, or turn one on.</li>
+          <li>Corporate and public guest networks frequently block peer-to-peer traffic outright.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="disc compact">
+      <summary><span class="disc-title">Technical detail</span><span class="disc-hint">for diagnosing</span></summary>
+      <div class="disc-body"><pre id="failed-diag" class="diag"></pre></div>
+    </details>
+
+    <button id="failed-restart" class="primary">Start again</button>
+    </div>
+  </section>
+
+</main>
+
+<section id="extras" class="extras" hidden>
+
+  <div class="bridge" aria-hidden="true">
+    <svg viewBox="0 0 420 74" preserveAspectRatio="xMidYMid meet">
+      <rect class="node" x="12" y="19" width="52" height="36" rx="6"/>
+      <rect class="screen-glow" x="20" y="27" width="36" height="16" rx="2"/>
+      <rect class="node" x="356" y="19" width="52" height="36" rx="6"/>
+      <rect class="screen-glow" x="364" y="27" width="36" height="16" rx="2"/>
+      <line class="wire" x1="70" y1="37" x2="350" y2="37"/>
+      <line class="flow" x1="70" y1="37" x2="350" y2="37"/>
+      <g class="lock" transform="translate(198 22)">
+        <rect x="0" y="10" width="24" height="18" rx="3"/>
+        <path d="M5 10 V6 a7 7 0 0 1 14 0 v4" fill="none"/>
+      </g>
+    </svg>
+    <p class="bridge-cap">Encrypted here. Decrypted there. Nothing in between keeps a copy.</p>
+  </div>
+
+  <ol class="steps">
+    <li class="step"><span class="step-n">1</span><b>Create</b><span>Open a gate on one device.</span></li>
+    <li class="step"><span class="step-n">2</span><b>Share</b><span>Scan the code, or send the link.</span></li>
+    <li class="step"><span class="step-n">3</span><b>Send</b><span>Chat, secrets and files, directly.</span></li>
+    <li class="step"><span class="step-n">4</span><b>Burn it</b><span>The gate and its keys are gone.</span></li>
+  </ol>
+
+  <details class="disc support" id="support">
+    <summary><span class="disc-title">Support Warp Gate</span>
+      <span class="disc-hint">free, no ads, no tracking, no accounts</span></summary>
+    <div class="disc-body">
+      <p>Warp Gate is free and always will be. It keeps nothing, sells nothing and shows
+      no advertising. If it saved you a bit of trouble, this keeps the lights on.</p>
+
+      <a class="kofi" href="https://ko-fi.com/fysh_yum" target="_blank" rel="noopener noreferrer">
+        Buy me a coffee on Ko-fi
+      </a>
+
+      <div class="coin" id="coin-xmr">
+        <div class="coin-head"><span class="coin-name">Monero</span><span class="coin-tick">XMR</span></div>
+        <code class="coin-addr" id="addr-xmr">8Ahxk91aBHfCgLmqUji5NQXVHg9Y6pAj1EpdnsZvm5Nf4M4D9Uam6hr4FXZoBhNuZoKMH9V31pYZF6fkyf4pvK6q4pCmynj</code>
+        <div class="coin-actions">
+          <button class="secondary" data-copy="addr-xmr">Copy address</button>
+          <button class="secondary" data-qr="xmr">Show QR</button>
+        </div>
+        <div class="coin-qr" id="qrbox-xmr" hidden><canvas id="qr-xmr" width="260" height="260"
+          aria-label="Monero donation address as a QR code"></canvas></div>
+      </div>
+
+      <div class="coin" id="coin-btc">
+        <div class="coin-head"><span class="coin-name">Bitcoin</span><span class="coin-tick">BTC</span></div>
+        <code class="coin-addr" id="addr-btc">bc1qkgq5xpue5se32xu53s4nuvn866u4xgpl0xs27t</code>
+        <div class="coin-actions">
+          <button class="secondary" data-copy="addr-btc">Copy address</button>
+          <button class="secondary" data-qr="btc">Show QR</button>
+        </div>
+        <div class="coin-qr" id="qrbox-btc" hidden><canvas id="qr-btc" width="260" height="260"
+          aria-label="Bitcoin donation address as a QR code"></canvas></div>
+      </div>
+
+      <p class="muted small">Always check the address on your own screen before sending.
+      Cryptocurrency transfers cannot be reversed.</p>
+    </div>
+  </details>
+</section>
+
+<footer class="foot">
+  <a href="/faq.html">FAQ</a>
+  <a href="/terms.html">Terms</a>
+  <a href="/acceptable-use.html">Acceptable use</a>
+  <a href="/privacy.html">Privacy</a>
+  <a href="https://ko-fi.com/fysh_yum" target="_blank" rel="noopener noreferrer">Support</a>
+  <a id="source-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Source</a>
+</footer>
+
+</div><!-- /.page -->
+
+<div id="log" class="log" aria-live="polite"></div>
+
+<script type="module" src="/js/app.js"></script>
+<script type="module" src="/js/landing.js"></script>
+</body>
+</html>

@@ -1,0 +1,180 @@
+# Warp Gate threat model
+
+Written to be precise rather than reassuring. If something is not protected, it says so.
+
+## The construction, in one paragraph
+
+A 128-bit room secret is generated in the creating browser and never sent to the
+server: it lives in the URL fragment, which browsers do not transmit, and it reaches
+each joining device by QR code or by a link you share. The room id the server sees is
+derived from that secret through HKDF, so it reveals nothing. A gate seats up to six
+devices (`WG_MAX_PARTICIPANTS`, operator-configurable), and **every pair of devices**
+performs its own ephemeral ECDH P-256 exchange, mixes the room secret into that
+pair's key schedule as the HKDF salt, and proves to the other end that it holds the
+same secret before any data flows: the exchange is two-party per pair, and a gate is
+a mesh of such pairs.
+An optional room password, if the creator sets one, is stretched with PBKDF2 and
+appended to that salt, so that both the link and the password are then needed to
+derive the same keys.
+A joining device also presents a separate one-way derivation of the secret to the
+server, which lets the server refuse a seat to anyone who does not hold the link
+without learning anything it could decrypt with.
+All application data, and all signalling, is AES-256-GCM under keys derived from that
+schedule.
+
+## Protected against
+
+| Threat | How | Residual risk |
+|---|---|---|
+| The server operator reading messages or files | Payload keys come from ECDH plus a secret the server never receives | Holds only while the server serves honest code: see "You are trusting whoever serves the page" |
+| The server being compromised *after* you loaded the page | It holds no plaintext and no keys at any point. There is no storage layer to breach | None |
+| The server or Cloudflare learning peer IP addresses from the SDP | Signalling payloads are encrypted under a key derived from the room secret, so the relay sees only `{n, c}` | Cloudflare still sees every participant's client IP from the HTTP connections themselves |
+| An active man in the middle at the signalling layer | Each pair's key schedule mixes the room secret, and the two ends of every link exchange an explicit key confirmation before the UI reports that link connected | Someone who obtains the link is not a man in the middle; they are a participant |
+| Someone who obtains the link but not the room password | If a password was set, the key schedule needs it as well: PBKDF2-HMAC-SHA256 at 600,000 iterations, salted with the room secret, appended to the HKDF salt | Only helps if a password was set and did not travel alongside the link. The server does not and cannot enforce it |
+| Recording traffic now to decrypt later | Session keys need the ephemeral ECDH secret, which dies with the tab | None for message and file content |
+| Tampering with any payload | AEAD on every frame; a single altered bit fails authentication and the frame is dropped | None |
+| Replaying a captured frame | A strictly increasing per-direction counter, bound into both the nonce and the authenticated data | None |
+| Passing a file chunk off as a chat message | The frame type is authenticated, so relabelling breaks the tag | None |
+| Guessing a room code to read traffic | The room id is derived from a 128-bit secret; holding the id does not yield the secret, and key confirmation fails | A guessed id can confirm a room exists, and that probe is rate limited. It can no longer take a seat: see the next row |
+| A device without the link taking a seat | Joining requires presenting a proof derived from the room secret (a one-way HKDF value; the server stores only its hash and compares in constant time), and each seated participant holds an unguessable capability token. Rooms also cap at a configured seat limit (`WG_MAX_PARTICIPANTS`, default 6) | Anyone who obtains the link holds the secret, so they can take a seat: they are a participant, not an intruder |
+| Data outliving the session | State is a single in-memory map. No database, no disk, no logs. A restart destroys every room | None |
+| A session being reused after expiry | Idle, hard and absolute deadlines plus a sweeper, and the room is deleted on sever | None |
+
+## You are trusting whoever serves the page
+
+This is the most important limitation in this document, and it is inherent to every
+web application that does cryptography in the browser, not specific to Warp Gate.
+
+**The server sends the JavaScript that does the encryption.** Whoever controls the
+server controls that code. A malicious operator does not need to break any of the
+cryptography above: they can serve a modified page that copies the room secret, or the
+plaintext, straight back to them, and it would look and behave exactly like this one.
+The verification code cannot detect this either, because the same modified page draws
+it.
+
+So the guarantees above should be read precisely:
+
+- They hold against **the network**, against **anyone watching traffic**, and against a
+  server that is **compromised after** you have loaded the page.
+- They do **not** hold against an operator who is hostile **when they serve you the
+  page**.
+
+What follows from that:
+
+1. **Only use an instance you trust to run honest code.** The only instance the authors
+   operate is **https://warpgate.fysh.site**. Check the address bar before sending anything
+   sensitive.
+2. **Anyone may host their own copy**, and the project is licensed and built so that
+   they can. An instance someone else runs inherits none of the authors' trust, and the
+   authors cannot vouch for it, audit it, or even know it exists.
+   The source is published at `https://github.com/Fysh-ball/warp-gate` and the running
+   site serves that link at `/api/config`, so point 3 below is actionable: you can read
+   what is meant to be running and host it yourself. Warp Gate is AGPL-3.0 and section 13
+   requires that offer to be a real one.
+3. **If you need certainty, host it yourself** from source you have read. That is the
+   only configuration where the trust question has a definite answer, and it is why the
+   project has no dependencies and no build step: the files served are the files in the
+   repository, and you can read all of them.
+4. For something truly high-stakes, encrypt it yourself before sending it, so that a
+   compromised page never sees the plaintext at all.
+
+## Not protected against
+
+These are real limits, not hypotheticals.
+
+- **A compromised device, browser or extension** on either end. Everything is visible there.
+- **The other participants.** Anyone holding the link is a legitimate participant. They can
+  save, screenshot, and forward anything you send. There is no way to prevent this and Warp
+  Gate does not pretend to.
+- **Participants learning each other's IP addresses.** Every pair in a gate connects
+  directly, so every participant learns every other participant's address. This is
+  inherent to a direct connection and is the property most at odds with using Warp Gate
+  between identities you want kept apart. It is stated in the onboarding for that reason.
+- **Cloudflare metadata**, when served through a tunnel: client IPs, timing, room ids,
+  request sizes and session duration. Cloudflare terminates TLS in that topology. The
+  payloads it carries are ciphertext, but the metadata is real. The same applies to the
+  STUN server, which is deliberately Cloudflare's: it learns each device's public
+  address, which Cloudflare already observes from the signalling connection itself. The
+  point of choosing it is that it adds no party that was not already there. STUN is
+  **opt-in**: a fresh checkout advertises no STUN server and starts no UDP listener, so
+  a self-hoster who copies the repository does not get an outward-facing service they
+  did not ask for. `warpgate.fysh.site` sets `WG_STUN_URL` to Cloudflare's in its compose
+  file, and the choice is therefore visible in the deployment rather than implicit in
+  the code.
+- **Your real address, even behind a proxy.** WebRTC discovers the network address of
+  the interface it actually sends from. Loading the page through a proxy does not
+  change that, which is why the onboarding says Warp Gate is confidential, not
+  anonymous.
+- **Traffic analysis.** Nothing is padded, delayed or covered. Message and file sizes and
+  timings are observable to anyone watching the network.
+- **Browser memory hygiene.** The operating system may page a tab's memory to disk. No
+  web application can prevent that.
+- **Clipboard clearing.** Best effort only. Other applications may already have taken a
+  copy, and no browser guarantees a clipboard can be cleared.
+- **Anonymity.** Warp Gate is confidential, not anonymous.
+- **Denial of service.** Someone who merely guesses a room id can no longer occupy a
+  seat: joining requires proof of knowledge of the room secret, and the proof is checked
+  before the server reveals anything about the room's occupancy. What remains is
+  ordinary resource flooding, which is rate limited, and a person who already holds the
+  link taking a seat, which is the "other person" case above. Re-create the gate if a
+  seat is held by someone unwanted.
+
+## Design decisions worth knowing
+
+**The room password is a second factor for a leaked link, not a substitute for the
+link.** An earlier version of this document said there was no password option. There is
+one now, and this is what it does and does not do.
+
+When the creator sets a password, it is stretched with **PBKDF2-HMAC-SHA256 at 600,000
+iterations**, salted with the 128-bit room secret itself (`secret || "wg/v1/password"`),
+and the result is **appended to the room secret in the HKDF salt** of the session key
+schedule. So the derived keys depend on both values. Someone who has the link but not
+the password derives different keys, fails key confirmation, and gets nothing.
+
+Why that is not the trap a spoken password usually is: the password is never the only
+secret. The 128-bit link secret is still there and still doing the authentication work.
+An observer of the signalling channel has no offline target to grind, because they do
+not hold the link secret either. The password's actual job is the case where **the link
+leaks** but the password did not travel with it: pasted into the wrong chat, shoulder
+surfed, screenshotted, left in a scrollback. 600,000 PBKDF2 iterations then make each
+guess expensive for someone who has the link and is guessing the password.
+
+What it is not:
+
+- **The server does not enforce it.** The room carries a `requiresPassword` flag, the
+  server stores it and reports it so the joining page can prompt, and that is all it is:
+  **advisory**. The server never sees the password, cannot see it, and cannot check one.
+  Do not read the flag as an access control.
+- **It is not a PAKE.** A password used as the sole secret would still need CPace or
+  similar, and no reviewed browser implementation is obtainable under this project's
+  no-dependency constraint. That reasoning has not changed. What changed is that the
+  password here is layered on top of a 128-bit secret rather than standing in for one.
+- **It does not stop someone who has the link from occupying a seat.** The server
+  admits anyone who proves knowledge of the link secret, and the password never reaches
+  it, so a person with the link but not the password can still take a seat: they derive
+  different keys, fail confirmation and read nothing, but they hold the seat until the
+  gate is re-created. (A guesser who has only a room id cannot take a seat at all:
+  joining requires a proof derived from the link secret. See "Denial of service"
+  above.)
+
+**`/api/health` returns liveness and nothing else.** It answers `{"ok":true}`. It used
+to also publish a live count of open gates, which was a usage side channel on a tool
+whose whole premise is that the server learns nothing: anyone could poll it and watch
+when the instance was in use and by roughly how many people, and someone guessing room
+ids could use it as a progress meter. The container healthcheck only ever needed `ok`,
+so the count was removed rather than access-controlled.
+
+**There is no whole-file hash.** Every chunk is individually authenticated and bound to
+its position in the sequence, so a file-level hash would add no security property. What
+is checked at the end is that the reassembled byte and chunk counts match what was sent.
+
+**There is no relay in this version.** If a direct connection cannot be established, Warp
+Gate says so and stops, rather than silently routing through a server. A future relay
+would carry ciphertext only, and would be labelled in the interface when in use.
+
+**Key material is non-extractable.** Session keys are `CryptoKey` objects the browser
+will not export, so the raw bytes never enter JavaScript memory. Dropping the reference
+on sever is the strongest erasure a browser offers, since a JavaScript byte array cannot
+be reliably wiped. (One narrow engine fallback exists: a browser that refuses the direct
+ECDH-to-HKDF derivation briefly holds the shared secret as bytes, which are zeroed
+immediately, and the fallback announces itself rather than passing silently.)
