@@ -149,8 +149,13 @@ export class Session extends EventTarget {
       if (event.detail?.peerPresent) this.beginHandshake();
     });
     this.signal.addEventListener('peer-joined', () => this.beginHandshake());
-    this.signal.addEventListener('peer-left', () => {
-      if (this.state !== STATE.SEVERED) this.emit('peer-left', 'The other device disconnected.');
+    this.signal.addEventListener('peer-left', (event) => {
+      if (this.state === STATE.SEVERED) return;
+      // The idle clock restarts once a peer leaves, so hand the new deadline up with it.
+      this.emit('peer-left', {
+        message: 'The other device disconnected.',
+        expiresAt: event.detail?.expiresAt ?? null,
+      });
     });
     this.signal.addEventListener('closed', (event) => {
       const reason = event.detail?.reason ?? 'closed';

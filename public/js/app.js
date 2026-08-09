@@ -124,6 +124,34 @@ async function runCapabilityCheck(manual) {
   }
 }
 
+/**
+ * Move the conversation onto the severed screen so it stays readable.
+ *
+ * The point is the case this was reported for: transporting a password when the
+ * connection drops. Having to run the whole gate cycle again to re-read something you
+ * already received is pure friction, and keeping it costs nothing in privacy: the
+ * plaintext is already in this page's memory. It is never written to storage, so
+ * "gone when the tab closes" remains exactly true.
+ */
+function showTranscript() {
+  const messages = $('messages');
+  const holder = $('transcript-holder');
+  const mount = $('transcript-mount');
+  if (!messages || !holder || !mount) return;
+  if (!messages.children.length) return; // nothing was exchanged
+  mount.appendChild(messages);
+  messages.classList.add('transcript');
+  holder.hidden = false;
+}
+
+function clearTranscript() {
+  for (const url of objectUrls) URL.revokeObjectURL(url);
+  objectUrls.clear();
+  $('transcript-mount').replaceChildren();
+  $('transcript-holder').hidden = true;
+  log('Transcript cleared.', 'ok');
+}
+
 /** Copy buttons and lazily-rendered QR codes for the donation addresses. */
 function setupSupport() {
   for (const btn of document.querySelectorAll('[data-copy]')) {
@@ -226,6 +254,12 @@ function wire(active) {
     badge(label, kind);
     if (event.detail.state === STATE.CONNECTED) {
       show('connected');
+      // While both devices are here the server keeps pushing the expiry forward, so a
+      // countdown would be misleading. It resumes if the other side leaves.
+      stopTtl();
+      const ttl = $('ttl');
+      ttl.hidden = false;
+      ttl.textContent = 'live';
       $('compose-hint').textContent = describeLimit();
     }
     // Only a genuine key-confirmation failure says "could not verify". A connectivity
@@ -285,12 +319,18 @@ function wire(active) {
   active.addEventListener('intruder', () => log('A device in this room could not be decrypted: it does not hold the room secret.', 'bad'));
   active.addEventListener('frame-rejected', (event) => log(`frame rejected: ${event.detail}`, 'bad'));
   active.addEventListener('warning', (event) => log(event.detail, 'warn'));
-  active.addEventListener('peer-left', (event) => log(event.detail, 'warn'));
+  active.addEventListener('peer-left', (event) => {
+    const detail = event.detail;
+    log(typeof detail === 'string' ? detail : detail.message, 'warn');
+    // The gate is idle again, so show how long it has left.
+    if (detail && detail.expiresAt) startTtl(detail.expiresAt);
+  });
 
   active.addEventListener('severed', (event) => {
     stopTtl();
-    for (const url of objectUrls) URL.revokeObjectURL(url);
-    objectUrls.clear();
+    // Deliberately NOT revoking the preview URLs here: the transcript below stays
+    // readable until the tab closes or the user clears it.
+    showTranscript();
     badge('severed', 'idle');
     $('severed-reason').textContent = event.detail ?? '';
     history.replaceState(null, '', location.pathname);
@@ -697,6 +737,13 @@ async function boot() {
     log(`could not load server config: ${err.message}`, 'bad');
   }
 
+  // AGPL-3.0 section 13: users interacting over a network must be offered the source.
+  if (config.sourceUrl) {
+    const link = $('source-link');
+    link.href = config.sourceUrl;
+    link.hidden = false;
+  }
+
   const select = $('ttl-select');
   for (const minutes of config.sessionMinutes) {
     const option = document.createElement('option');
@@ -754,6 +801,11 @@ async function boot() {
   $('join-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') startJoin($('join-input').value); });
   $('sever').addEventListener('click', severNow);
   $('waiting-sever').addEventListener('click', severNow);
+  $('clear-transcript').addEventListener('click', clearTranscript);
+  window.addEventListener('pagehide', () => {
+    for (const url of objectUrls) URL.revokeObjectURL(url);
+    objectUrls.clear();
+  });
   $('restart').addEventListener('click', () => { location.href = location.pathname; });
   $('failed-restart').addEventListener('click', () => { location.href = location.pathname; });
 

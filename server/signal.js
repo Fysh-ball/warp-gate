@@ -91,6 +91,7 @@ export async function handleApi(req, res, url) {
       unclaimedTtlMs: config.ttl.unclaimedMs,
       heartbeatMs: config.heartbeatMs,
       maxRelayBytes: config.limits.maxRelayBytes,
+      sourceUrl: config.sourceUrl,
     });
   }
 

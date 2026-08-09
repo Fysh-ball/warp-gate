@@ -132,6 +132,10 @@ server.listen(config.httpPort, config.httpHost, () => {
   if (!config.iceServers.length) {
     process.stdout.write('warp-gate WARNING: no WG_STUN_URL configured, clients will gather host candidates only\n');
   }
+  if (!config.sourceUrl) {
+    process.stdout.write('warp-gate WARNING: no WG_SOURCE_URL set. Warp Gate is AGPL-3.0 and section 13\n');
+    process.stdout.write('warp-gate          requires offering the corresponding source to network users.\n');
+  }
 });
 
 let shuttingDown = false;

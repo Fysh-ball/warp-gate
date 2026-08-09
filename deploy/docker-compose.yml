@@ -37,6 +37,9 @@ services:
       - WG_TRUST_PROXY=${WG_TRUST_PROXY:-1}
       # TLS terminates at Cloudflare, so the response is served over HTTPS.
       - WG_HSTS=${WG_HSTS:-1}
+      # AGPL-3.0 section 13: network users must be offered the corresponding source.
+      # Point this at the public repository for this deployment.
+      - WG_SOURCE_URL=${WG_SOURCE_URL:-}
     volumes:
       - ./app:/app:ro
     ports:

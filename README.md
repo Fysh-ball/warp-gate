@@ -148,3 +148,17 @@ trusted.
 
 Requirements: Node 22+, `zbarimg` for the QR suite, and a Chromium-based browser for the
 browser suite.
+
+## Licence
+
+[GNU Affero General Public License v3.0](LICENSE).
+
+Run it, read it, modify it, host it. Section 13 is the part worth knowing: **if you run a
+modified version and let other people use it over a network, you must offer those users
+the source of your modified version.**
+
+That obligation is doing real work here. As set out above, a user cannot verify that a
+host is serving honest code, and no licence can change that. What the AGPL does is oblige
+an honest operator to publish their changes, and make concealing a modification a licence
+violation rather than merely bad manners. Set `WG_SOURCE_URL` to wherever your copy lives
+and the page will show a Source link; the server warns at startup if it is unset.

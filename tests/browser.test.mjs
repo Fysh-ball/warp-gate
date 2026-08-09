@@ -420,6 +420,27 @@ try {
   const hashAfter = await a.eval('return location.hash;');
   check('severing strips the secret from the URL', hashAfter === '', `hash was "${hashAfter}"`);
 
+  // Reported need: transporting a password when the connection drops should not mean
+  // running the whole gate again just to re-read what already arrived.
+  const transcript = await a.eval(`
+    const holder = document.getElementById('transcript-holder');
+    return JSON.stringify({
+      shown: holder ? !holder.hidden : false,
+      text: (document.getElementById('transcript-mount') || {}).textContent || '',
+      persisted: Object.keys(localStorage).some(k => k.startsWith('wg.transcript'))
+        || Object.keys(sessionStorage).some(k => k.startsWith('wg.transcript')),
+    });
+  `);
+  const tr = JSON.parse(transcript);
+  check('what was exchanged is still readable after severing', tr.shown, transcript.slice(0, 120));
+  check('the severed transcript still contains the conversation',
+    tr.text.length > 0, `${tr.text.length} chars`);
+  check('the transcript is never written to storage', tr.persisted === false);
+
+  await a.eval("document.getElementById('clear-transcript').click(); return true;");
+  check('clearing the transcript empties it',
+    (await a.eval("return document.getElementById('transcript-mount').textContent.length === 0 && document.getElementById('transcript-holder').hidden;")) === true);
+
   const roomsAfter = await request(PORT, 'GET', '/api/health');
   check('the room is deleted from the server on sever', roomsAfter.json?.rooms === 0, roomsAfter.text);
 

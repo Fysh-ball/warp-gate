@@ -40,8 +40,12 @@ export const config = {
     // destroy the gate; and short enough that a closed tab frees its room promptly.
     emptyGraceMs: int(env.WG_EMPTY_GRACE_MS, 45_000),
     // Once paired, the room survives so ICE restart on a network change can be
-    // signalled (DESIGN.md 1.6).
+    // signalled (DESIGN.md 1.6). The chosen value is an IDLE timeout, not an absolute
+    // one: while both devices are attached the clock is pushed forward, so a long file
+    // transfer or a long conversation is never cut off mid-way.
     allowedSessionMinutes: [10, 30, 60],
+    // Backstop so a pair of forgotten tabs cannot hold a room forever.
+    maxSessionMs: int(env.WG_MAX_SESSION_MS, 24 * 60 * 60 * 1000),
     defaultSessionMinutes: int(env.WG_DEFAULT_SESSION_MIN, 30),
   },
 
@@ -71,4 +75,9 @@ export const config = {
 
   // Send HSTS. Only enable where TLS actually terminates in front of this process.
   hsts: env.WG_HSTS === '1',
+
+  // Warp Gate is AGPL-3.0. Section 13 obliges an operator to offer the corresponding
+  // source to users who interact with it over a network, which is every user here. Set
+  // this to wherever your copy of the source lives, especially if you modified it.
+  sourceUrl: env.WG_SOURCE_URL || '',
 };

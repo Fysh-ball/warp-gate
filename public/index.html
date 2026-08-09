@@ -247,7 +247,18 @@
   <section id="screen-severed" class="screen" hidden>
     <h1>Warp Gate severed.</h1>
     <p id="severed-reason" class="muted"></p>
-    <p class="muted small">The session has ended. Keys, messages and the room are gone.</p>
+    <p class="muted small">The gate, the room and the keys are gone. Nothing further can be
+    sent or received.</p>
+
+    <div id="transcript-holder" hidden>
+      <h2>What was exchanged</h2>
+      <p class="muted small">Kept so you do not have to run the whole thing again if the
+      connection dropped mid-way. This is held in this tab only: it was never written to
+      disk, never sent anywhere, and it disappears when you close or reload this page.</p>
+      <div id="transcript-mount"></div>
+      <button id="clear-transcript" class="danger">Clear this now</button>
+    </div>
+
     <button id="restart" class="primary">Open a new gate</button>
   </section>
 
@@ -346,6 +357,7 @@
   <a href="/acceptable-use.html">Acceptable use</a>
   <a href="/privacy.html">Privacy</a>
   <a href="https://ko-fi.com/fysh_yum" target="_blank" rel="noopener noreferrer">Support</a>
+  <a id="source-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Source</a>
 </footer>
 
 <div id="log" class="log" aria-live="polite"></div>

@@ -586,3 +586,15 @@ a.kofi:hover { filter: brightness(1.08); }
   button.primary { color: #ffffff; }
   .log { background: rgba(246, 248, 250, 0.96); }
 }
+
+/* ---------------------------------------------- post-sever transcript */
+
+#transcript-holder { margin: 18px 0 4px; }
+#transcript-holder h2 { color: var(--text); }
+.messages.transcript {
+  max-height: 50vh;
+  background: var(--panel-2);
+  opacity: 0.95;
+}
+.messages.transcript .composer-box { display: none; }
+#clear-transcript { margin-top: 12px; }

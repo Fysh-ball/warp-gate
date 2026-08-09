@@ -63,6 +63,8 @@ export function createRoom(roomId, sessionMinutes, key, requiresPassword = false
     // A freshly created room has nobody attached yet; the creator attaches moments
     // later. Left null so the unclaimed TTL governs this window, not the grace.
     emptySince: null,
+    // Hard limit regardless of activity, so a forgotten pair of tabs cannot pin a room.
+    hardExpiresAt: now + config.ttl.maxSessionMs,
   };
   rooms.set(roomId, room);
   return {
@@ -142,6 +144,9 @@ export function attach(room, role, res) {
   const peerPresent = Boolean(peer?.res && !peer.res.writableEnded);
   writeEvent(res, 'hello', { role, peerPresent, expiresAt: room.expiresAt });
   if (peerPresent) {
+    // Both here now, so restart the idle clock immediately rather than waiting for the
+    // next sweep.
+    extendIfActive(room);
     // Tell the peer we are listening. The creator uses this to start the offer, so it
     // must fire on stream attachment and not merely on the join POST: otherwise the
     // offer can be relayed before the joiner is listening for it.
@@ -166,7 +171,7 @@ export function detach(room, role, res, graceMs = 8000) {
   slot.graceTimer = setTimeout(() => {
     slot.graceTimer = null;
     if (!rooms.has(room.id) || room[role]?.res) return;
-    sendTo(room, otherRole(role), 'peer-left', { reason: 'disconnected' });
+    sendTo(room, otherRole(role), 'peer-left', { reason: 'disconnected', expiresAt: room.expiresAt });
   }, graceMs);
   if (slot.graceTimer.unref) slot.graceTimer.unref();
 }
@@ -201,10 +206,38 @@ export function destroyRoom(roomId, reason, exceptRole = null) {
   return true;
 }
 
+/** True when both participants currently have a live stream attached. */
+export function bothPresent(room) {
+  return Boolean(room.a?.res && !room.a.res.writableEnded
+    && room.b?.res && !room.b.res.writableEnded);
+}
+
+/**
+ * Push the expiry forward while both devices are still here.
+ *
+ * The selected TTL is an idle timeout, not a deadline. Cutting off a pair who are
+ * actively using the gate, mid file transfer, is never the right behaviour: the point
+ * of the timeout is to reap gates nobody is using. The hard limit still applies.
+ */
+export function extendIfActive(room, now = Date.now()) {
+  if (!bothPresent(room)) return false;
+  const wanted = Math.min(now + room.sessionMs, room.hardExpiresAt);
+  if (wanted <= room.expiresAt) return false;
+  room.expiresAt = wanted;
+  return true;
+}
+
 /** Expiry sweep and heartbeat. Returns how many rooms were destroyed. */
 export function sweep(now = Date.now()) {
   let destroyed = 0;
   for (const [id, room] of rooms) {
+    // Keep an actively used gate alive before considering it for expiry.
+    extendIfActive(room, now);
+    if (room.hardExpiresAt <= now) {
+      destroyRoom(id, 'ttl');
+      destroyed += 1;
+      continue;
+    }
     if (room.expiresAt <= now) {
       destroyRoom(id, 'ttl');
       destroyed += 1;

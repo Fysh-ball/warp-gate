@@ -315,6 +315,70 @@ let ok = true;
   await srv.stop();
 }
 
+// ---------------------------------------------------------------- idle extension
+{
+  // A fixed deadline is wrong for a pair who are actively using the gate: a long file
+  // transfer would be cut off mid-way. The chosen TTL is an idle timeout, so while both
+  // devices are attached the expiry is pushed forward.
+  const P = PORT + 6;
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_SWEEP_MS: '150',
+    WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500',
+  });
+
+  const ROOM = 'KEEP0001';
+  const create = await request(P, 'POST', '/api/create', { roomId: ROOM, sessionMinutes: 10 });
+  const join = await request(P, 'POST', '/api/join', { roomId: ROOM });
+  check('idle-extension fixture room created', create.status === 200 && join.status === 200,
+    `${create.status}/${join.status}`);
+
+  const sa = openStream(P, ROOM, create.json.token);
+  const sb = openStream(P, ROOM, join.json.token);
+  await Promise.all([sa.ready, sb.ready]);
+  await sa.wait('peer-joined');
+
+  const read = async () => (await request(P, 'GET', `/api/room?room=${ROOM}&token=${create.json.token}`)).json;
+  const first = await read();
+  await delay(700);
+  const later = await read();
+  check('expiry moves forward while both devices are attached',
+    later.expiresAt > first.expiresAt, `${first.expiresAt} -> ${later.expiresAt}`);
+
+  // With one side gone the clock must stop moving, or a gate could never expire.
+  sb.close();
+  await delay(700);
+  const afterLeave = await read();
+  await delay(700);
+  const afterLeave2 = await read();
+  check('expiry stops moving once a device leaves',
+    afterLeave2.expiresAt === afterLeave.expiresAt, `${afterLeave.expiresAt} -> ${afterLeave2.expiresAt}`);
+
+  sa.close();
+  await srv.stop();
+}
+
+// ---------------------------------------------------------------- hard limit
+{
+  // The extension must not be unbounded, or two forgotten tabs would pin a room.
+  const P = PORT + 7;
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_SWEEP_MS: '150',
+    WG_MAX_SESSION_MS: '900',
+  });
+  const create = await request(P, 'POST', '/api/create', { roomId: 'HARD0001', sessionMinutes: 10 });
+  const join = await request(P, 'POST', '/api/join', { roomId: 'HARD0001' });
+  const sa = openStream(P, 'HARD0001', create.json.token);
+  const sb = openStream(P, 'HARD0001', join.json.token);
+  await Promise.all([sa.ready, sb.ready]);
+
+  const closed = await sa.wait('closed', 6000).catch((e) => e);
+  check('an actively used gate still dies at the hard limit',
+    closed?.data?.reason === 'ttl', closed instanceof Error ? closed.message : JSON.stringify(closed?.data));
+
+  sa.close(); sb.close();
+  await srv.stop();
+}
+
 // ---------------------------------------------------------------- STUN
 {
   const P = PORT + 3;
