@@ -88,6 +88,23 @@
       </div>
     </details>
 
+    <details class="disc" id="instance-disc">
+      <summary><span class="disc-title" id="instance-title">Who is serving you this page</span>
+        <span class="disc-hint">worth knowing</span></summary>
+      <div class="disc-body">
+        <p id="instance-body">The only instance the authors run is
+        <strong>https://wg.fysh.site</strong>. The source is public so anyone may host
+        their own copy, which is encouraged, but an instance run by somebody else
+        inherits none of the authors' trust.</p>
+        <p><strong>Whoever serves this page controls the code that does the
+        encryption.</strong> That is true of every website that encrypts in the browser.
+        A hostile operator could serve a modified page and nothing here would reveal it.
+        If you need certainty, host it yourself from source you have read: there are no
+        dependencies and no build step, so the files served are the files in the
+        repository. Full detail in the <a href="/faq.html">FAQ</a>.</p>
+      </div>
+    </details>
+
     <div class="agreement">
       <label class="check">
         <input type="checkbox" id="agree-check">
@@ -112,6 +129,12 @@
       <p class="muted small">You will get a link and a QR code to give to the other device.</p>
       <label for="ttl-select">Destroy the gate after</label>
       <select id="ttl-select"></select>
+      <label for="room-password">Room password (optional)</label>
+      <input id="room-password" type="password" autocomplete="new-password"
+             placeholder="Leave blank for none">
+      <p class="muted small">A second factor on top of the link. Useful if the link might be
+      seen by someone else, for example in a group chat. Tell it to the other person
+      separately.</p>
       <button id="create-btn" class="primary">Create gate</button>
     </div>
 
@@ -120,6 +143,8 @@
       <p class="muted small">Paste the link, or type the code shown on the other device.</p>
       <input id="join-input" type="text" inputmode="latin" autocomplete="off"
              autocapitalize="characters" spellcheck="false" placeholder="WARP-XXXX-XXXX-...">
+      <input id="join-password" type="password" autocomplete="current-password"
+             placeholder="Room password, if the gate has one">
       <button id="join-btn" class="primary">Join gate</button>
     </div>
 
@@ -136,6 +161,18 @@
     </details>
 
     <p class="muted small"><button id="show-onboarding" class="link">Read the security notes again</button></p>
+  </section>
+
+  <!-- password prompt -------------------------------------------------->
+  <section id="screen-password" class="screen" hidden>
+    <h1>This gate needs a password</h1>
+    <p class="muted">The person who created it set one. Ask them for it: it is not in the
+    link, and the server does not have it.</p>
+    <input id="password-input" type="password" autocomplete="current-password"
+           placeholder="Room password">
+    <button id="password-submit" class="primary">Continue</button>
+    <p id="password-error" class="error" hidden></p>
+    <button id="password-cancel" class="danger">Cancel</button>
   </section>
 
   <!-- waiting ---------------------------------------------------------->
@@ -179,34 +216,23 @@
       </div>
     </details>
 
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="chat" role="tab">Chat</button>
-      <button class="tab" data-tab="secret" role="tab">Secret</button>
-      <button class="tab" data-tab="file" role="tab">File</button>
-    </nav>
+    <div id="messages" class="messages" aria-live="polite"></div>
 
-    <div id="tab-chat" class="panel">
-      <div id="messages" class="messages" aria-live="polite"></div>
-      <form id="chat-form" class="composer">
-        <input id="chat-input" type="text" autocomplete="off" placeholder="Message">
+    <form id="chat-form" class="composer-box">
+      <textarea id="chat-input" rows="3"
+                placeholder="Write a message, paste an image, or drop files here"></textarea>
+      <div class="composer-actions">
+        <button type="button" id="attach-btn" class="secondary" title="Attach files">Attach</button>
+        <label class="toggle" title="Hide the message until the other side chooses to reveal it">
+          <input type="checkbox" id="secret-toggle">
+          <span>Secret</span>
+        </label>
+        <span id="compose-hint" class="muted small"></span>
         <button type="submit" class="primary">Send</button>
-      </form>
-    </div>
-
-    <div id="tab-secret" class="panel" hidden>
-      <p class="muted small">For passwords, keys and one-off snippets. Sent over the same
-      encrypted channel and never stored.</p>
-      <textarea id="secret-input" rows="4" placeholder="Paste secret here"></textarea>
-      <button id="secret-send" class="primary">Send secret</button>
-      <div id="secret-list" class="secrets"></div>
-    </div>
-
-    <div id="tab-file" class="panel" hidden>
-      <p id="file-capability" class="muted small"></p>
-      <input id="file-input" type="file">
-      <button id="file-send" class="primary">Send file</button>
-      <div id="transfers" class="transfers"></div>
-    </div>
+      </div>
+      <input type="file" id="file-input" multiple hidden>
+    </form>
+    <div id="drop-veil" class="drop-veil" hidden>Drop to send</div>
 
     <details class="disc compact">
       <summary><span class="disc-title">Connection details</span>
@@ -315,6 +341,7 @@
 </section>
 
 <footer class="foot">
+  <a href="/faq.html">FAQ</a>
   <a href="/terms.html">Terms</a>
   <a href="/acceptable-use.html">Acceptable use</a>
   <a href="/privacy.html">Privacy</a>

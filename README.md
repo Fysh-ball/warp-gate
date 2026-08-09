@@ -17,6 +17,34 @@ server drops out of the path. Over that connection they can:
 
 Then either side severs the gate, or it expires on its own.
 
+## The official instance
+
+**https://wg.fysh.site is the only instance the authors run.**
+
+Anyone may host their own copy, and that is encouraged: it is the whole reason the source
+is public and the reason there are no dependencies. But an instance somebody else runs
+inherits none of this one's trust. The authors cannot audit it, vouch for it, or know it
+exists.
+
+### Why that matters more than it might sound
+
+The server sends the JavaScript that does the encryption, so **whoever serves the page
+controls the code**. A hostile operator does not need to break any of the cryptography:
+they can serve a modified page that copies the room secret straight back to them, and it
+would be indistinguishable from this one. The verification code cannot catch it either,
+because the same modified page draws it.
+
+This is true of every web application that encrypts in the browser. It is not a flaw
+that can be patched, so it is documented instead of glossed over. The practical
+conclusions:
+
+- Check the address bar before sending anything sensitive.
+- If you need certainty, **host it yourself from source you have read**. Warp Gate has no
+  dependencies and no build step precisely so that this is realistic: the files served
+  are the files in this repository, and there are about a dozen of them.
+- For something truly high-stakes, encrypt it yourself before sending it, so a
+  compromised page never sees plaintext at all.
+
 ## Running it
 
 ```sh
@@ -25,6 +53,38 @@ node server/index.js
 
 That is the whole thing. Node 22 or later, no install step, no build step, no package
 manager. Open `http://127.0.0.1:3095`.
+
+### Self-hosting
+
+```sh
+git clone <repository> && cd warp-gate
+node server/index.js                     # http on 3095
+
+# behind TLS, with a STUN server so it works across networks:
+WG_STUN_URL=stun:stun.cloudflare.com:3478 \
+WG_TRUST_PROXY=1 WG_HSTS=1 node server/index.js
+```
+
+Put any TLS terminator in front of it. `deploy/docker-compose.yml` is a working example
+using a stock node image with the source mounted read-only, and `deploy/NOTES.md`
+explains the STUN and proxy choices. Every option is an environment variable in
+`server/config.js`.
+
+### Capacity
+
+The server drops out of the data path once two devices connect, so files and messages
+never touch it: their size and volume cost it nothing. Only the number of gates open at
+once costs anything.
+
+Measured on one process with `tools/loadtest.mjs`:
+
+| Concurrent gates | Live connections | Peak RSS | Per gate |
+|---|---|---|---|
+| 2,000 | 4,000 | 198 MB | ~66 KB |
+
+Handshake relays were still delivered normally at that load. The default cap is 200
+concurrent gates, which costs a few megabytes; raise `WG_MAX_ROOMS` if you need more. A
+Raspberry Pi is more than enough, which was the design target.
 
 Configuration is environment variables, all optional: see `server/config.js`.
 

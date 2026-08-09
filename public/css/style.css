@@ -178,9 +178,85 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .msg .who { font-size: 12px; color: var(--muted); display: block; }
 .msg.me .who { color: var(--accent); }
 
-.composer { display: flex; gap: 8px; }
-.composer input { margin-bottom: 0; }
-.composer button { width: auto; flex: 0 0 auto; }
+/* ---------------------------------------------- one composer for everything */
+
+.composer-box {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+.composer-box textarea {
+  margin-bottom: 8px;
+  min-height: 76px;
+  max-height: 220px;
+  font-family: inherit;
+  font-size: 15px;
+  background: var(--panel-2);
+  resize: none;
+  overflow-y: auto;
+}
+.composer-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.composer-actions button { width: auto; flex: 0 0 auto; padding: 9px 14px; font-size: 14px; }
+.composer-actions .primary { margin-left: auto; }
+#compose-hint { flex: 1 1 100%; order: 9; margin-top: 2px; }
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toggle input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
+
+.drop-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(11, 13, 16, 0.86);
+  border: 3px dashed var(--accent);
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------- message stream */
+
+.msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.is-file, .msg.is-secret {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+.file-title { font-size: 14px; margin-bottom: 4px; overflow-wrap: anywhere; }
+.msg-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 6px;
+  margin: 6px 0;
+}
+.msg.is-file button, .msg.is-secret button { width: auto; padding: 6px 12px; font-size: 13px; }
+.chip {
+  display: inline-block;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+  border: 1px solid #5a4a20;
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-bottom: 5px;
+}
 
 .secrets, .transfers { margin-top: 12px; }
 .secret-item, .transfer-item {

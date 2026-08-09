@@ -37,7 +37,7 @@ export class RoomError extends Error {
   }
 }
 
-export function createRoom(roomId, sessionMinutes, key, now = Date.now()) {
+export function createRoom(roomId, sessionMinutes, key, requiresPassword = false, now = Date.now()) {
   if (!validRoomId(roomId)) throw new RoomError(400, 'bad_room_id');
   if (rooms.size >= config.limits.maxRooms) throw new RoomError(503, 'capacity');
   if (rooms.has(roomId)) throw new RoomError(409, 'room_exists');
@@ -48,6 +48,9 @@ export function createRoom(roomId, sessionMinutes, key, now = Date.now()) {
 
   const room = {
     id: roomId,
+    // Server-visible only as a boolean, so a joiner can be prompted. It never sees
+    // the password itself, which exists only in the two browsers.
+    requiresPassword: Boolean(requiresPassword),
     sessionMs: minutes * 60 * 1000,
     createdAt: now,
     // Unclaimed rooms die fast. The clock is extended to the session TTL only once
@@ -62,7 +65,10 @@ export function createRoom(roomId, sessionMinutes, key, now = Date.now()) {
     emptySince: null,
   };
   rooms.set(roomId, room);
-  return { token: room.a.token, role: 'a', expiresAt: room.expiresAt, sessionMinutes: minutes };
+  return {
+    token: room.a.token, role: 'a', expiresAt: room.expiresAt,
+    sessionMinutes: minutes, requiresPassword: room.requiresPassword,
+  };
 }
 
 export function joinRoom(roomId, key, now = Date.now()) {
@@ -73,7 +79,10 @@ export function joinRoom(roomId, key, now = Date.now()) {
 
   room.b = { token: newToken(), res: null, graceTimer: null, key };
   room.expiresAt = now + room.sessionMs;
-  return { token: room.b.token, role: 'b', expiresAt: room.expiresAt, sessionMinutes: room.sessionMs / 60000 };
+  return {
+    token: room.b.token, role: 'b', expiresAt: room.expiresAt,
+    sessionMinutes: room.sessionMs / 60000, requiresPassword: room.requiresPassword,
+  };
 }
 
 /** Constant-time token match. Returns 'a' | 'b' | null. */

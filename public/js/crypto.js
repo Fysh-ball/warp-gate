@@ -127,6 +127,30 @@ export function parseSecret(text) {
   return base32Decode(stripped, SECRET_BYTES);
 }
 
+/**
+ * Optional room password, stretched and bound to this specific room.
+ *
+ * This is not the trap DESIGN.md 1.5 warns about. There the objection was to a
+ * password used as the ONLY secret, which an observer of the signalling channel can
+ * attack offline. Here the 128-bit link secret is always present and always required;
+ * the password is a second factor for the case where the link itself leaks, for
+ * example when it is pasted into a group chat. PBKDF2 with a high iteration count
+ * makes that residual offline attack expensive rather than free.
+ *
+ * Salted with the room secret, so a rainbow table cannot be shared across rooms.
+ */
+export const PBKDF2_ITERATIONS = 600_000;
+
+export async function derivePasswordKey(password, secret) {
+  if (!password) return null;
+  const material = await subtle.importKey('raw', te.encode(password), 'PBKDF2', false, ['deriveBits']);
+  return new Uint8Array(await subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: concat(secret, te.encode('wg/v1/password')), iterations: PBKDF2_ITERATIONS },
+    material,
+    256,
+  ));
+}
+
 async function hkdfKey(secretBytes) {
   return subtle.importKey('raw', secretBytes, 'HKDF', false, ['deriveBits', 'deriveKey']);
 }
@@ -210,7 +234,7 @@ async function masterFrom(privateKey, peerPublicKey) {
  * `role` is 'a' for the room creator and 'b' for the joiner; it fixes the canonical
  * transcript order so both sides compute the same T.
  */
-export async function deriveSession({ secret, privateKey, publicRaw, peerPublicRaw, role, roomId }) {
+export async function deriveSession({ secret, privateKey, publicRaw, peerPublicRaw, role, roomId, passwordKey = null }) {
   const peerKey = await importPeerPublic(peerPublicRaw);
   const master = await masterFrom(privateKey, peerKey);
 
@@ -222,7 +246,10 @@ export async function deriveSession({ secret, privateKey, publicRaw, peerPublicR
   ));
 
   const label = (name) => `${name}:${b64u.encode(transcript)}`;
-  const salt = secret; // the PSK enters the schedule as the HKDF salt
+  // The PSK enters the schedule as the HKDF salt. When a room password is set, its
+  // stretched form is appended, so both the link and the password are required to
+  // derive the same data keys and the same confirmation values.
+  const salt = passwordKey ? concat(secret, passwordKey) : secret;
 
   const [keyA2B, keyB2A, confA, confB, sasBits] = await Promise.all([
     hkdfAesKey(master, salt, label('wg/v1/data/a2b')),

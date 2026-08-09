@@ -31,7 +31,9 @@ const CSP = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self'",
-  "img-src 'self'",
+  // blob: is needed to preview a received image inline. It is same-origin data the
+  // page created itself, not a remote fetch.
+  "img-src 'self' blob:",
   "connect-src 'self'",
   "font-src 'self'",
   "base-uri 'none'",

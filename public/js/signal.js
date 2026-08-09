@@ -107,11 +107,11 @@ export class Signal extends EventTarget {
   }
 }
 
-export async function createRoom(roomId, sessionMinutes) {
+export async function createRoom(roomId, sessionMinutes, requiresPassword = false) {
   const res = await fetch('/api/create', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ roomId, sessionMinutes }),
+    body: JSON.stringify({ roomId, sessionMinutes, requiresPassword }),
     signal: AbortSignal.timeout(8000),
   });
   const body = await res.json().catch(() => ({}));

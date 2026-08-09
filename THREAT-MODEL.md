@@ -17,8 +17,8 @@ schedule.
 
 | Threat | How | Residual risk |
 |---|---|---|
-| The server operator reading messages or files | Payload keys come from ECDH plus a secret the server never receives | None, provided the link was shared out of band |
-| The server being compromised | It holds no plaintext and no keys at any point. There is no storage layer to breach | None |
+| The server operator reading messages or files | Payload keys come from ECDH plus a secret the server never receives | Holds only while the server serves honest code: see "You are trusting whoever serves the page" |
+| The server being compromised *after* you loaded the page | It holds no plaintext and no keys at any point. There is no storage layer to breach | None |
 | The server or Cloudflare learning peer IP addresses from the SDP | Signalling payloads are encrypted under a key derived from the room secret, so the relay sees only `{n, c}` | Cloudflare still sees the two client IPs from the HTTP connections themselves |
 | An active man in the middle at the signalling layer | The key schedule mixes the room secret, and both sides exchange an explicit key confirmation before the UI reports "connected" | Someone who obtains the link is not a man in the middle; they are a participant |
 | Recording traffic now to decrypt later | Session keys need the ephemeral ECDH secret, which dies with the tab | None for message and file content |
@@ -29,6 +29,40 @@ schedule.
 | A third device joining | Rooms lock at two participants, each holding an unguessable capability token | None |
 | Data outliving the session | State is a single in-memory map. No database, no disk, no logs. A restart destroys every room | None |
 | A session being reused after expiry | Two TTLs plus a sweeper, and the room is deleted on sever | None |
+
+## You are trusting whoever serves the page
+
+This is the most important limitation in this document, and it is inherent to every
+web application that does cryptography in the browser, not specific to Warp Gate.
+
+**The server sends the JavaScript that does the encryption.** Whoever controls the
+server controls that code. A malicious operator does not need to break any of the
+cryptography above: they can serve a modified page that copies the room secret, or the
+plaintext, straight back to them, and it would look and behave exactly like this one.
+The verification code cannot detect this either, because the same modified page draws
+it.
+
+So the guarantees above should be read precisely:
+
+- They hold against **the network**, against **anyone watching traffic**, and against a
+  server that is **compromised after** you have loaded the page.
+- They do **not** hold against an operator who is hostile **when they serve you the
+  page**.
+
+What follows from that:
+
+1. **Only use an instance you trust to run honest code.** The only instance the authors
+   operate is **https://wg.fysh.site**. Check the address bar before sending anything
+   sensitive.
+2. **Anyone may host their own copy**, and the source is public so that they can. An
+   instance someone else runs inherits none of the authors' trust, and the authors
+   cannot vouch for it, audit it, or even know it exists.
+3. **If you need certainty, host it yourself** from source you have read. That is the
+   only configuration where the trust question has a definite answer, and it is why the
+   project has no dependencies and no build step: the files served are the files in the
+   repository, and you can read all of them.
+4. For something truly high-stakes, encrypt it yourself before sending it, so that a
+   compromised page never sees the plaintext at all.
 
 ## Not protected against
 

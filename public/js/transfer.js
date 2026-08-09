@@ -43,10 +43,10 @@ export function canAccept(size) {
  * Build a sink for an incoming file. Must be called from a user gesture when
  * streaming to disk, because showSaveFilePicker requires one.
  */
-export async function createSink(meta) {
+export async function createSink(meta, { preferMemory = false } = {}) {
   let pickerNote = null;
 
-  if (canStreamToDisk()) {
+  if (canStreamToDisk() && !preferMemory) {
     try {
       const handle = await globalThis.showSaveFilePicker({
         suggestedName: meta.name,

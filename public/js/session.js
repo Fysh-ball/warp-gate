@@ -5,7 +5,7 @@
 
 import {
   deriveRoomId, deriveSignalKey, generateKeyPair, deriveSession, Channel,
-  b64u, TYPE, equalCt, decodeJson, decodeText, encodeText, typeName,
+  b64u, TYPE, equalCt, decodeJson, decodeText, encodeText, typeName, derivePasswordKey,
 } from './crypto.js';
 import { Signal, createRoom, joinRoom } from './signal.js';
 import { Peer } from './peer.js';
@@ -26,13 +26,25 @@ export const STATE = {
 };
 
 const CONFIRM_TIMEOUT_MS = 8000;
+// Anything at or below this is accepted without asking. Pasting an image should feel
+// like sending a message, not like agreeing to a download. Larger transfers still ask,
+// which is also what lets the receiver choose a save location.
+const AUTO_ACCEPT_BYTES = 10 * 1024 * 1024;
 const MAX_AUTH_FAILURES = 3;
 
 export class Session extends EventTarget {
-  constructor({ secret, iceServers }) {
+  constructor({ secret, iceServers, password = null }) {
     super();
     this.secret = secret;
     this.iceServers = iceServers;
+    // Optional second factor. Never leaves the browser; the server only ever learns
+    // that a room has one, as a boolean, so a joiner can be prompted.
+    this.password = password || null;
+    this.passwordKey = null;
+    // Resolved once we know the password situation. The handshake waits on it, so a
+    // link-joiner can be prompted before any key is derived.
+    this.passwordGate = Promise.resolve();
+    this.resolvePasswordGate = null;
     this.state = STATE.IDLE;
     this.role = null;
     this.roomId = null;
@@ -64,7 +76,7 @@ export class Session extends EventTarget {
     this.role = 'a';
     this.setState(STATE.CREATING);
     this.roomId = await deriveRoomId(this.secret);
-    const room = await createRoom(this.roomId, sessionMinutes);
+    const room = await createRoom(this.roomId, sessionMinutes, Boolean(this.password));
     this.expiresAt = room.expiresAt;
     await this.openSignal(room.token);
     this.setState(STATE.WAITING);
@@ -77,6 +89,10 @@ export class Session extends EventTarget {
     this.roomId = await deriveRoomId(this.secret);
     const room = await joinRoom(this.roomId);
     this.expiresAt = room.expiresAt;
+    if (room.requiresPassword && !this.password) {
+      this.passwordGate = new Promise((resolve) => { this.resolvePasswordGate = resolve; });
+      this.emit('password-required', null);
+    }
     await this.openSignal(room.token);
     return room;
   }
@@ -98,6 +114,16 @@ export class Session extends EventTarget {
     this.needsRestart = true;
     await this.openSignal(token);
     return { token, role, expiresAt };
+  }
+
+  /** Supply a password that was asked for after joining, releasing the handshake. */
+  setPassword(password) {
+    this.password = password || null;
+    this.passwordKey = null;
+    if (this.resolvePasswordGate) {
+      this.resolvePasswordGate();
+      this.resolvePasswordGate = null;
+    }
   }
 
   /** Drop all peer and key state so a fresh handshake can run over the same room. */
@@ -166,6 +192,10 @@ export class Session extends EventTarget {
 
   async beginHandshake() {
     if (this.keyPair) return; // already under way
+    // Never derive keys before the password is known, or the first attempt would
+    // always be made without it and always fail.
+    await this.passwordGate;
+    if (this.severed) return;
     this.setState(STATE.EXCHANGING);
     this.startWatchdog();
     this.keyPair = await generateKeyPair();
@@ -251,8 +281,13 @@ export class Session extends EventTarget {
   async deriveKeys() {
     if (!this.keyPair || !this.peerPublicRaw || this.sessionKeys) return;
     try {
+      if (this.password && !this.passwordKey) {
+        this.emit('deriving', 'Strengthening the room password.');
+        this.passwordKey = await derivePasswordKey(this.password, this.secret);
+      }
       this.sessionKeys = await deriveSession({
         secret: this.secret,
+        passwordKey: this.passwordKey,
         privateKey: this.keyPair.privateKey,
         publicRaw: this.keyPair.publicRaw,
         peerPublicRaw: this.peerPublicRaw,
@@ -349,7 +384,9 @@ export class Session extends EventTarget {
       const expected = this.sessionKeys?.confirmPeer;
       if (!expected || !equalCt(b64u.decode(control.value), expected)) {
         this.setState(STATE.AUTH_FAILED, 'key confirmation mismatch');
-        this.emit('auth-failed', 'The other device proved it does not hold the same room secret.');
+        this.emit('auth-failed', this.password
+          ? 'Verification failed. The room password does not match, or the other device used a different link.'
+          : 'The other device does not hold the same link. Verification failed.');
         await this.sever();
         return;
       }
@@ -436,6 +473,21 @@ export class Session extends EventTarget {
       return;
     }
     this.incoming = { meta, received: 0, chunks: 0, sink: null };
+
+    if (meta.size <= AUTO_ACCEPT_BYTES) {
+      // No user gesture here, so never try to open a save dialog: straight to memory.
+      try {
+        this.incoming.sink = await createSink(meta, { preferMemory: true });
+        await this.control({ kind: 'file-accept', id: meta.id });
+        this.emit('file-incoming', meta);
+        return;
+      } catch (err) {
+        this.emit('warning', `could not start receiving ${meta.name}: ${err.message}`);
+        this.incoming = null;
+        await this.control({ kind: 'file-reject', id: meta.id, reason: err.message });
+        return;
+      }
+    }
     this.emit('file-offered', meta);
   }
 

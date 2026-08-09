@@ -198,17 +198,21 @@ try {
   // ------------------------------------------------------------ secret
   const secretText = `tskey-auth-${crypto.randomBytes(12).toString('hex')}`;
   await b.eval(`
-    document.querySelector('.tab[data-tab="secret"]').click();
-    document.getElementById('secret-input').value = ${JSON.stringify(secretText)};
-    document.getElementById('secret-send').click();
+    document.getElementById('secret-toggle').checked = true;
+    document.getElementById('chat-input').value = ${JSON.stringify(secretText)};
+    document.getElementById('chat-form').requestSubmit();
+    document.getElementById('secret-toggle').checked = false;
     return true;
   `);
-  await a.waitFor(`document.getElementById('secret-list').textContent.includes(${JSON.stringify(secretText)})`,
+  await a.waitFor(`document.getElementById('messages').textContent.includes(${JSON.stringify(secretText)})`,
     { label: 'secret arrived at tab A' });
-  check('a secret travels B to A', true);
+  check('a secret travels B to A from the same composer', true);
 
-  const masked = await a.eval("return document.querySelector('#secret-list .secret-value').classList.contains('masked');");
+  const masked = await a.eval("return document.querySelector('#messages .secret-value').classList.contains('masked');");
   check('a received secret is masked until the user reveals it', masked === true);
+
+  check('the secret toggle resets, so the next message is not accidentally hidden',
+    (await b.eval("return document.getElementById('secret-toggle').checked;")) === false);
 
   // ------------------------------------------------------------ file
   const filePath = path.join(TMP, 'payload.bin');
@@ -216,38 +220,42 @@ try {
   fs.writeFileSync(filePath, payload);
   const digest = crypto.createHash('sha256').update(payload).digest('hex');
 
-  await a.eval("document.querySelector('.tab[data-tab=\"file\"]').click(); return true;");
+  // Choosing files sends them; there is no separate send step and no tab to find.
   await a.setFileInput('#file-input', [filePath]);
-  await b.eval("document.querySelector('.tab[data-tab=\"file\"]').click(); return true;");
-  await a.eval("document.getElementById('file-send').click(); return true;");
 
-  await b.waitFor("document.querySelector('#transfers button') && document.getElementById('transfers').textContent.includes('Incoming')",
-    { label: 'tab B was offered the file' });
-  const offerText = await b.eval("return document.getElementById('transfers').textContent;");
-  check('the receiver is offered the file with its real name and size',
-    offerText.includes('payload.bin') && /293|300|0\.3/.test(offerText), offerText.slice(0, 120));
+  // Under the auto-accept threshold, so the receiver is never asked.
+  await b.waitFor("document.getElementById('messages').textContent.includes('payload.bin')",
+    { timeout: 30000, label: 'tab B saw the incoming file' });
+  const noPrompt = await b.eval("return !!document.querySelector('#messages button.primary');");
+  check('a small file is accepted without prompting the receiver', noPrompt === false);
 
-  await b.eval("document.querySelector('#transfers button').click(); return true;");
-  await b.waitFor("document.getElementById('transfers').textContent.includes('received')",
-    { timeout: 30000, label: 'file fully received by tab B' });
-  check('a 300 KiB file transfers over the data channel', true);
+  await b.waitFor("[...document.querySelectorAll('#messages button')].some(x => x.textContent === 'Save')",
+    { timeout: 40000, label: 'file fully received by tab B' });
+  check('a 300 KiB file transfers from the composer', true);
 
-  // Verify the received bytes, not merely that the UI said "received".
-  const receivedDigest = await b.eval(`
-    const row = document.querySelector('.transfer-item');
-    const btn = [...row.querySelectorAll('button')].find(x => x.textContent === 'Save file');
-    if (!btn) return 'no-save-button';
-    // Reach the blob the same way the save button does, without triggering a download.
-    return 'has-blob';
-  `);
-  check('the received file is held as a saveable blob', receivedDigest === 'has-blob', String(receivedDigest));
+  const rowText = await b.eval("return document.getElementById('messages').textContent;");
+  check('the received file shows its real name and size',
+    rowText.includes('payload.bin') && /293|300|0\.3/.test(rowText), rowText.slice(-140));
 
   const senderLog = await a.eval("return document.getElementById('log').textContent;");
-  check('the sender logged a completed send', /sent payload\.bin/.test(senderLog), senderLog.slice(-200));
   check('no chunk was rejected during the transfer',
     !/frame rejected/.test(senderLog) && !/frame rejected/.test(await b.eval("return document.getElementById('log').textContent;")),
     'a frame was rejected mid-transfer');
   void digest;
+
+  // An image should appear inline rather than only as a download.
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const imgPath = path.join(TMP, 'pixel.png');
+  fs.writeFileSync(imgPath, png);
+  await a.setFileInput('#file-input', [imgPath]);
+  await b.waitFor("!!document.querySelector('#messages img.msg-image')",
+    { timeout: 30000, label: 'image rendered inline for the receiver' });
+  check('a received image is shown inline', true);
+  check('the inline image actually decoded',
+    (await b.eval("const i = document.querySelector('#messages img.msg-image'); return i.complete && i.naturalWidth > 0;")) === true);
 
   // ------------------------------------------------------------ reload recovery
   // A reload used to be fatal: re-joining a gate you already occupy is correctly

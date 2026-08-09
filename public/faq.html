@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>Warp Gate: FAQ</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><a href="/">WARP GATE</a></div>
+</header>
+
+<main class="legal">
+<h1>Questions</h1>
+
+<h2>What is Warp Gate?</h2>
+<p>A temporary encrypted bridge between two browsers. One device opens a gate, the other
+joins with the link or QR code, and from then on messages and files pass directly between
+the two devices. When the gate closes, the keys and the room are gone.</p>
+
+<h2>Is there an app to install?</h2>
+<p>No. It is a web page. There is no app, no extension and no account, and there never
+will be.</p>
+
+<h2>Who can read what I send?</h2>
+<p>The two devices in the gate. Everything is encrypted in your browser before it is
+sent, and the server never receives the keys, the messages, the files, or even the file
+names. What the server can see is set out in the <a href="/privacy.html">Privacy
+Policy</a>.</p>
+
+<h2>Is this the only official Warp Gate?</h2>
+<p><strong>Yes. <code>https://wg.fysh.site</code> is the only instance we run.</strong>
+The source is public, so anyone may host their own copy, and we think that is a good
+thing. But an instance run by somebody else is not ours: we cannot audit it, vouch for
+it, or know it exists. It inherits none of the trust that this one has earned.</p>
+<p>Check the address bar before you send anything sensitive.</p>
+
+<h2>How do I know the person hosting it is not malicious?</h2>
+<p>Bluntly: <strong>if you did not host it yourself, you cannot know.</strong></p>
+<p>The server sends the JavaScript that does the encryption, so whoever runs the server
+controls that code. A hostile operator does not need to break the cryptography: they can
+serve a modified page that copies your messages straight back to them, and it would look
+exactly like this one. The verification code cannot catch that either, because the same
+modified page draws it.</p>
+<p>This is true of every web application that encrypts in the browser, not just this one.
+It is why the honest statement is "trust the operator", not "trust the maths". If you
+need certainty, host it yourself from source you have read. Warp Gate has no
+dependencies and no build step precisely so that this is realistic: the files served are
+the files in the repository, and there are about a dozen of them.</p>
+
+<h2>Can I run my own?</h2>
+<p>Yes, and it is deliberately easy. It is one Node process with no dependencies, no
+build step and no database:</p>
+<pre class="diag">git clone &lt;repository&gt;
+cd warp-gate
+node server/index.js        # serves on port 3095</pre>
+<p>Put it behind TLS, point <code>WG_STUN_URL</code> at a STUN server, and that is the
+whole deployment. See <code>deploy/NOTES.md</code> in the repository.</p>
+
+<h2>How many people can one server handle?</h2>
+<p>More than you would expect, because the server drops out of the data path once two
+devices connect. Files and messages never touch it, so their size and volume cost it
+nothing. The only thing that costs it anything is the number of gates open at once.</p>
+<p>Measured on one process: <strong>2,000 gates open simultaneously, which is 4,000 live
+connections, using about 198 MB of memory</strong>, or roughly 66 KB per gate. Relayed
+handshake messages were still delivered normally at that load. The default configuration
+caps concurrent gates at 200, which uses a few megabytes; raise
+<code>WG_MAX_ROOMS</code> if you need more.</p>
+<p>In other words a Raspberry Pi will do, which was the design target.</p>
+
+<h2>How many people can be in one gate?</h2>
+<p>Two. A gate locks as soon as a second device joins.</p>
+
+<h2>Why does it say the two devices see each other's IP address?</h2>
+<p>Because they connect directly to each other, which is what keeps the server out of the
+data path. That is a deliberate trade. Warp Gate is confidential, not anonymous.</p>
+
+<h2>What is the room password for?</h2>
+<p>It is a second factor on top of the link. The link already contains a 128-bit secret
+and is the main credential; the password helps if the link itself might be seen by
+someone else, for example when it is pasted into a group chat. It is stretched with
+600,000 rounds of PBKDF2 and never leaves your browser. The server only ever learns that
+a gate has one, as a yes or no, so that it knows to ask.</p>
+
+<h2>Why did my connection fail?</h2>
+<p>Open "Connection details" or the technical detail on the failure screen: it says which
+of the specific causes applies rather than guessing. The common ones are a browser
+setting that blocks WebRTC, a network that blocks peer-to-peer traffic, and a strict
+mobile carrier NAT. Putting both devices on the same network almost always works.</p>
+
+<h2>How big a file can I send?</h2>
+<p>On a Chromium desktop browser, as large as you like: it is written straight to disk as
+it arrives. Everywhere else the file is held in memory and capped at 500 MB, and Warp
+Gate refuses before the transfer starts rather than failing near the end.</p>
+
+<h2>Does it keep any history?</h2>
+<p>No. Messages exist in the page and nowhere else. Reload and they are gone. The server
+holds a room in memory only, and a restart destroys every gate.</p>
+
+<h2>Do you moderate what people send?</h2>
+<p>We cannot. Everything is encrypted between the two devices, so there is nothing for us
+to inspect even in principle. Responsibility for what you send rests with you, as set out
+in the <a href="/terms.html">Terms of Use</a> and the
+<a href="/acceptable-use.html">Acceptable Use Policy</a>.</p>
+
+<h2>Is it free?</h2>
+<p>Yes, with no advertising and no tracking. If you want to help with the running costs
+there is a <a href="/#support">support section</a> on the front page.</p>
+
+<p class="muted small"><a href="/">Back to Warp Gate</a> &middot; <a href="/faq.html">FAQ</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/acceptable-use.html">Acceptable use</a> &middot; <a href="/privacy.html">Privacy</a></p>
+</main>
+</body>
+</html>

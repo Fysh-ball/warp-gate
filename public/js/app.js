@@ -11,7 +11,7 @@ import { describeLimit, canAccept, formatBytes, saveBlob } from './transfer.js';
 import { encodeQr, drawQr } from './qr.js';
 
 const $ = (id) => document.getElementById(id);
-const SCREENS = ['onboarding', 'home', 'waiting', 'connected', 'severed', 'failed'];
+const SCREENS = ['onboarding', 'home', 'password', 'waiting', 'connected', 'severed', 'failed'];
 // Bumping the version re-prompts everyone, which is the point if the terms change.
 const AGREEMENT_KEY = 'wg.agreed.v1';
 
@@ -226,7 +226,7 @@ function wire(active) {
     badge(label, kind);
     if (event.detail.state === STATE.CONNECTED) {
       show('connected');
-      $('file-capability').textContent = describeLimit();
+      $('compose-hint').textContent = describeLimit();
     }
     // Only a genuine key-confirmation failure says "could not verify". A connectivity
     // stall has its own state and its own far more specific message, set by the
@@ -289,6 +289,8 @@ function wire(active) {
 
   active.addEventListener('severed', (event) => {
     stopTtl();
+    for (const url of objectUrls) URL.revokeObjectURL(url);
+    objectUrls.clear();
     badge('severed', 'idle');
     $('severed-reason').textContent = event.detail ?? '';
     history.replaceState(null, '', location.pathname);
@@ -301,29 +303,31 @@ function wire(active) {
   active.addEventListener('file-rejected', (event) => log(`the other device refused the file: ${event.detail.reason}`, 'bad'));
   active.addEventListener('file-accepted', () => log('the other device accepted the file', 'ok'));
   active.addEventListener('file-progress', (event) => renderProgress(event.detail));
-  active.addEventListener('file-sent', (event) => log(`sent ${event.detail.name} (${formatBytes(event.detail.size)})`, 'ok'));
   active.addEventListener('file-failed', (event) => log(`transfer failed: ${event.detail.reason}`, 'bad'));
   active.addEventListener('file-received', (event) => {
     const meta = event.detail;
     log(`received ${meta.name} (${meta.human})`, 'ok');
-    const row = transferRow(meta.id);
-    row.replaceChildren();
-    const title = document.createElement('div');
-    title.textContent = `${meta.name} received (${meta.human})`;
-    row.appendChild(title);
-    if (meta.blob) {
-      const save = document.createElement('button');
-      save.className = 'secondary';
-      save.textContent = 'Save file';
-      save.addEventListener('click', () => saveBlob(meta.blob, meta.name));
-      row.appendChild(save);
-    } else {
-      const done = document.createElement('div');
-      done.className = 'muted small';
-      done.textContent = 'Written straight to the location you chose.';
-      row.appendChild(done);
-    }
+    finishFileRow(fileRow(meta.id, 'them'), meta);
   });
+
+  active.addEventListener('file-incoming', (event) => {
+    const meta = event.detail;
+    const row = fileRow(meta.id, 'them');
+    rowTitle(row).textContent = `${meta.name} (${formatBytes(meta.size)})`;
+  });
+
+  active.addEventListener('file-sent', (event) => {
+    const meta = event.detail;
+    finishFileRow(fileRow(meta.id, 'me'), { ...meta, human: formatBytes(meta.size) });
+  });
+
+  active.addEventListener('password-required', () => {
+    $('password-error').hidden = true;
+    show('password');
+    $('password-input').focus();
+  });
+
+  active.addEventListener('deriving', (event) => log(event.detail, 'warn'));
 }
 
 // ---------------------------------------------------------------- rendering
@@ -366,31 +370,48 @@ function renderDiagnostics() {
   }
 }
 
-function addMessage({ from, text }) {
+const objectUrls = new Set();
+
+/** One row in the single message stream. Everything lands here: text, secrets, files. */
+function bubble(from, extraClass = '') {
   const wrap = document.createElement('div');
-  wrap.className = `msg ${from === 'me' ? 'me' : ''}`;
+  wrap.className = `msg ${from === 'me' ? 'me' : ''} ${extraClass}`.trim();
   const who = document.createElement('span');
   who.className = 'who';
   who.textContent = from === 'me' ? 'you' : 'them';
-  const body = document.createElement('span');
-  body.textContent = text;
-  wrap.append(who, body);
+  wrap.appendChild(who);
   const list = $('messages');
   list.appendChild(wrap);
   list.scrollTop = list.scrollHeight;
+  return wrap;
+}
+
+function scrollMessages() {
+  const list = $('messages');
+  list.scrollTop = list.scrollHeight;
+}
+
+function addMessage({ from, text }) {
+  const wrap = bubble(from);
+  const body = document.createElement('span');
+  body.className = 'msg-text';
+  body.textContent = text;
+  wrap.appendChild(body);
+  scrollMessages();
 }
 
 function addSecret({ from, text }) {
-  const item = document.createElement('div');
-  item.className = 'secret-item';
+  const wrap = bubble(from, 'is-secret');
 
-  const label = document.createElement('div');
-  label.className = 'muted small';
-  label.textContent = from === 'me' ? 'sent' : 'received';
+  const tag = document.createElement('span');
+  tag.className = 'chip';
+  tag.textContent = 'secret';
+  wrap.appendChild(tag);
 
   const value = document.createElement('div');
   value.className = 'secret-value masked';
   value.textContent = text;
+  wrap.appendChild(value);
 
   const actions = document.createElement('div');
   actions.className = 'secret-actions';
@@ -407,11 +428,10 @@ function addSecret({ from, text }) {
   copy.className = 'secondary';
   copy.textContent = 'Copy';
   copy.addEventListener('click', async () => {
-    const wrote = await copyText(text);
-    if (!wrote) return;
+    if (!await copyText(text)) return;
     copy.textContent = 'Copied';
-    // Best effort only. No browser guarantees a clipboard can be cleared, and other
-    // applications may already have taken a copy.
+    // Best effort only. No browser guarantees a clipboard can be cleared, and another
+    // application may already have taken a copy.
     setTimeout(async () => {
       await copyText('');
       copy.textContent = 'Copy';
@@ -419,14 +439,9 @@ function addSecret({ from, text }) {
     }, 45000);
   });
 
-  const drop = document.createElement('button');
-  drop.className = 'secondary';
-  drop.textContent = 'Remove';
-  drop.addEventListener('click', () => item.remove());
-
-  actions.append(reveal, copy, drop);
-  item.append(label, value, actions);
-  $('secret-list').prepend(item);
+  actions.append(reveal, copy);
+  wrap.appendChild(actions);
+  scrollMessages();
 }
 
 async function copyText(text) {
@@ -439,23 +454,67 @@ async function copyText(text) {
   }
 }
 
-function transferRow(id) {
+/** Get or create the row for a transfer, so progress updates land in one place. */
+function fileRow(id, from) {
   let row = document.getElementById(`transfer-${id}`);
   if (!row) {
-    row = document.createElement('div');
+    row = bubble(from, 'is-file');
     row.id = `transfer-${id}`;
-    row.className = 'transfer-item';
-    $('transfers').prepend(row);
+    const title = document.createElement('div');
+    title.className = 'file-title';
+    row.appendChild(title);
   }
   return row;
 }
 
+const rowTitle = (row) => row.querySelector('.file-title');
+
+function setProgress(row, sent, total) {
+  let bar = row.querySelector('progress');
+  if (!bar) {
+    bar = document.createElement('progress');
+    row.appendChild(bar);
+  }
+  bar.max = total || 1;
+  bar.value = sent;
+}
+
+/** Show an image inline once it has arrived; anything else gets a save button. */
+function finishFileRow(row, meta) {
+  row.querySelector('progress')?.remove();
+  rowTitle(row).textContent = `${meta.name} (${meta.human ?? formatBytes(meta.size ?? 0)})`;
+
+  if (!meta.blob) {
+    const done = document.createElement('div');
+    done.className = 'muted small';
+    done.textContent = 'Written to the location you chose.';
+    row.appendChild(done);
+    return;
+  }
+
+  if ((meta.mime || '').startsWith('image/')) {
+    const url = URL.createObjectURL(meta.blob);
+    objectUrls.add(url);
+    const img = document.createElement('img');
+    img.className = 'msg-image';
+    img.alt = meta.name;
+    img.src = url;
+    img.addEventListener('load', scrollMessages);
+    row.appendChild(img);
+  }
+
+  const save = document.createElement('button');
+  save.className = 'secondary';
+  save.textContent = 'Save';
+  save.addEventListener('click', () => saveBlob(meta.blob, meta.name));
+  row.appendChild(save);
+  scrollMessages();
+}
+
+/** Only large transfers ask; small ones are accepted automatically. */
 function renderOffer(meta) {
-  const row = transferRow(meta.id);
-  row.replaceChildren();
-  const title = document.createElement('div');
-  title.textContent = `Incoming: ${meta.name} (${formatBytes(meta.size)})`;
-  row.appendChild(title);
+  const row = fileRow(meta.id, 'them');
+  rowTitle(row).textContent = `${meta.name} (${formatBytes(meta.size)})`;
 
   const verdict = canAccept(meta.size);
   if (!verdict.ok) {
@@ -474,6 +533,7 @@ function renderOffer(meta) {
     try {
       // Must run inside this click: showSaveFilePicker requires a user gesture.
       await session.acceptIncoming();
+      accept.remove();
     } catch (err) {
       log(`could not start receiving: ${err.message}`, 'bad');
       accept.disabled = false;
@@ -483,28 +543,40 @@ function renderOffer(meta) {
 }
 
 function renderProgress({ direction, id, sent, total, name }) {
-  const row = transferRow(id);
-  let bar = row.querySelector('progress');
-  if (!bar) {
-    row.replaceChildren();
-    const title = document.createElement('div');
-    title.textContent = `${direction === 'out' ? 'Sending' : 'Receiving'} ${name ?? ''}`;
-    bar = document.createElement('progress');
-    row.append(title, bar);
+  const row = fileRow(id, direction === 'out' ? 'me' : 'them');
+  if (!rowTitle(row).textContent) {
+    rowTitle(row).textContent = `${name ?? 'file'} (${formatBytes(total ?? 0)})`;
   }
-  bar.max = total || 1;
-  bar.value = sent;
-  bar.textContent = `${formatBytes(sent)} of ${formatBytes(total)}`;
+  setProgress(row, sent, total);
+}
+
+/** Send whatever the user attached, pasted or dropped, one after another. */
+async function sendFiles(files) {
+  const list = [...files].filter(Boolean);
+  if (!list.length || !session) return;
+  for (const file of list) {
+    try {
+      await session.sendFile(file);
+    } catch (err) {
+      log(`could not send ${file.name}: ${err.message}`, 'bad');
+    }
+  }
+}
+
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
 }
 
 // ---------------------------------------------------------------- flows
 
 async function startCreate() {
   const minutes = Number($('ttl-select').value);
+  const password = $('room-password').value || null;
   const secret = generateSecret();
   const formatted = formatSecret(secret);
 
-  session = new Session({ secret, iceServers: config.iceServers });
+  session = new Session({ secret, iceServers: config.iceServers, password });
   wire(session);
   try {
     const room = await session.create(minutes);
@@ -567,7 +639,7 @@ async function startJoin(text) {
     forgetSlot(roomId);
   }
 
-  session = new Session({ secret, iceServers: config.iceServers });
+  session = new Session({ secret, iceServers: config.iceServers, password: $('join-password').value || null });
   wire(session);
   try {
     const room = await session.join();
@@ -652,6 +724,20 @@ async function boot() {
   $('show-onboarding').addEventListener('click', () => show('onboarding'));
   setupSupport();
 
+  // Say plainly which instance this is. A hostile host would simply delete this, which
+  // is exactly why the text says the trust question can only be settled by self-hosting.
+  const OFFICIAL_HOST = 'wg.fysh.site';
+  const host = location.hostname;
+  const isOfficial = host === OFFICIAL_HOST;
+  const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+  if (!isOfficial && !isLocal) {
+    $('instance-title').textContent = `You are on ${host}, which is not the official instance`;
+    $('instance-disc').classList.add('warn');
+    $('instance-disc').open = true;
+  } else if (isLocal) {
+    $('instance-title').textContent = 'You are running your own copy';
+  }
+
   // Ask up front whether this browser can do peer-to-peer at all, rather than letting
   // the user set up a gate and wait 25 seconds to find out it never could. The probe
   // uses no ICE servers, so it contacts nobody.
@@ -671,35 +757,92 @@ async function boot() {
   $('restart').addEventListener('click', () => { location.href = location.pathname; });
   $('failed-restart').addEventListener('click', () => { location.href = location.pathname; });
 
-  for (const tab of document.querySelectorAll('.tab')) {
-    tab.addEventListener('click', () => {
-      for (const other of document.querySelectorAll('.tab')) other.classList.toggle('active', other === tab);
-      for (const name of ['chat', 'secret', 'file']) $(`tab-${name}`).hidden = name !== tab.dataset.tab;
-    });
-  }
+  // ---- one composer for everything
+  const input = $('chat-input');
+  const fileInput = $('file-input');
+
+  input.addEventListener('input', () => autoGrow(input));
+  input.addEventListener('keydown', (e) => {
+    // Enter sends, Shift+Enter makes a new line. Matches every chat app.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      $('chat-form').requestSubmit();
+    }
+  });
 
   $('chat-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = $('chat-input');
-    const text = input.value.trim();
-    if (!text || !session) return;
-    input.value = '';
-    try { await session.sendChat(text); } catch (err) { log(`could not send: ${err.message}`, 'bad'); }
-  });
-
-  $('secret-send').addEventListener('click', async () => {
-    const box = $('secret-input');
-    const text = box.value;
+    const text = input.value;
     if (!text.trim() || !session) return;
-    box.value = '';
-    try { await session.sendSecret(text); } catch (err) { log(`could not send: ${err.message}`, 'bad'); }
+    const asSecret = $('secret-toggle').checked;
+    input.value = '';
+    autoGrow(input);
+    try {
+      if (asSecret) await session.sendSecret(text);
+      else await session.sendChat(text);
+    } catch (err) {
+      log(`could not send: ${err.message}`, 'bad');
+    }
   });
 
-  $('file-send').addEventListener('click', async () => {
-    const file = $('file-input').files?.[0];
-    if (!file || !session) return;
-    try { await session.sendFile(file); } catch (err) { log(`could not send file: ${err.message}`, 'bad'); }
+  $('attach-btn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const files = [...fileInput.files];
+    fileInput.value = '';
+    await sendFiles(files);
   });
+
+  // Paste an image or a file straight into the conversation.
+  input.addEventListener('paste', async (e) => {
+    const items = [...(e.clipboardData?.items ?? [])];
+    const files = items.filter((i) => i.kind === 'file').map((i) => i.getAsFile()).filter(Boolean);
+    if (!files.length) return; // ordinary text paste
+    e.preventDefault();
+    await sendFiles(files);
+  });
+
+  // Drag and drop anywhere on the connected screen.
+  const veil = $('drop-veil');
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => {
+    if (!session || $('screen-connected').hidden) return;
+    if (![...(e.dataTransfer?.types ?? [])].includes('Files')) return;
+    dragDepth += 1;
+    veil.hidden = false;
+  });
+  window.addEventListener('dragover', (e) => {
+    if (!veil.hidden) e.preventDefault();
+  });
+  window.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) veil.hidden = true;
+  });
+  window.addEventListener('drop', async (e) => {
+    if (veil.hidden) return;
+    e.preventDefault();
+    dragDepth = 0;
+    veil.hidden = true;
+    await sendFiles(e.dataTransfer?.files ?? []);
+  });
+
+  // ---- password prompt
+  $('password-submit').addEventListener('click', () => {
+    const value = $('password-input').value;
+    if (!value) {
+      $('password-error').textContent = 'Enter the password, or cancel.';
+      $('password-error').hidden = false;
+      return;
+    }
+    $('password-input').value = '';
+    session?.setPassword(value);
+    show('waiting');
+    $('waiting-title').textContent = 'Connecting to the other device';
+    $('qr-wrap').hidden = true;
+  });
+  $('password-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('password-submit').click();
+  });
+  $('password-cancel').addEventListener('click', severNow);
 
   // Deliberately NOT calling bye() on pagehide. pagehide fires on reload as well as on
   // close, and deleting the room there destroyed the gate for both devices whenever

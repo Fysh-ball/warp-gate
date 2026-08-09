@@ -115,6 +115,7 @@ export async function handleApi(req, res, url) {
       role,
       expiresAt: room.expiresAt,
       peerPresent: Boolean(peer?.res && !peer.res.writableEnded),
+      requiresPassword: room.requiresPassword,
     });
   }
 
@@ -125,7 +126,7 @@ export async function handleApi(req, res, url) {
     const body = await readJson(req, res);
     if (!body) return fail(res, 400, 'bad_body');
     try {
-      const out = createRoom(body.roomId, Number(body.sessionMinutes), key);
+      const out = createRoom(body.roomId, Number(body.sessionMinutes), key, body.requiresPassword === true);
       return sendJson(res, 200, out);
     } catch (err) {
       if (err instanceof RoomError) return fail(res, err.status, err.code);
