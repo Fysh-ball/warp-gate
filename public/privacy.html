@@ -80,9 +80,13 @@ addresses.</p>
 <ul>
   <li><code>localStorage</code>: a record that you accepted the Terms, with the version
       and date. This exists so you are not asked on every visit.</li>
-  <li><code>sessionStorage</code>: your session token for a gate that is currently open,
-      so that reloading the page does not destroy the session. It is scoped to the tab
-      and is discarded when the tab closes.</li>
+  <li><code>sessionStorage</code>: your session token <em>and the room secret</em> for a
+      gate that is currently open, so that reloading the page does not destroy the
+      session. Both are scoped to that tab, removed the moment the gate ends, and
+      discarded when the tab closes. The secret is held here rather than in the address
+      bar so that it is not readable by anyone who can see your screen. Note that some
+      browsers write sessionStorage to disk for crash recovery, so treat this as a
+      short-lived convenience rather than a vault.</li>
 </ul>
 <p>Both can be cleared at any time through your browser's settings. Messages and received
 files are held in the page's memory only and are gone when the page closes.</p>

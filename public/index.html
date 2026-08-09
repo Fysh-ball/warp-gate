@@ -180,22 +180,36 @@
     <h1 id="waiting-title">Waiting for the other device</h1>
     <p class="muted">Scan this with the other device's camera, or send it the link.</p>
 
-    <div class="qr-wrap" id="qr-wrap">
-      <canvas id="qr" width="320" height="320" aria-label="QR code containing the gate link"></canvas>
+    <div id="share-hidden">
+      <p class="muted">The gate code is hidden until you choose to show it, so it is not
+      sitting on your screen for anyone nearby to read.</p>
+      <button id="reveal-share" class="primary">Show the code and QR</button>
+      <div class="row">
+        <button id="copy-link" class="secondary">Copy link</button>
+        <button id="copy-code" class="secondary">Copy code</button>
+      </div>
+      <p class="muted small">Copying does not put it on screen.</p>
     </div>
 
-    <div class="code-block">
-      <div class="label">Gate code</div>
-      <div id="room-code" class="code"></div>
-    </div>
+    <div id="share-shown" hidden>
+      <div class="qr-wrap" id="qr-wrap">
+        <canvas id="qr" width="320" height="320" aria-label="QR code containing the gate link"></canvas>
+      </div>
 
-    <div class="row">
-      <button id="copy-link" class="secondary">Copy link</button>
-      <button id="copy-code" class="secondary">Copy code</button>
-    </div>
+      <div class="code-block">
+        <div class="label">Gate code</div>
+        <div id="room-code" class="code"></div>
+      </div>
 
-    <p class="muted small">The secret in this link never reaches the server. Anyone holding
-    it can join, so treat it like a password.</p>
+      <div class="row">
+        <button id="hide-share" class="secondary">Hide again</button>
+        <button id="copy-link-2" class="secondary">Copy link</button>
+      </div>
+
+      <p class="muted small">Anyone who can read this, including over your shoulder or in a
+      photograph, can join this gate until the second device does. Add a room password if
+      that worries you.</p>
+    </div>
 
     <button id="waiting-sever" class="danger">Cancel</button>
   </section>

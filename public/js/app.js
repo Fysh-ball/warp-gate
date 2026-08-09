@@ -22,7 +22,26 @@ let diag = { candidates: [], ice: null, full: null };
 
 // Slot persistence. Without this a page reload is fatal: re-joining a gate you already
 // occupy is correctly refused as full, so the session could never be recovered.
+//
+// The room secret is held here too, because it is deliberately no longer in the address
+// bar. sessionStorage is scoped to this tab and discarded when the tab closes, which is
+// a far higher bar than a URL anyone can read over your shoulder. It is removed the
+// moment the gate ends. Note that some browsers write sessionStorage to disk for crash
+// recovery, so this is a short-lived convenience, not a vault.
 const slotKey = (roomId) => `wg.slot.${roomId}`;
+const SECRET_KEY = 'wg.secret';
+
+function rememberSecret(formatted) {
+  try { sessionStorage.setItem(SECRET_KEY, formatted); } catch (err) { void err; }
+}
+
+function recallSecret() {
+  try { return sessionStorage.getItem(SECRET_KEY); } catch (err) { return null; }
+}
+
+function forgetSecret() {
+  try { sessionStorage.removeItem(SECRET_KEY); } catch (err) { void err; }
+}
 
 function rememberSlot(roomId, slot) {
   try {
@@ -41,6 +60,7 @@ function forgetSlot(roomId) {
   try {
     if (roomId) sessionStorage.removeItem(slotKey(roomId));
     else for (const k of Object.keys(sessionStorage)) if (k.startsWith('wg.slot.')) sessionStorage.removeItem(k);
+    forgetSecret();
   } catch (err) { void err; }
 }
 
@@ -621,18 +641,39 @@ async function startCreate() {
   try {
     const room = await session.create(minutes);
     rememberSlot(session.roomId, { token: room.token, role: 'a', expiresAt: room.expiresAt });
-    history.replaceState(null, '', `${location.pathname}#${formatted}`);
+    rememberSecret(formatted);
     const link = `${location.origin}${location.pathname}#${formatted}`;
+    // Deliberately NOT putting the secret in the address bar. It would otherwise sit
+    // there in plain sight for the whole session, readable by anyone who can see the
+    // screen or a screenshot. It lives in memory, and the link is produced on demand.
 
-    $('room-code').textContent = formatted;
-    try {
-      const qr = encodeQr(link);
-      drawQr($('qr'), qr);
-    } catch (err) {
-      log(`could not render a QR code: ${err.message}. Use the link instead.`, 'warn');
-    }
+    // Rendered only when the user asks for it, so nothing sensitive is on screen by
+    // default.
+    let drawn = false;
+    const revealShare = () => {
+      $('room-code').textContent = formatted;
+      if (!drawn) {
+        try {
+          drawQr($('qr'), encodeQr(link));
+          drawn = true;
+        } catch (err) {
+          log(`could not render a QR code: ${err.message}. Use the link instead.`, 'warn');
+        }
+      }
+      $('share-hidden').hidden = true;
+      $('share-shown').hidden = false;
+    };
+    const hideShare = () => {
+      $('room-code').textContent = '';
+      $('share-shown').hidden = true;
+      $('share-hidden').hidden = false;
+    };
+    $('reveal-share').onclick = revealShare;
+    $('hide-share').onclick = hideShare;
 
-    $('copy-link').onclick = () => copyText(link).then((ok) => { if (ok) $('copy-link').textContent = 'Copied'; });
+    const copyLink = (btn) => copyText(link).then((ok) => { if (ok) btn.textContent = 'Copied'; });
+    $('copy-link').onclick = () => copyLink($('copy-link'));
+    $('copy-link-2').onclick = () => copyLink($('copy-link-2'));
     $('copy-code').onclick = () => copyText(formatted).then((ok) => { if (ok) $('copy-code').textContent = 'Copied'; });
 
     startTtl(room.expiresAt);
@@ -667,8 +708,8 @@ async function startJoin(text) {
         startTtl(still.expiresAt);
         show('waiting');
         $('waiting-title').textContent = 'Reconnecting to the other device';
-        $('qr-wrap').hidden = true;
-        $('room-code').textContent = formatSecret(secret);
+        $('share-hidden').hidden = true;
+        $('share-shown').hidden = true;
         log('Resumed the gate after a reload.', 'ok');
         return;
       } catch (err) {
@@ -684,11 +725,13 @@ async function startJoin(text) {
   try {
     const room = await session.join();
     rememberSlot(session.roomId, { token: room.token, role: 'b', expiresAt: room.expiresAt });
+    rememberSecret(formatSecret(secret));
     startTtl(room.expiresAt);
     badge('negotiating', 'work');
     show('waiting');
-    $('room-code').textContent = formatSecret(secret);
-    $('qr-wrap').hidden = true;
+    // The joiner has no need to display the code at all.
+    $('share-hidden').hidden = true;
+    $('share-shown').hidden = true;
     $('waiting-title').textContent = 'Connecting to the other device';
   } catch (err) {
     showHomeError(`Could not join: ${describeError(err)}`);
@@ -909,9 +952,20 @@ async function boot() {
 
 function afterAgreement() {
   const hash = location.hash.slice(1);
+  // Strip it immediately: the secret has done its job by arriving, and leaving it in
+  // the address bar means it is readable for the rest of the session by anyone who can
+  // see the screen, and by anything that screenshots or records it.
+  if (hash) history.replaceState(null, '', location.pathname);
+
+  // A fresh arrival brings the secret in the link. A reload has no link any more, so
+  // fall back to the copy held for this tab, which is what makes refresh survivable.
+  const fromLink = hash && parseSecret(hash) ? hash : null;
+  const stored = fromLink ? null : recallSecret();
+
   // startJoin resumes an existing slot if this tab already holds one, so a reload of
   // either side lands back in the same gate rather than being refused as full.
-  if (hash && parseSecret(hash)) startJoin(hash);
+  if (fromLink) startJoin(fromLink);
+  else if (stored && parseSecret(stored)) startJoin(stored);
   else show('home');
 }
 

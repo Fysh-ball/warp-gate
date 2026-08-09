@@ -93,6 +93,17 @@ caps concurrent gates at 200, which uses a few megabytes; raise
 <p>Because they connect directly to each other, which is what keeps the server out of the
 data path. That is a deliberate trade. Warp Gate is confidential, not anonymous.</p>
 
+<h2>Can someone standing behind me just read the link and join?</h2>
+<p>Much less easily than before. The secret is <strong>not left in the address bar</strong>:
+it is stripped as soon as it has been used, and the code and QR are hidden until you
+choose to show them. So nothing sensitive is sitting on screen during the session.</p>
+<p>It cannot be eliminated entirely, because at some point you have to show or send the
+code for the other device to join. Three things limit the damage: the gate <strong>locks
+as soon as the second device joins</strong>, so an observer only has a window before your
+intended peer arrives; both devices display a verification code you can compare aloud, so
+a substitution is detectable; and a <strong>room password</strong> means reading the code
+is not enough on its own. Use one if people can see your screen.</p>
+
 <h2>What is the room password for?</h2>
 <p>It is a second factor on top of the link. The link already contains a 128-bit secret
 and is the main credential; the password helps if the link itself might be seen by

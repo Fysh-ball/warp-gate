@@ -93,9 +93,15 @@ try {
   await a.waitFor("!document.getElementById('screen-waiting').hidden", { timeout: 25000, label: 'gate created through Cloudflare' });
   check('a gate can be created over the public path', true);
 
-  // The link stays inside the harness and is never printed.
-  const link = await a.eval('return location.href;');
-  check('the secret is carried in the URL fragment', link.includes('#WARP-'));
+  // The secret is deliberately not left in the address bar, so reveal it to get the
+  // link. It stays inside the harness and is never printed.
+  const barUrl = await a.eval('return location.href;');
+  check('the secret is not left in the address bar', !barUrl.includes('WARP-'), barUrl);
+  await a.eval("document.getElementById('reveal-share').click(); return true;");
+  await a.waitFor("document.getElementById('share-shown').hidden === false", { label: 'share revealed' });
+  const code = await a.eval("return document.getElementById('room-code').textContent.trim();");
+  const link = ORIGIN + '/#' + code;
+  check('a gate code is produced', /^WARP-/.test(code));
 
   const b = await browser.newTab(link);
   await a.waitFor("!document.getElementById('screen-connected').hidden",

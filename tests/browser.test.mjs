@@ -118,10 +118,30 @@ try {
   await a.eval("document.getElementById('create-btn').click(); return true;");
   await a.waitFor("!document.getElementById('screen-waiting').hidden", { label: 'waiting screen' });
 
-  const link = await a.eval('return location.href;');
-  check('the created gate puts the secret in the URL fragment', link.includes('#WARP-'), link);
-  check('the fragment is 26 base32 characters as designed',
-    /#WARP(-[0-9A-HJKMNP-TV-Z]{1,4}){7}$/.test(link), link.slice(link.indexOf('#')));
+  // The secret must not sit in the address bar: it would be readable for the whole
+  // session by anyone who can see the screen, or any screenshot or recording.
+  const barUrl = await a.eval('return location.href;');
+  check('the secret is NOT left in the address bar', !barUrl.includes('WARP-'), barUrl);
+  check('the address bar has no fragment at all',
+    !barUrl.includes('#') || barUrl.endsWith('#'), barUrl);
+
+  // Nor on screen until the user asks for it.
+  const beforeReveal = await a.eval(`
+    return JSON.stringify({
+      codeText: (document.getElementById('room-code') || {}).textContent || '',
+      shownHidden: document.getElementById('share-shown').hidden,
+    });
+  `);
+  const br = JSON.parse(beforeReveal);
+  check('the gate code is not displayed until revealed', br.shownHidden && br.codeText === '', beforeReveal);
+
+  await a.eval("document.getElementById('reveal-share').click(); return true;");
+  await a.waitFor("document.getElementById('share-shown').hidden === false", { label: 'share panel revealed' });
+
+  const code = await a.eval("return document.getElementById('room-code').textContent.trim();");
+  check('the revealed code is a 26 character Crockford secret',
+    /^WARP(-[0-9A-HJKMNP-TV-Z]{1,4}){7}$/.test(code), code);
+  const link = `${ORIGIN}/#${code}`;
 
   const qrDrawn = await a.eval(`
     const c = document.getElementById('qr');
@@ -131,8 +151,12 @@ try {
     for (let i = 0; i < data.length; i += 4) if (data[i] < 128) dark++;
     return { dark, total: data.length / 4 };
   `);
-  check('a QR code was actually rendered to the canvas',
+  check('a QR code is rendered once revealed',
     qrDrawn.dark > 100 && qrDrawn.dark < qrDrawn.total * 0.6, JSON.stringify(qrDrawn));
+
+  await a.eval("document.getElementById('hide-share').click(); return true;");
+  check('hiding puts the code away again',
+    (await a.eval("return document.getElementById('share-shown').hidden && document.getElementById('room-code').textContent === '';")) === true);
 
   const roomsWhileWaiting = await request(PORT, 'GET', '/api/health');
   check('the server is holding exactly one room', roomsWhileWaiting.json?.rooms === 1, roomsWhileWaiting.text);
@@ -153,6 +177,10 @@ try {
     { label: 'tab B progressed into the gate from the link alone' },
   );
   check('opening the link joins the gate without any further input', true);
+
+  const joinerUrl = await b.eval('return location.href;');
+  check('the joiner strips the secret from its address bar too',
+    !joinerUrl.includes('WARP-'), joinerUrl);
 
   // ------------------------------------------------------------ connection
   await a.waitFor("!document.getElementById('screen-connected').hidden", { timeout: 25000, label: 'tab A connected' });
@@ -483,7 +511,11 @@ try {
   await d.waitFor("!document.getElementById('screen-home').hidden", { label: 'home on tab D' });
   await d.eval("document.getElementById('create-btn').click(); return true;");
   await d.waitFor("!document.getElementById('screen-waiting').hidden", { label: 'tab D waiting' });
-  const link2 = await d.eval('return location.href;');
+  // The secret is no longer in the address bar, so reveal it to build the link.
+  await d.eval("document.getElementById('reveal-share').click(); return true;");
+  await d.waitFor("document.getElementById('share-shown').hidden === false", { label: 'tab D share revealed' });
+  const code2 = await d.eval("return document.getElementById('room-code').textContent.trim();");
+  const link2 = ORIGIN + '/#' + code2;
 
   const e = await browser.newTab(link2);
   await d.waitFor("!document.getElementById('screen-connected').hidden", { timeout: 25000, label: 'tab D connected' });

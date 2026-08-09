@@ -100,7 +100,17 @@ class Tab {
     const deadline = Date.now() + timeout;
     let last;
     for (;;) {
-      last = await this.eval(`return (${expression});`);
+      try {
+        last = await this.eval(`return (${expression});`);
+      } catch (err) {
+        // A predicate that throws means "not ready yet", not "fail". Mid-navigation the
+        // document is briefly empty, so getElementById returns null and any property
+        // read on it throws. Keep polling and report the last error only on timeout.
+        last = `threw: ${err.message}`;
+        if (Date.now() > deadline) throw new Error(`timed out after ${timeout}ms waiting for: ${label}\n  ${last}`);
+        await new Promise((r) => { setTimeout(r, interval).unref?.(); });
+        continue;
+      }
       if (last) return last;
       if (Date.now() > deadline) {
         throw new Error(`timed out after ${timeout}ms waiting for: ${label}\n  last value: ${JSON.stringify(last)}`
