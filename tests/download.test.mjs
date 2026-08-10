@@ -133,6 +133,100 @@ try {
     JSON.parse(stale).status === 404, stale);
 
   // --------------------------------------------------------------------------------
+  // A failed wg-open handshake must not leave its 'message' listener attached.
+  //
+  // The bug: openStreamDownload adds a 'message' listener on navigator.serviceWorker and
+  // only removed it on the paths that reach the end of the transfer. When the handshake
+  // rejected (postMessage threw, or the worker never answered inside START_TIMEOUT_MS)
+  // the function threw with the listener still attached, one per failed attempt, for the
+  // life of the tab. The container outlives the transfer, so nothing else ever removed it.
+  //
+  // Counted empirically rather than read off the source: addEventListener and
+  // removeEventListener on the container are wrapped with counters for the 'message' type,
+  // so the assertion is on observed adds versus observed removes.
+  //
+  // The failure is forced fast by making the controller's postMessage throw, which is the
+  // "worker went away between the controller check and the call" path. That rejects
+  // immediately, so this block costs no wall clock: it does NOT wait out
+  // START_TIMEOUT_MS (10s in public/js/download.js). The stub is restored in a finally
+  // block so the later checks in this file get an untouched worker.
+  const leakRaw = await tab.eval(`
+    const m = await import('/js/download.js');
+    const sw = navigator.serviceWorker;
+
+    if (!sw.controller) {
+      await sw.register('/sw.js', { scope: '/' });
+      await sw.ready;
+      if (!sw.controller) {
+        await new Promise((res) => sw.addEventListener('controllerchange', res, { once: true }));
+      }
+    }
+
+    const realAdd = sw.addEventListener;
+    const realRemove = sw.removeEventListener;
+    let adds = 0;
+    let removes = 0;
+    sw.addEventListener = function (type, ...rest) {
+      if (type === 'message') adds += 1;
+      return realAdd.call(this, type, ...rest);
+    };
+    sw.removeEventListener = function (type, ...rest) {
+      if (type === 'message') removes += 1;
+      return realRemove.call(this, type, ...rest);
+    };
+
+    let threw = false;
+    let message = null;
+    let afterFail = null;
+    let afterStray = null;
+    let afterStrayRemoved = null;
+    const stray = () => {};
+    try {
+      const worker = sw.controller;
+      const realPost = worker.postMessage;
+      worker.postMessage = function () { throw new Error('wg-test: the worker went away'); };
+      try {
+        await m.openStreamDownload({ name: 'leak-probe.bin', size: 4, mime: 'application/octet-stream' });
+      } catch (err) {
+        threw = true;
+        message = err.message;
+      } finally {
+        worker.postMessage = realPost;
+      }
+      afterFail = { adds, removes };
+
+      // Negative control: a listener that really is left attached. Without this the
+      // balance above could be reported by a counter that never counts anything.
+      sw.addEventListener('message', stray);
+      afterStray = { adds, removes };
+      sw.removeEventListener('message', stray);
+      afterStrayRemoved = { adds, removes };
+    } finally {
+      sw.addEventListener = realAdd;
+      sw.removeEventListener = realRemove;
+      realRemove.call(sw, 'message', stray);
+    }
+
+    return JSON.stringify({ threw, message, afterFail, afterStray, afterStrayRemoved });
+  `);
+  const leak = JSON.parse(leakRaw);
+
+  check('a handshake that cannot reach the worker rejects rather than resolving silently',
+    leak.threw === true && typeof leak.message === 'string' && leak.message.length > 0,
+    `threw=${leak.threw} message=${leak.message}`);
+  check('the failed handshake counted at least one message listener being added',
+    leak.afterFail !== null && leak.afterFail.adds >= 1, leakRaw);
+  check('a failed wg-open handshake removes its message listener, leaving none behind',
+    leak.afterFail !== null && leak.afterFail.adds === leak.afterFail.removes,
+    leak.afterFail ? `${leak.afterFail.adds} added, ${leak.afterFail.removes} removed` : leakRaw);
+  check('negative control: a listener left attached on purpose does show as an imbalance',
+    leak.afterStray !== null && leak.afterStray.adds === leak.afterStray.removes + 1,
+    leak.afterStray ? `${leak.afterStray.adds} added, ${leak.afterStray.removes} removed` : leakRaw);
+  check('negative control: removing that listener brings the count back into balance',
+    leak.afterStrayRemoved !== null && leak.afterStrayRemoved.adds === leak.afterStrayRemoved.removes,
+    leak.afterStrayRemoved ? `${leak.afterStrayRemoved.adds} added, ${leak.afterStrayRemoved.removes} removed` : leakRaw);
+
+  // --------------------------------------------------------------------------------
   // Same-origin cross-tab isolation: the security fix under test.
   //
   // sw.js lives at root scope and is shared by every same-origin tab. Before the fix, a

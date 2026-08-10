@@ -102,12 +102,28 @@ export async function openStreamDownload({ name, size, mime, note = null }) {
 
   // Tell the worker what the response should be, and wait for it to acknowledge, before
   // triggering the request. Otherwise the fetch can win the race and get a 404.
-  await new Promise((resolve, reject) => {
-    const channel = new MessageChannel();
-    const timer = setTimeout(() => reject(new Error('the download worker did not answer')), START_TIMEOUT_MS);
-    channel.port1.onmessage = () => { clearTimeout(timer); resolve(); };
-    worker.postMessage({ type: 'wg-open', id, name, size, mime }, [channel.port2]);
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      const channel = new MessageChannel();
+      const timer = setTimeout(() => reject(new Error('the download worker did not answer')), START_TIMEOUT_MS);
+      channel.port1.onmessage = () => { clearTimeout(timer); resolve(); };
+      try {
+        worker.postMessage({ type: 'wg-open', id, name, size, mime }, [channel.port2]);
+      } catch (err) {
+        // A worker that went away between the controller check and this call rejects here.
+        // Without clearing the timer the rejection would be followed by a second, later
+        // one that nothing is listening for.
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+  } catch (err) {
+    // The listener above is attached to the service worker container, which outlives this
+    // page's transfers. Nothing downstream exists yet to remove it, so a handshake that
+    // never completes used to leave one dead listener per attempt for the life of the tab.
+    cleanup();
+    throw err;
+  }
 
   // An iframe, and it has to be an iframe.
   //

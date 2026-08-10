@@ -49,6 +49,10 @@ const CONFIRM_TIMEOUT_MS = 8000;
 // like sending a message, not like agreeing to a download. Larger transfers still ask,
 // which is also what lets the receiver choose a save location.
 const AUTO_ACCEPT_BYTES = 10 * 1024 * 1024;
+// How much a sender may run ahead of the accept before this side gives up holding it. The
+// buffer exists because chunks can arrive while the save dialog is open; it is bounded
+// because those bytes are in this page's memory and nothing has agreed to take them yet.
+const EARLY_LIMIT_BYTES = 4 * 1024 * 1024;
 const MAX_AUTH_FAILURES = 3;
 // Reconnect backoff while a transfer is paused. The owner's rule is that one side still
 // being present keeps the gate waiting, so there is no attempt ceiling: only a cap on how
@@ -1851,9 +1855,16 @@ export class Link extends EventTarget {
       // indices, so the flush can be idempotent for the same reason a live write is.
       inbound.early = inbound.early ?? [];
       inbound.earlyBytes = (inbound.earlyBytes ?? 0) + piece.bytes.byteLength;
-      if (inbound.earlyBytes > 4 * 1024 * 1024) {
-        this.emit('warning', 'sender began before the transfer was accepted; dropping the transfer');
+      if (inbound.earlyBytes > EARLY_LIMIT_BYTES) {
+        // Dropping this silently left the other device with a row that never moved and no
+        // reason for it, and every later file refused with "another transfer is already in
+        // progress" if the sender kept going. Same rule as acceptIncoming: the peer is told
+        // it was rejected, and this side says why.
+        const reason = `the sender began before the transfer was accepted, and more than ${formatBytes(EARLY_LIMIT_BYTES)} `
+          + 'arrived before there was anywhere to write it';
         this.incoming = null;
+        await this.control({ kind: 'file-reject', id: inbound.meta.id, reason });
+        this.emit('file-failed', { ...inbound.meta, reason });
         return;
       }
       // slice(), because `piece.bytes` is a view over the frame's buffer.
