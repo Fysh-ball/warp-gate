@@ -1,32 +1,38 @@
-// Support section and source link.
+// The donation panel: copy buttons, and a QR lightbox over the addresses.
 //
 // This lives in its own module because the landing and the gate are two separate
 // DOCUMENTS now (index.html and app.html), and that separation is the point: the
 // landing may one day carry a sponsor slot, and nothing on the landing is allowed to
 // share a script context, a CSP or a JS heap with the page that holds a decryption
-// key. So the two documents load disjoint entry scripts, and the handful of things
-// genuinely common to both -- the donation cards, the AGPL section 13 link -- are
-// here rather than duplicated or pulled in from app.js.
+// key. So the two documents load disjoint entry scripts.
+//
+// Only the landing loads this one. app.html carries no donation cards, no address
+// elements and no modal markup, so wireSupport() on the gate would wire precisely
+// nothing: it was never called there, and until 2026-08-10 app.js nonetheless fetched
+// the whole file to reach two helpers that had no business being in it. Those moved to
+// common.js, which is what both documents actually share; what is left here is the part
+// only one document has markup for. tests/size.test.mjs holds that line in both
+// directions: the gate must not fetch this, and the landing must.
 //
 // Nothing in this file touches a room, a key or a peer connection. Keep it that way:
 // it is the one module the ad-bearing document is allowed to load.
 
-import { encodeQr, drawQr } from './qr.js';
+import { copyText } from './common.js';
 
 const $ = (id) => document.getElementById(id);
 
 /**
- * Write to the clipboard, reporting rather than throwing when the browser refuses.
- * Returns whether it landed, so the caller can say so on the button itself.
+ * Fetch the QR encoder the first time a donation address is shown.
+ *
+ * Reached by import() so that qr.js is not among the files a browser fetches before the
+ * gate is usable: opening the donation modal is a decision nobody has made at load, and
+ * this file is also loaded by the landing document, which never draws a QR unless asked.
+ * Cached, so the second address is drawn without a second fetch.
  */
-export async function copyText(text, report = () => {}) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (err) {
-    report(`clipboard unavailable: ${err.message}. Select and copy manually.`, 'warn');
-    return false;
-  }
+let qrMod = null;
+async function loadQr() {
+  if (!qrMod) qrMod = await import('./qr.js');
+  return qrMod;
 }
 
 /**
@@ -51,7 +57,11 @@ export function wireSupport(report = () => {}) {
       const which = btn.dataset.qr;
       const address = $(`addr-${which}`)?.textContent.trim();
       if (!address) return;
-      openQr(btn.dataset.qrLabel || which.toUpperCase(), address, btn);
+      // open() is async now that the encoder is fetched on first use, and it reports its
+      // own failures. This catch is for anything it does NOT expect: without it a throw
+      // past its internal try becomes an unhandled rejection with no message anywhere.
+      openQr(btn.dataset.qrLabel || which.toUpperCase(), address, btn)
+        .catch((err) => report(`could not open the QR code: ${err.message}`, 'warn'));
     });
   }
 }
@@ -74,7 +84,10 @@ function wireQrModal(report) {
   const addrEl = $('qr-modal-addr');
   const closeBtn = $('qr-modal-close');
   const scrim = $('qr-modal-scrim');
-  if (!modal || !canvas || !titleEl || !addrEl || !closeBtn || !scrim) return () => {};
+  // async, so that the no-op returns a promise exactly as the real open() does. A bare
+  // () => {} here would make the caller's .catch() throw on any document without the
+  // modal markup, which is every document this file is loaded by except the landing.
+  if (!modal || !canvas || !titleEl || !addrEl || !closeBtn || !scrim) return async () => {};
 
   // Whatever was focused when the dialog opened, so focus goes back where the reader
   // left it rather than to the top of the document.
@@ -98,8 +111,13 @@ function wireQrModal(report) {
     back?.focus();
   }
 
-  function open(name, address, from) {
+  // Async only because the encoder is fetched on first use. The modal is still not shown
+  // until the code is actually on the canvas, which is the behaviour that matters here: a
+  // donation panel that appears with a blank white square where the address should be is
+  // worse than one that appears a frame later.
+  async function open(name, address, from) {
     try {
+      const { encodeQr, drawQr } = await loadQr();
       drawQr(canvas, encodeQr(address));
     } catch (err) {
       // Never show a blank white square implying a scannable code.
@@ -133,15 +151,3 @@ function wireQrModal(report) {
   return open;
 }
 
-/**
- * AGPL-3.0 section 13: users interacting with the program over a network must be
- * offered its source. It has to name whatever source THIS instance runs, which for
- * somebody else's deployment is not our repository, so it comes from /api/config and
- * stays hidden when the operator has not set one.
- */
-export function applySourceLink(sourceUrl) {
-  const link = $('source-link');
-  if (!link || !sourceUrl) return;
-  link.href = sourceUrl;
-  link.hidden = false;
-}

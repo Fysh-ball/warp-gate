@@ -122,7 +122,18 @@ edit('js/session.js', [
     + '  const res = await fetch(api(path), {'],
 ]);
 
-edit('js/download.js', [
+// The predicate used to live in js/download.js and moved to js/streamable.js upstream, so
+// that transfer.js could ask "can this browser be handed a download" without pulling in the
+// 8.5 KB of service-worker machinery that answers it. The patch followed the function rather
+// than staying on the filename: download.js now re-exports the same binding, so patching the
+// one definition still reaches BOTH call sites (transfer.js imports it from streamable.js
+// directly, download.js re-exports it) instead of only the one that used to exist.
+//
+// Note that public/js/streamable.js already documents this exact failure as a KNOWN GAP in
+// the doc comment immediately above the anchor. Upstream writes it down and lives with it,
+// because closing it there needs an async registration attempt from a synchronous call site.
+// Here the answer is knowable without probing: the scheme decides it.
+edit('js/streamable.js', [
   [`export function supportsStreamDownload() {
   return typeof navigator !== 'undefined'
     && 'serviceWorker' in navigator
@@ -160,8 +171,25 @@ edit('js/download.js', [
 ]);
 
 edit('js/app.js', [
-  ["import { initShare } from './share.js';",
-    `${jsHeader('app.js')}import { initShare } from './share.js';\n`
+  // Anchored on the crypto.js import block. The previous anchor was the static
+  // `import { initShare } from './share.js'`, which no longer exists: share.js became a lazy
+  // `import('./share.js')` at the foot of the file so that opening a gate does not fetch it.
+  // A vanished anchor is exactly the case this script is built to refuse, and the fix is a
+  // different anchor rather than a looser one.
+  //
+  // Why this block and not the last static import: it is the first thing after the file's own
+  // header comment, so the EXTENSION COPY banner lands where a reader looking for "is this a
+  // fork" will actually see it. It is also the one import app.js cannot lose while remaining
+  // app.js, and the multi-line form makes it long enough to be unique on its own: verified
+  // with grep, not by eye.
+  [`import {
+  generateGateCode, decodeGateCode, tryDecodeGateCode, deriveSecret, clearSecretCache,
+  GateCodeError, deriveRoomId,
+} from './crypto.js';`,
+    `${jsHeader('app.js')}import {
+  generateGateCode, decodeGateCode, tryDecodeGateCode, deriveSecret, clearSecretCache,
+  GateCodeError, deriveRoomId,
+} from './crypto.js';\n`
     + '// EXTENSION PATCH: this page is not served by the signalling server, so neither the API\n'
     + "// origin nor the shareable gate link can be read off `location`. See js/endpoint.js.\n"
     + "import { signalOrigin, gateLink, DEFAULT_ORIGIN } from './endpoint.js';"],
@@ -214,7 +242,7 @@ edit('app.html', [
      start_url, a scope and a share target on a SERVER, and this document is served out of
      an extension package, so it only produced a console 404. The share target went with it:
      that was delivered by public/sw.js, and Chromium refuses to let an extension page
-     register a service worker at all. See js/download.js. -->`],
+     register a service worker at all. See js/streamable.js. -->`],
   [`      <div class="disc-body">
         <p id="instance-body">The only instance the authors run is
         <strong>https://warpgate.fysh.site</strong>. The source is public so anyone may host

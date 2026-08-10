@@ -14,36 +14,14 @@ const START_TIMEOUT_MS = 10_000;
 // enough that a download nobody is consuming cannot pile up in the worker.
 const INITIAL_CREDITS = 8;
 
-let registration = null;
+// One definition, shared with transfer.js, which needs to ask the question without pulling
+// this file onto the eager graph. Re-exported so an existing importer of download.js keeps
+// working from one import.
+import { supportsStreamDownload } from './streamable.js';
 
-export function supportsStreamDownload() {
-  return typeof navigator !== 'undefined'
-    && 'serviceWorker' in navigator
-    && typeof ReadableStream === 'function'
-    && globalThis.isSecureContext === true
-    // EXTENSION PATCH, and an upstream bug in its own right.
-    //
-    // Measured in headless Brave on 2026-08-10: on a `chrome-extension://` page,
-    // `'serviceWorker' in navigator` is TRUE and `isSecureContext` is TRUE, so all three
-    // checks above pass, and then `navigator.serviceWorker.register('/sw.js')` throws
-    //   "Failed to register a ServiceWorker ... The user denied permission to use Service Worker."
-    // Chromium does not let an extension PAGE register a worker. The only worker an MV3
-    // extension gets is the one its manifest declares, and that is a different thing which
-    // is not in the fetch path of this document.
-    //
-    // Why this is not cosmetic: transfer.js consults this predicate as a CAPABILITY GATE
-    // before accepting a file. With it returning true, a receive above MEMORY_LIMIT_BYTES
-    // passes the "is there anywhere for this to go" check at the top of openSink() and only
-    // fails at the bottom when the worker refuses to start, which is after the user clicked
-    // Accept and after the sender began. A predicate that says yes and then cannot deliver
-    // is worse than one that says no.
-    //
-    // Tested on the SCHEME rather than by probing a registration, because a probe would have
-    // to be async and this function is called synchronously from three places. Any extension
-    // scheme is covered, not just Chromium's: Firefox's moz-extension and Safari's
-    // safari-web-extension have the same restriction.
-    && !/-extension:$/.test(globalThis.location?.protocol ?? '');
-}
+export { supportsStreamDownload } from './streamable.js';
+
+let registration = null;
 
 /**
  * Register the worker and wait until it is actually controlling this page.

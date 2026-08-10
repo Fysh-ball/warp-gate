@@ -612,7 +612,14 @@ try {
   // observer records each row AS IT IS INSERTED, which is the only moment the arrival
   // class is guaranteed to still be on it, and the insertion times come back too so a
   // "3 of 10" result cannot be mistaken for three separate 200ms windows.
+  //
+  // The quiet wait below is load bearing and was added after a flake: 10 added, 5 marked,
+  // span 104ms. The guard's window is anchored to the PREVIOUS arrival, not to the burst,
+  // so a burst well inside 200ms can still straddle a boundary and get two allowances.
+  // Waiting out a full window first makes the burst's own first row reset it, which is the
+  // only way "3 of 10" is a fact about the guard rather than about scheduling.
   const guarded = JSON.parse(await a.eval(`
+    await new Promise((r) => setTimeout(r, 400));
     const form = document.getElementById('chat-form');
     const input = document.getElementById('chat-input');
     const list = document.getElementById('messages');
@@ -644,8 +651,8 @@ try {
     guarded.added === 10, JSON.stringify(guarded));
   check('and they land inside one burst window, so the count below is measuring the guard',
     guarded.spanMs < 200, JSON.stringify(guarded));
-  check('but at most three of them are animated: a burst is not information',
-    guarded.marked > 0 && guarded.marked <= 3, JSON.stringify(guarded));
+  check('but exactly three of them are animated: a burst is not information',
+    guarded.marked === 3, JSON.stringify(guarded));
 
   // -------------------------------------------------- 17. the security surfaces stand still
   //

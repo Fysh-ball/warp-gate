@@ -38,6 +38,18 @@ const CSP_DIRECTIVES = [
   // blob: is needed to preview a received image inline. It is same-origin data the
   // page created itself, not a remote fetch.
   "img-src 'self' blob:",
+  // The same exception as img-src, for the same reason and with the same bound: a received
+  // video or audio file is previewed from bytes this page assembled itself, and a media
+  // element loads through media-src rather than img-src. Without this the directive falls
+  // back to default-src 'none' and every <video>/<audio> fails with
+  // "Media load rejected by URL safety check", which reads to a user as a corrupt file
+  // rather than as a policy decision. Measured in a real browser before it was added.
+  //
+  // 'self' and blob: only. No data:, because a data: URL is a document the peer could have
+  // authored in full, and no external origin, because the whole premise is that nothing
+  // leaves the two browsers. blob: here is no wider than blob: on img-src: a blob URL is
+  // opaque, unguessable, same-origin, and only ever names bytes this document created.
+  "media-src 'self' blob:",
   "connect-src 'self'",
   "font-src 'self'",
   // The web app manifest, so the gate can be installed to a home screen. Without this it

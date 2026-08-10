@@ -908,6 +908,129 @@ try {
     Array.isArray(idb.sweepWarnings) && idb.sweepWarnings.length === 0, JSON.stringify(idb.sweepWarnings));
   check('clearAllResume leaves nothing behind', idb.clearedAll === 0, raw);
 }
+
+// ---- the folder a whole batch is accepted into ----
+//
+// Pure Node rather than a browser case, and deliberately so. Accepting several files at
+// once spends ONE gesture on showDirectoryPicker and then writes every file of the batch
+// into that folder with no further dialog. Headless Brave has no directory picker, so
+// nothing this suite can drive in a real tab will ever take createSink's directory branch,
+// and that branch is the one place in this app that can destroy a file the user already
+// had: `getFileHandle(name, {create:true})` on an existing name opens THAT file and
+// truncates it on first write. A fake directory handle is the only way to ask what happens
+// when the name is already taken, which is precisely the case that matters.
+//
+// Importing createSink here also exercises the specifier transfer.js uses to reach
+// dirsink.js at runtime. That module is off the eager graph, so a typo in the import would
+// otherwise surface for the first time in front of a user who had just chosen a folder.
+{
+  const { createSink } = await import('../public/js/transfer.js');
+  // Enough of the File System Access API for this path: getFileHandle with and without
+  // create, and a writable that keeps what was written so the assertions can read it back.
+  // Files that "already exist" start with content, so an overwrite would be visible.
+  const fakeDir = (existing = []) => {
+    const files = new Map(existing.map((n) => [n, Buffer.alloc(0)]));
+    const created = [];
+    const handleFor = (name) => ({
+      name,
+      async getFile() { return { size: files.get(name).length }; },
+      async createWritable() {
+        return {
+          async write(chunk) { files.set(name, Buffer.concat([files.get(name), Buffer.from(chunk)])); },
+          async close() {},
+          async abort() {},
+          async seek() {},
+          async truncate() {},
+        };
+      },
+    });
+    return {
+      files,
+      created,
+      async getFileHandle(name, opts) {
+        if (files.has(name)) return handleFor(name);
+        if (opts && opts.create) {
+          files.set(name, Buffer.alloc(0));
+          created.push(name);
+          return handleFor(name);
+        }
+        const err = new Error(`no entry named ${name}`);
+        err.name = 'NotFoundError';
+        throw err;
+      },
+    };
+  };
+
+  const free = fakeDir();
+  const sink = await createSink({ name: 'holiday.jpg', size: 4 }, { directory: free });
+  await sink.write(new Uint8Array([1, 2, 3, 4]));
+  check('a file accepted as part of a batch is written into the folder the user chose',
+    free.created.length === 1 && free.created[0] === 'holiday.jpg', JSON.stringify(free.created));
+  check('CONTROL: and it is a disk sink, so the batch really did skip the save dialog',
+    sink.kind === 'disk', String(sink.kind));
+  check('CONTROL: and the bytes reached it, so this is a sink and not a stub',
+    free.files.get('holiday.jpg')?.length === 4, String(free.files.get('holiday.jpg')?.length));
+
+  // The whole reason childHandle exists. A save dialog puts the overwrite decision in front
+  // of the user every time; a directory grant does not, so a peer sending "taxes.pdf" must
+  // not be able to land on the taxes.pdf already in that folder.
+  const taken = fakeDir(['taxes.pdf']);
+  taken.files.set('taxes.pdf', Buffer.from('the real taxes'));
+  const moved = await createSink({ name: 'taxes.pdf', size: 3 }, { directory: taken });
+  await moved.write(new Uint8Array([9, 9, 9]));
+  check('a name already in that folder is moved aside rather than opened for overwrite',
+    taken.created.length === 1 && taken.created[0] === 'taxes (2).pdf', JSON.stringify(taken.created));
+  check('and the file that was already there still holds its own bytes',
+    taken.files.get('taxes.pdf').toString() === 'the real taxes', taken.files.get('taxes.pdf').toString());
+
+  const two = fakeDir(['shot.png', 'shot (2).png']);
+  await createSink({ name: 'shot.png', size: 1 }, { directory: two });
+  check('the number keeps climbing while names are taken, and lands before the extension',
+    two.created[0] === 'shot (3).png', JSON.stringify(two.created));
+
+  // NotFoundError is the ONLY answer read as "this name is free". A directory that cannot be
+  // read at all must not be mistaken for an empty one, because that is the overwrite coming
+  // back through the error path.
+  const blind = {
+    async getFileHandle(name, opts) {
+      if (opts && opts.create) throw new Error('create must not be reached on an unreadable folder');
+      const err = new Error('the browser would not say');
+      err.name = 'NotAllowedError';
+      throw err;
+    },
+  };
+  let refused = null;
+  try {
+    await createSink({ name: 'anything.bin', size: 1 }, { directory: blind });
+  } catch (err) { refused = err.message; }
+  check('a folder that cannot be read is refused rather than treated as empty',
+    refused !== null && /already in the folder/.test(refused), String(refused));
+  check('CONTROL: and the reason the browser gave is carried, not swallowed',
+    refused !== null && refused.includes('NotAllowedError') && refused.includes('the browser would not say'),
+    String(refused));
+
+  // The loop asks the file system a question per attempt, so a folder that answers "taken"
+  // forever has to end somewhere rather than spin.
+  const names = ['full.bin'];
+  for (let i = 2; i <= 50; i += 1) names.push(`full (${i}).bin`);
+  const crowded = fakeDir(names);
+  let gaveUp = null;
+  try {
+    await createSink({ name: 'full.bin', size: 1 }, { directory: crowded });
+  } catch (err) { gaveUp = err.message; }
+  check('fifty taken names ends in a refusal that names the file, not an unbounded loop',
+    gaveUp !== null && gaveUp.includes('"full.bin"'), String(gaveUp));
+  check('CONTROL: and nothing was created while it looked',
+    crowded.created.length === 0, JSON.stringify(crowded.created));
+
+  // The name is a string the OTHER device chose, and it is being handed to a file system
+  // this time rather than to the DOM. One segment, inside the granted folder, or nothing.
+  const evil = fakeDir();
+  await createSink({ name: '../../etc/passwd', size: 1 }, { directory: evil });
+  check('a peer-chosen name cannot climb out of the folder the user granted',
+    evil.created.length === 1 && !evil.created[0].includes('/') && !evil.created[0].includes('\\'),
+    JSON.stringify(evil.created));
+}
 } finally {
   await browser.close();
   await server.stop();

@@ -225,11 +225,20 @@ for (const [name, value] of CSP_BEFORE) {
 check('every directive the policy had before the manifest is still there, unchanged', keptAll, csp);
 check('the policy now also allows a manifest from this origin, and only this origin',
   directiveOf(csp, 'manifest-src') === "'self'", String(directiveOf(csp, 'manifest-src')));
-// Nothing else may have been added along the way. A policy that grew two directives when
-// one was asked for is a policy nobody reviewed.
+// The second addition since CSP_BEFORE was written, and the only one. A received video or
+// audio file is previewed from a blob: URL, and a media element loads through media-src,
+// not img-src: without this the directive falls back to default-src 'none' and every
+// player fails with "Media load rejected by URL safety check". Asserted as an exact string
+// so widening it to data: or to an origin has to come past this line.
+check('and a media element may load the blob: URLs this page makes, and nothing else',
+  directiveOf(csp, 'media-src') === "'self' blob:", String(directiveOf(csp, 'media-src')));
+// Nothing else may have been added along the way. A policy that grew three directives when
+// two were asked for is a policy nobody reviewed. The count is manifest-src (the manifest
+// work this file was written for) plus media-src (inline video and audio previews), and
+// both are asserted by name above, so a rename cannot satisfy the arithmetic on its own.
 const directiveNames = csp.split(';').map((d) => d.trim().split(/\s+/)[0]).filter(Boolean);
-check('the policy gained exactly one directive and no more',
-  directiveNames.length === CSP_BEFORE.length + 1, `${directiveNames.length}: ${directiveNames.join(' ')}`);
+check('the policy gained exactly two directives and no more',
+  directiveNames.length === CSP_BEFORE.length + 2, `${directiveNames.length}: ${directiveNames.join(' ')}`);
 // Negative control for the presence test itself: a directive that was never in this
 // policy must read as absent. Otherwise directiveOf() returning something for everything
 // would make all of the above pass.

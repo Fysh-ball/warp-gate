@@ -22,7 +22,9 @@ import { savePasswordKey, recallPasswordKey, forgetPasswordKey } from './vault.j
 // Deliberately one line. tests/size.test.mjs walks the eager module graph with a matcher
 // that cannot see across a newline, so wrapping this import makes link.js and everything
 // under it vanish from the measured graph and the page-weight ceiling stops covering it.
-import { Link, STATE, readInboundRecord, dropInboundRecord, dropRoomInboundRecords } from './link.js';
+import {
+  Link, STATE, MAX_BATCH_FILES, readInboundRecord, dropInboundRecord, dropRoomInboundRecords,
+} from './link.js';
 import { formatBytes, fingerprintFile, sweepResume } from './transfer.js';
 
 export { STATE };
@@ -54,6 +56,10 @@ async function postRoom(path, body) {
 const OBJECT_EVENTS = [
   'chat', 'secret', 'progress', 'diagnostics', 'holding', 'transfer-waiting',
   'file-offered', 'file-refused', 'file-accepted', 'file-accepted-local',
+  // One peer announcing several files at once, so the UI can ask about all of them with a
+  // single Accept. Stamped with the peer, and it has to be: the click must reach the link
+  // the announcement came from, which in a mesh is not "whoever has an incoming file".
+  'files-offered',
   'file-failed', 'file-stalled', 'file-resumed', 'file-reselect-needed',
   'file-reselect-refused', 'file-received', 'file-incoming', 'file-complete',
   // A game message from one peer. Forwarded with the peer id the relay adds, because a
@@ -1002,7 +1008,46 @@ export class Session extends EventTarget {
    * own queue and its own resume state: one file in flight per peer, never one globally,
    * so a peer on a slow link cannot hold anybody else up.
    */
-  async sendFile(file) {
+  /**
+   * Tell every connected participant that the next few files go together.
+   *
+   * Sent ONCE, before the first FILE_START, and only for more than one file: a single send
+   * announces nothing and carries no batch id, so that path is untouched. Returns the id to
+   * stamp on each FILE_START, or null when there is nothing to announce.
+   *
+   * A link that connects AFTER this never hears the announcement, and that is correct rather
+   * than a gap: it sees a batch id it does not know, falls through to the ordinary per-file
+   * offer, and asks. The alternative is a grant one side never agreed to.
+   */
+  async announceFileBatch(files) {
+    const list = [...files].filter(Boolean);
+    if (list.length < 2 || list.length > MAX_BATCH_FILES) return null;
+    const links = this.connectedLinks();
+    if (!links.length) return null;
+    const batch = b64u.encode(globalThis.crypto.getRandomValues(new Uint8Array(8)));
+    const message = {
+      kind: 'file-batch',
+      batch,
+      count: list.length,
+      // The receiver bounds its grant with this, so it is the exact sum of what is about to
+      // be sent: an allowance larger than the files is an allowance for something else.
+      bytes: list.reduce((sum, file) => sum + (Number(file.size) || 0), 0),
+      names: list.map((file) => String(file.name ?? '')),
+    };
+    const told = await Promise.allSettled(links.map((link) => link.control(message)));
+    for (let i = 0; i < told.length; i += 1) {
+      if (told[i].status === 'rejected') {
+        // Not fatal, and named rather than swallowed: that participant is asked once per
+        // file instead of once, which is the old behaviour and not a lost transfer.
+        this.emit('warning',
+          `${this.labelFor(links[i])} was not told these files go together, so it will ask about `
+          + `each one: ${told[i].reason.message}`);
+      }
+    }
+    return batch;
+  }
+
+  async sendFile(file, batch = null) {
     this.requireConnected();
     const targets = this.connectedLinks().filter((link) => !link.outbound?.active);
     if (!targets.length) throw new Error('another file is already being sent');
@@ -1018,7 +1063,7 @@ export class Session extends EventTarget {
       done: new Set(),
     });
     try {
-      const results = await Promise.allSettled(targets.map((link) => link.sendFile(file, id, fingerprint)));
+      const results = await Promise.allSettled(targets.map((link) => link.sendFile(file, id, fingerprint, batch)));
       const failed = results.filter((r) => r.status === 'rejected');
       if (failed.length === results.length) throw failed[0].reason;
       for (let i = 0; i < results.length; i += 1) {
@@ -1085,6 +1130,31 @@ export class Session extends EventTarget {
   linkForIncoming(peerId) {
     if (peerId && this.links.has(peerId)) return this.links.get(peerId);
     return [...this.links.values()].find((l) => l.incoming) ?? null;
+  }
+
+  /**
+   * Accept a whole announced batch from one participant. Called from a user gesture, and
+   * `directory` is the handle the UI already obtained inside that same gesture.
+   */
+  async acceptBatch(peerId = null, { directory = null } = {}) {
+    const link = this.linkForBatch(peerId);
+    if (!link) throw new Error('there is no batch of files to accept');
+    return link.acceptBatch({ directory });
+  }
+
+  /** The other answer to the same row. */
+  async refuseBatch(peerId = null) {
+    const link = this.linkForBatch(peerId);
+    if (!link) return false;
+    return link.refuseBatch();
+  }
+
+  // Matched on pendingBatch and not on `incoming`: the announcement arrives before the
+  // first file does, so at the moment the row is drawn there may be no incoming transfer on
+  // that link at all.
+  linkForBatch(peerId) {
+    if (peerId && this.links.has(peerId)) return this.links.get(peerId);
+    return [...this.links.values()].find((l) => l.pendingBatch) ?? null;
   }
 
   /** Hand a specific participant's paused send its file back after a reload. */

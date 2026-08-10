@@ -10,7 +10,11 @@
  * If any of it fails the landing is still readable and every link still works.
  */
 
-import { wireSupport, applySourceLink } from './support.js';
+// Two imports rather than one since 2026-08-10: the donation panel is the landing's alone
+// (app.html has no cards and no modal markup), while the source link is a licence obligation
+// both documents carry. Splitting them is what took the panel off the gate's load path.
+import { wireSupport } from './support.js';
+import { applySourceLink } from './common.js';
 
 // Links minted before the split were `/#WARP-...`, and they are printed on QR codes
 // and pasted into chats that nobody can go back and edit. The fragment never reaches

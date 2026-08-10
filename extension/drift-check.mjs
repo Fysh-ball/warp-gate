@@ -35,7 +35,11 @@ const PATCHED = new Map([
   ['js/signal.js', 'EXTENSION PATCH'],
   ['js/session.js', 'EXTENSION PATCH'],
   ['js/app.js', 'EXTENSION PATCH'],
-  ['js/download.js', 'EXTENSION PATCH'],
+  // Was js/download.js until the predicate moved upstream into js/streamable.js. The entry
+  // moved with the function, not with the filename: leaving it on download.js would have
+  // failed loudly here (a file on the patched list that is byte-identical), which is the
+  // behaviour this list is for.
+  ['js/streamable.js', 'EXTENSION PATCH'],
   ['app.html', 'EXTENSION PATCH'],
   // The legal pages differ by one mechanical rewrite: href="/" is the site's landing
   // document, which this package does not ship, so it points at index.html instead.
@@ -73,7 +77,7 @@ const NOT_SHIPPED = new Map([
     + 'comparison below skips this name entirely.'],
   ['js/landing.js', 'only the site landing page loads it.'],
   ['sw.js', 'Chromium refuses to let an extension PAGE register a service worker, so the '
-    + 'streaming download it provides cannot run here at all. See js/download.js.'],
+    + 'streaming download it provides cannot run here at all. See js/streamable.js.'],
   ['manifest.webmanifest', 'a web app manifest names a start_url and a scope on a server. '
     + 'There is no server here.'],
 ]);

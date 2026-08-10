@@ -229,6 +229,34 @@ const packed = (graph) => [...graph.values()]
     ['the share target', 'share.js'],
     ['the resume negotiation', 'resume.js'],
     ['the streaming download', 'download.js'],
+    // The batch accept, split the same way and for the same reason: neither half can be
+    // reached until a peer has offered several files at once and this side has answered.
+    // Asserted rather than left incidental, because the split is what keeps the gate under
+    // the ceiling and an accidental static import would put it back over with no warning.
+    ['the batch offer prompt', 'batchui.js'],
+    ['the folder sink naming', 'dirsink.js'],
+    // Nothing here can be reached until a file has actually finished arriving, which is
+    // the same rule as everything above it.
+    ['the file preview and Open button', 'preview.js'],
+    // Split on 2026-08-10, when three features in one day (the batch accept, the preview and
+    // the outbound accounting fix) put the gate 2,821 B over. Gated by the decision to TAKE a
+    // file: link.js builds a sink only from acceptIncoming (the user clicked Accept and is in
+    // the save dialog), acceptFromGrant (a batch already consented to), the auto-accept branch
+    // of onFileStart (a peer has offered something small) or adoptInbound (a reload found a
+    // stored handle and the user clicked to resume it). A gate that opens and never receives
+    // anything reaches none of them, so it should not be paying for the save-dialog,
+    // granted-folder, streaming-download and memory-blob machinery behind them. What stayed in
+    // transfer.js is what a gate genuinely runs first: canAccept(), which decides on every
+    // FILE_START whether a file may be taken at all, and the chunk readers on the sending side.
+    ['the sink builder', 'filesink.js'],
+    // Not a lazy split but a wrong edge, found while measuring the two above. app.html has no
+    // donation cards, no address elements and no modal markup, and app.js never called
+    // wireSupport(), so every gate fetched 7.2 KB of donation panel and QR lightbox it could
+    // not display, to reach copyText() and applySourceLink(). Those two moved to common.js and
+    // this file went back to being the landing's alone. Asserted here rather than trusted,
+    // because the import that did it looked entirely ordinary and cost more than any single
+    // feature that landed that day.
+    ['the donation panel and its QR lightbox', 'support.js'],
   ];
   const eager = new Set([...graph.keys()].map(rel));
   for (const [what, file] of OFF_PATH) {
@@ -248,7 +276,11 @@ const packed = (graph) => [...graph.values()]
     // The small halves of the four splits above. If one of these ever fell off the graph
     // too, the module it was split out of would have taken its call sites with it and the
     // exclusions above would be passing because the FEATURE was deleted.
-    'chunkwire.js', 'streamable.js']) {
+    'chunkwire.js', 'streamable.js',
+    // The half of transfer.js that did NOT move with the sink, and the half of support.js
+    // that did. If common.js fell off the graph the source link would be gone, which is an
+    // AGPL section 13 obligation, not a nicety.
+    'common.js']) {
     check(`CONTROL: ${must} IS on the eager graph, so the walk is really walking`,
       eager.has(must), [...eager].sort().join(' '));
   }
@@ -269,7 +301,14 @@ const packed = (graph) => [...graph.values()]
     ['the share target', 'app.js', './share.js'],
     ['the QR encoder from the donation modal', 'support.js', './qr.js'],
     ['the resume negotiation', 'link.js', './resume.js'],
-    ['the streaming download', 'transfer.js', './download.js'],
+    // Same argument again, and the one that matters most: deleting this edge leaves a gate
+    // that can be offered a file, can say yes, and then has nowhere to put it.
+    ['the sink builder', 'transfer.js', './filesink.js'],
+    // These two used to be owned by transfer.js and moved with createSink on 2026-08-10. The
+    // owner is named per row precisely so a move like that shows up here as a failure rather
+    // than passing on a file that no longer has the call site.
+    ['the streaming download', 'filesink.js', './download.js'],
+    ['the folder sink naming', 'filesink.js', './dirsink.js'],
   ];
   for (const [what, from, spec] of REACHED) {
     const edges = dynamicImports(fs.readFileSync(path.join(JS, from), 'utf8'));
@@ -296,6 +335,15 @@ const packed = (graph) => [...graph.values()]
   const eager = new Set([...graph.keys()].map(rel));
   for (const off of ['crypto.js', 'link.js', 'transfer.js', 'gameplay.js', 'qrdecode.js']) {
     check(`the landing does not pull in ${off}`, !eager.has(off), [...eager].sort().join(' '));
+  }
+
+  // The other half of taking support.js off the gate's graph, and it has to be asserted from
+  // here because from inside the gate's graph "the landing owns the donation panel now" and
+  // "somebody deleted the donation panel" look identical: both are simply an absence. This is
+  // the same reason every exclusion above has a REACHED entry beside it.
+  for (const must of ['support.js', 'common.js']) {
+    check(`CONTROL: the landing DOES load ${must}, so the gate's exclusion of it means something`,
+      eager.has(must), [...eager].sort().join(' '));
   }
 }
 

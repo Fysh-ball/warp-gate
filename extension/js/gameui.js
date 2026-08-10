@@ -255,7 +255,46 @@ export class GameUI {
     // and it must not survive a move arriving from the other side.
     this.selected = null;
     this.chosenPeer = null;
+    // The match id of the last invitation this screen announced. See announceInvite().
+    this.announcedInvite = null;
     this.games.addEventListener('update', () => this.render());
+  }
+
+  /**
+   * Make an incoming invitation impossible to miss.
+   *
+   * Everything this class draws lives inside a collapsed disclosure whose summary reads
+   * "something to do while you wait", and nobody opens that while they are waiting for
+   * something else. An invitation drawn into a shut drawer is in the DOM and is not on
+   * screen: the browser reports checkVisibility() false for the Play button and hit
+   * testing at its coordinates returns the page behind it. So the person who pressed a
+   * card sits on "Waiting for them to accept" forever, the person who was asked is never
+   * told they were asked, and both of them correctly report that games do not work.
+   *
+   * This is the one thing rendered here that REQUIRES an answer from the person looking
+   * at the screen, so it is also the one thing allowed to open the drawer itself. Two
+   * signals, because they fail differently: the drawer opens, and the invitation goes to
+   * the activity log, which survives the drawer being shut again.
+   *
+   * Once per invitation, keyed on the match id, and never on a plain re-render. Somebody
+   * who shuts the drawer again has answered the question by shutting it, and a panel that
+   * springs back open on the next move is worse than one that never opened.
+   */
+  announceInvite(inv) {
+    // Identity, not the match id. Keying on `mid` looked equivalent because an honest
+    // client rolls a fresh one per invitation, but a peer that REUSES a mid it already
+    // used, after that invitation was declined, would find the second invitation silently
+    // swallowed: this.incoming is set, the Play button is drawn, and it is drawn into a
+    // shut drawer with nothing said about it. That is precisely the failure this method
+    // exists to prevent, so the latch must not be forgeable by the sender.
+    if (this.announcedInvite === inv) return;
+    this.announcedInvite = inv;
+    if (this.onNotice) this.onNotice(`${this.labelFor(inv.peer)} wants to play ${inv.name}.`);
+    // closest() rather than a known id: this class is handed a root and does not own the
+    // markup around it, and a copy of the app that does not wrap it in a disclosure at all
+    // should get the log line and no error.
+    const drawer = this.root && this.root.closest ? this.root.closest('details') : null;
+    if (drawer && !drawer.open) drawer.open = true;
   }
 
   render() {
@@ -267,7 +306,10 @@ export class GameUI {
     const gs = this.games;
     if (gs.notice) root.append(el('p', 'game-note', gs.notice));
 
-    if (gs.incoming) return this.renderInvite(root, gs.incoming);
+    if (gs.incoming) {
+      this.announceInvite(gs.incoming);
+      return this.renderInvite(root, gs.incoming);
+    }
     if (gs.outgoing) return this.renderWaiting(root, gs.outgoing);
     const view = gs.view();
     if (!view) return this.renderMenu(root);

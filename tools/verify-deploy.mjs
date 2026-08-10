@@ -215,6 +215,72 @@ const probes = [
       return out;
     },
   },
+  {
+    // The ONLY probe in this file that can tell whether the container was restarted.
+    // Every other one reads a file out of `public/`, and `public/` is an rsync target:
+    // static bytes go live without touching the process. This deploy also changes
+    // `server/index.js`, and a served header is the one thing a stale process cannot fake.
+    //
+    // Without `media-src`, CSP falls back to `default-src 'none'` and every previewed
+    // <video>/<audio> is blocked. That failure is invisible from the outside: the file
+    // downloads, the element appears, and nothing plays. So the header is the evidence.
+    name: "11. the gate's CSP allows a blob media preview, which only a restarted container serves",
+    async run(base) {
+      const r = await get(base, '/app');
+      const csp = r.headers.get('content-security-policy') || '(absent)';
+      const media = (csp.match(/media-src [^;]*/) || ['(absent)'])[0];
+      return {
+        media,
+        // Reported alongside, because "media-src is present" and "media-src is present and
+        // did not quietly widen" are different claims and only the second one is safe.
+        noData: !/media-src[^;]*data:/.test(csp),
+        noWildcard: !/media-src[^;]*\*/.test(csp),
+      };
+    },
+  },
+  {
+    // Five modules that did not exist in the last deployment, for the same reason probe 10
+    // exists: each is behind an `import()` that only runs after a decision the user makes
+    // minutes into a session, so a 404 here does not fail at load. It fails when a receiver
+    // presses Accept all, or Open, or picks a folder, and it fails as a broken feature
+    // rather than as a missing file.
+    name: '12. the modules added by the batch accept, the preview and the sink split are served',
+    async run(base) {
+      const out = {};
+      for (const p of ['/js/batchui.js', '/js/dirsink.js', '/js/preview.js', '/js/filesink.js', '/js/common.js']) {
+        const r = await get(base, p);
+        out[p] = {
+          status: r.status,
+          bytes: Buffer.byteLength(r.text, 'utf8'),
+          sha: createHash('sha256').update(Buffer.from(r.text, 'utf8')).digest('hex').slice(0, 16),
+        };
+      }
+      return out;
+    },
+  },
+  {
+    // The two changes in this deploy that a user would actually notice and that no hash
+    // above pins to its cause. Probe 9 hashes the whole stylesheet, so it goes red for any
+    // edit at all and never says which one; probe 6 reads link.js for the key exchange and
+    // would pass with the transfer half years out of date.
+    //
+    // `parked` is the resume fix: a resume that lands while a send is still running used to
+    // be answered `file-resume-ok` and then dropped on the streaming latch, so the promise
+    // was made and never kept and a 434 MB transfer died on the receiver's timer. That is
+    // the one line here whose absence is data loss rather than cosmetics.
+    name: '13. the compact verification panel and the resume-parking fix are the served ones',
+    async run(base) {
+      const css = await get(base, '/css/style.css');
+      const link = await get(base, '/js/link.js');
+      return {
+        sasBox: css.text.includes('.sas-box'),
+        sasLine: css.text.includes('.sas-line'),
+        parked: link.text.includes('out.parked'),
+        batchGrant: link.text.includes('batchGrant'),
+        coverage: link.text.includes('newCoverage'),
+      };
+    },
+  },
 ];
 
 for (const p of probes) {

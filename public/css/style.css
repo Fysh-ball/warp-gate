@@ -536,11 +536,33 @@ button.link:active { transform: none; }
   padding: 9px 11px;
 }
 .file-title { font-size: 14px; margin-bottom: 4px; overflow-wrap: anywhere; }
+/* The filenames listed on a batch offer. Peer-chosen strings, up to 64 of them, so this
+   has to break inside a word: one unbroken 120-character name would otherwise push the
+   transcript column wider than the window and take the Accept button off screen with it. */
+.file-names { overflow-wrap: anywhere; margin-bottom: 6px; }
 .msg-image {
   display: block;
   max-width: 100%;
   max-height: 320px;
   border-radius: 6px;
+  margin: 6px 0;
+}
+/* Inline video and audio. Bounded the same way the image is: a transcript row must never
+   be able to push the composer off screen because of something a peer sent. width:100% on
+   the audio player because a bare <audio> renders at the browser's own default width,
+   which is narrower than the bubble on desktop and wider than it on a phone. */
+video.msg-media {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 6px;
+  margin: 6px 0;
+  background: #000;
+}
+audio.msg-media {
+  display: block;
+  width: 100%;
+  max-width: 100%;
   margin: 6px 0;
 }
 .msg.is-file button, .msg.is-secret button { width: auto; padding: 6px 12px; font-size: 13px; }
@@ -723,13 +745,25 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
      under it. On a screen taller than the viewport there is no free space and this is a
      no-op, so it never pushes the footer off the end of long content. The connected
      screen overrides it back to 0: there `main` is the thing that grows. */
-  body:has(> .page) > .page > .foot { order: 2; margin-top: auto; }
+  body:has(> .page) > .page > .foot { order: 3; }
   /* What this browser can RECEIVE is a standing fact worth knowing, and it is not the
      headline of the consent screen. It used to be the first thing on the page at every
      width above 900px, so the first sentence a new visitor read was a caveat about file
-     sizes. `order` moves it below the screen without moving it in the DOM, so the
-     reading order for assistive tech is unchanged. */
-  body:has(> .page) > .page > #receive-note { order: 1; }
+     sizes. `order` moves it in the paint order without moving it in the DOM, so the
+     reading order for assistive tech is unchanged.
+
+     2026-08-10: order 1 put it BETWEEN the two gate cards and the numbered steps, which
+     is the worst place available. It is a full-shell-width slab and the cards above it
+     are narrower, so it read as a rule drawn across the middle of the page, cutting the
+     one composition on the screen in half. It is the last thing now, under the steps and
+     above the footer. */
+  body:has(> .page) > .page > #receive-note { order: 2; margin-top: auto; }
+  /* The auto margin belongs to whichever of the two is FIRST in the bottom-anchored pair,
+     never to both: two auto margins in a flex column SPLIT the free space, which would
+     open a gap above the note as well as above the footer and anchor neither. The note is
+     `hidden` on most screens and a hidden element generates no box, so on those screens
+     the footer has to take the margin back. */
+  body:has(> .page) > .page:not(:has(> #receive-note:not([hidden]))) > .foot { margin-top: auto; }
   /* The dock, not the history inside it: #log is a child now, and leaving this selector on
      .log would have taken the panel out of the dock's flow and put it back on top of the
      page as an overlay, which is the exact bug the row was built to fix. */
@@ -1064,8 +1098,9 @@ main.legal a { color: var(--accent); }
 
 /* The free height, distributed instead of dumped.
 
-   `.page` is a flex column and `.foot` carries `margin-top: auto` (see the status log
-   section), which is correct for a SHORT screen and is what puts the footer on the
+   `.page` is a flex column whose LAST bottom-anchored item carries `margin-top: auto`
+   (see the status log section: it is #receive-note when that note is on screen and .foot
+   when it is not), which is correct for a SHORT screen and is what puts the footer on the
    bottom edge. What it cannot do is share: one auto margin takes ALL the free space, so
    on a tall window every spare pixel landed in a single band above the footer and the
    content was crushed into a strip under the header.
@@ -1489,47 +1524,72 @@ body:has(#screen-connected:not([hidden])) .foot {
 }
 
 /* ---- the verification code -------------------------------------------------------
-   The largest thing in the rail, in tabular monospace, because five digits read aloud
-   is the whole check. It was 15px grey text sharing a line with the route badge. */
+   Legible in tabular monospace, because reading it aloud is the whole check, and QUIET,
+   because it is consulted once and then never again. It went from 15px grey text on a
+   badge line to a 46px number in a filled accent panel, which overshot: at that size it
+   carried the same visual weight as the conversation and read as the main event on a
+   screen where the main event is the thread. Halved, on a plain border rather than a
+   filled panel, with the digits and the words on one line. Still the largest thing in
+   the rail, still nothing hidden. */
 .sas-box {
-  background: var(--panel);
-  border: 1px solid var(--accent-dim);
+  background: transparent;
+  border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 14px 16px 15px;
+  padding: 9px 12px 10px;
 }
 .sas-box .rail-k {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 10.5px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
   margin: 0;
+  /* Never the thing that wraps: if the rail gets narrow the digits and the words break
+     to their own lines and the caption stays with the first of them. */
+  flex: 0 0 auto;
 }
-.sas-v { margin: 6px 0 0; }
+/* Baseline alignment, not centre: the words are a reading of the digits, so they should
+   sit on the same line the digits sit on. Wrapping is allowed because a narrow rail plus
+   a long word pair would otherwise clip the thing a person is meant to read out. */
+.sas-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0;
+}
+.sas-v { margin: 0; }
 #sas {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: clamp(30px, 2.6vw, 46px);
-  line-height: 1.1;
-  letter-spacing: 0.14em;
+  font-size: clamp(22px, 1.5vw, 26px);
+  line-height: 1.15;
+  letter-spacing: 0.13em;
   font-weight: 700;
   color: var(--text);
   display: block;
 }
-.sas-box .rail-note {
-  margin: 10px 0 0;
+.sas-words {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.3;
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
+}
+.sas-box .rail-note {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
   max-width: var(--measure);
 }
-/* On a phone there is no rail: the code sits above the thread, so it takes the room it
-   needs to be read out and not a pixel more. The instruction stays: it is the one thing
-   a person is asked to do, and hiding it to save 30px would be hiding the point. */
+/* On a phone there is no rail: the code sits above the thread, where every pixel it
+   takes is a pixel of conversation. The instruction stays: it is the one thing a person
+   is asked to do, and hiding it to save 30px would be hiding the point. */
 @media (max-width: 699px) {
-  .sas-box { padding: 10px 12px 11px; }
-  #sas { font-size: 28px; letter-spacing: 0.12em; }
-  .sas-box .rail-note { font-size: 12.5px; margin-top: 7px; }
+  .sas-box { padding: 8px 11px 9px; }
+  #sas { font-size: 22px; letter-spacing: 0.11em; }
+  .sas-words { font-size: 13px; }
+  .sas-box .rail-note { font-size: 11.5px; margin-top: 6px; }
 }
 
 /* ---------------------------------------------------------------------------

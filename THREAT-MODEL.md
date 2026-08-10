@@ -79,9 +79,12 @@ landing (`index.html`, at `/`) and the gate (`app.html`, at `/app`) are two docu
 with two Content-Security-Policy headers, and no shared script, storage key or JS heap.
 
 - The gate is served with `default-src 'none'` as the fallback, and every exception to it
-  is `'self'`: `script-src`, `style-src`, `img-src`, `connect-src`, `font-src`,
-  `manifest-src`, `worker-src` and `frame-src`, plus `blob:` on `img-src` so a received
-  image can be previewed from bytes the page itself created. **No external origin
+  is `'self'`: `script-src`, `style-src`, `img-src`, `media-src`, `connect-src`,
+  `font-src`, `manifest-src`, `worker-src` and `frame-src`, plus `blob:` on `img-src` and
+  on `media-src` so a received image, video or audio file can be previewed from bytes the
+  page itself created. Those are the only two directives carrying `blob:` and
+  `tests/http.test.mjs` enumerates them positively, so a third cannot arrive unreviewed.
+  **No external origin
   appears in it at all**, and `base-uri`, `form-action` and `frame-ancestors` are
   `'none'`. Nothing an operator can configure widens it: `WG_AD_ORIGINS` is matched
   against the resolved **filename** in `server/index.js`, not against a request path, so
@@ -267,6 +270,18 @@ What it is not:
   gate is re-created. (A guesser who has only a room id cannot take a seat at all:
   joining requires a proof derived from the link secret. See "Denial of service"
   above.)
+
+**Opening a received file is allowlisted, and the type is forced rather than trusted.** A
+`blob:` URL is same-origin with the document that created it, so navigating to a blob whose
+type is `text/html` runs the sender's markup inside the gate's own origin, next to the room
+key. There is no sandbox on a `blob:` document and no header that can be attached to one.
+So the Open button in a transcript row exists only for types on a fixed table in
+`public/js/preview.js` (raster images, the common video and audio containers, and
+`text/plain` pinned to UTF-8), and the blob it navigates to is rebuilt with the type from
+that table, never with the MIME the peer declared. A type that is not in the table gets no
+button at all. `text/html`, `application/xhtml+xml`, `image/svg+xml`, XML and
+`application/pdf` are deliberately absent: each is an active document format, and Save
+already puts the file where the system's own reader can open it.
 
 **`/api/health` returns liveness and nothing else.** It answers `{"ok":true}`. It used
 to also publish a live count of open gates, which was a usage side channel on a tool

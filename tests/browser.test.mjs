@@ -612,6 +612,33 @@ const fillLog = (open = false) => `
     capability.shown && /download manager/.test(capability.text) && capability.inLog === false,
     JSON.stringify(capability).slice(0, 220));
 
+  // WHERE it sits, not merely that it exists. It used to paint between the two gate cards
+  // and the numbered steps: a full-shell-width slab drawn across the middle of the one
+  // composition on the screen, and wider than the cards above it, so it read as a rule
+  // cutting the page in half. It is the last block now. Asserted rather than left to the
+  // eye, because a stylesheet `order` is exactly the kind of thing a later edit undoes
+  // without anything noticing.
+  await wide.eval(showScreen('screen-home'));
+  const notePos = JSON.parse(await wide.eval(`
+    const box = (el) => {
+      if (!el || el.hidden) return null;
+      const r = el.getBoundingClientRect();
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom) };
+    };
+    return JSON.stringify({
+      note: box(document.getElementById('receive-note')),
+      main: box(document.querySelector('main')),
+      extras: box(document.getElementById('extras')),
+      foot: box(document.querySelector('.foot')),
+    });
+  `));
+  check('the capability note is the last block on the page, below the steps and above the footer',
+    notePos.note !== null && notePos.extras !== null
+    && notePos.note.top >= notePos.main.bottom
+    && notePos.note.top >= notePos.extras.bottom
+    && notePos.note.bottom <= notePos.foot.top,
+    JSON.stringify(notePos));
+
   // ---------------------------------------------------------------- CSP
   const cspWide = await wide.eval('return JSON.stringify(window.__csp);');
   check('the whole redesign raises no CSP violation: no inline style, no inline script',
@@ -1621,7 +1648,7 @@ const fillLog = (open = false) => `
     });
   `));
   check('the verification code is the largest thing in the rail',
-    rail.sasPx >= 30 && rail.sasPx > rail.biggestOther * 1.5,
+    rail.sasPx >= 20 && rail.sasPx > rail.biggestOther * 1.5,
     `#sas ${rail.sasPx}px, next largest ${rail.biggestOther}px (${JSON.stringify(rail.others)})`);
   // 60px, not 0: the code carries a label above it. What must not happen is the code
   // sitting below the route badge, the roster or the connection details, which is the
@@ -1769,6 +1796,29 @@ try {
     hb.waiting === false && hb.opacity > 0.9, heldBack);
   check('and it takes the keyboard, so Enter answers it rather than the page behind it',
     hb.focused === 'net-continue', heldBack);
+
+  // What the notice SAYS. The recommendation used to be a subordinate clause inside a
+  // conditional, which is how an instruction turns into a footnote, and the modal is the
+  // one place on the site with a concrete piece of advice to give.
+  const notice = JSON.parse(await a.eval(`
+    const panel = document.getElementById('net-modal');
+    return JSON.stringify({
+      title: document.getElementById('net-title').textContent.trim(),
+      leads: [...panel.querySelectorAll('p strong')].map((s) => s.textContent.trim()),
+      text: panel.textContent.replace(/\\s+/g, ' ').trim(),
+    });
+  `));
+  check('the notice recommends a VPN outright, rather than mentioning one in passing',
+    /we recommend a vpn/i.test(notice.text)
+    && notice.leads.some((l) => /^we recommend a vpn/i.test(l)),
+    JSON.stringify(notice.leads));
+  check('and each paragraph leads with a bold phrase, the same shape the landing page uses',
+    notice.leads.length === 3 && notice.leads.every((l) => l.length > 12 && l.endsWith('.')),
+    JSON.stringify(notice.leads));
+  // The same modal serves both paths and its title was written for only one of them.
+  check('the notice is titled for the path it interrupted, which here is creating a gate',
+    notice.title === 'Before you open a gate', notice.title);
+
   await a.eval("document.getElementById('net-continue').click(); return true;");
   await a.waitFor("!document.getElementById('screen-waiting').hidden", { label: 'waiting screen' });
 
@@ -1848,6 +1898,15 @@ try {
   // The person who was SENT a link is exactly the one who did not choose to be here, so
   // the notice stands in front of a link-join too. It is per tab, so tab A answering it
   // does nothing for tab B.
+  // Tab B is following a link, so the SAME modal has to introduce itself as the join it
+  // is interrupting. The create-side title is asserted where tab A pressed Create; this is
+  // the other arm, and without it the mode argument could be ignored and both would pass.
+  await b.waitFor("!document.getElementById('net-modal').hidden",
+    { timeout: 20000, label: 'the exposure notice on a link-join' });
+  check('and the same notice is titled for joining when it interrupted a join',
+    (await b.eval("return document.getElementById('net-title').textContent.trim();"))
+      === 'Before you join a gate',
+    await b.eval("return document.getElementById('net-title').textContent.trim();"));
   await clickThroughNetNotice(b, 'the exposure notice on a link-join');
   check('following an invite link raises the same notice before it joins anything', true);
   // Joining is asynchronous, so this must wait rather than sample once.
@@ -2097,6 +2156,7 @@ try {
       fold: window.innerHeight,
       sasText: sas.textContent.trim(),
       sasPx: Math.round(parseFloat(getComputedStyle(sas).fontSize)),
+      sasBox: r(document.querySelector('.sas-box')),
       severTop: r(sever).top,
       railBottom: r(railBox).bottom,
       chipRadius: parseFloat(cs.borderTopLeftRadius),
@@ -2111,8 +2171,22 @@ try {
   check('and the composer sits under it with no dead strip below',
     live.fold - live.composer.bottom < 90 && live.composer.bottom <= live.fold,
     `composer bottom ${live.composer.bottom}, window ${live.fold}`);
-  check('the live verification code is the largest element on the screen after the thread',
-    /^[0-9]{5}$/.test(live.sasText) && live.sasPx >= 30, `${live.sasText} at ${live.sasPx}px`);
+  // Re-baselined 2026-08-10, against a REAL gate rather than the forced screen: the code
+  // is populated and the words are on it, so the box is at the height a user actually
+  // sees. The panel used to be 46px digits inside a filled accent block and measured
+  // 181px against a 513px transcript, 35% of it: "the verification code is the same size
+  // as the chat box, which makes it really distracting". It is 127px now, 25%. The 30%
+  // line sits between the two measured states rather than being picked from taste, and
+  // the heavy panel was re-run against this check to confirm it fails at 35%.
+  check('the code box is a fraction of the transcript, not a peer of it',
+    live.thread.h > 0 && live.sasBox.h < live.thread.h * 0.3,
+    `sas-box ${live.sasBox.h}px, transcript ${live.thread.h}px, `
+    + `${Math.round((live.sasBox.h / live.thread.h) * 100)}%`);
+  // 20px, not the 30px this used to require: see the re-baseline note on the rail check
+  // above. It still has to be a real five-digit number rendered at a size a person can
+  // read out over a phone, which is the property that actually matters here.
+  check('the live verification code is rendered large enough to read aloud',
+    /^[0-9]{5}$/.test(live.sasText) && live.sasPx >= 20, `${live.sasText} at ${live.sasPx}px`);
   check('Burn is still at the foot of the rail with a real gate open',
     live.railBottom - live.severTop < 120 && live.severTop > live.thread.top,
     JSON.stringify({ severTop: live.severTop, railBottom: live.railBottom }));
@@ -2120,6 +2194,336 @@ try {
     live.chipRadius >= 999 && live.chipPad >= 8 && /^[A-Z][a-z]+ [A-Z][a-z]+/.test(live.chipName),
     JSON.stringify({ radius: live.chipRadius, pad: live.chipPad, name: live.chipName }));
   await b.send('Emulation.clearDeviceMetricsOverride', {});
+
+  // The media block below runs AFTER the geometry block above, and that ordering is
+  // load-bearing rather than tidy. It leaves eight more rows in the transcript, and
+  // #screen-connected deliberately grows past the viewport rather than squashing the
+  // composer (see the flex comment in style.css), so measuring 'the composer sits under
+  // the transcript' against a transcript this block had lengthened would be measuring
+  // the fixture. Verified: the same geometry check fails at eleven rows and passes at
+  // three, with or without a media element in them.
+
+  // ------------------------------------------------- inline media, and the Open button
+  //
+  // Everything below is asserted on tab B, the RECEIVER, against files tab A actually
+  // sent through the gate. Nothing is fabricated in the page: the MIME each row acts on
+  // is the one the browser derived from the file the sender chose, which is exactly the
+  // peer-controlled string the allowlists exist to distrust.
+  //
+  // The two media fixtures are real: a 537 byte VP8/WebM and a 478 byte PCM WAV, both
+  // produced by ffmpeg and embedded here so the suite needs no encoder at run time. They
+  // are genuinely decodable, which is what makes the "did not decode" case below a
+  // contrast rather than the only outcome the harness can produce.
+  const WEBM_B64 = 'GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAHpEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggElTbuMU6uEHFO7a1OsggHT7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjIuMTIuMTAyV0GNTGF2ZjYyLjEyLjEwMkSJiECPQAAAAAAAFlSua8iuAQAAAAAAAD/XgQFzxYgjdc0cJS+/6pyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhDuaygDgkLCBELqBEJqBAlWwhFW5gQESVMNn/HNzoGPAgGfImkWjh0VOQ09ERVJEh41MYXZmNjIuMTIuMTAyc3PWY8CLY8WII3XNHCUvv+pnyKFFo4dFTkNPREVSRIeUTGF2YzYyLjI4LjEwMiBsaWJ2cHhnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAxLjAwMDAwMDAwMAAfQ7Z1qOeBAKOjgQAAgBACAJ0BKhAAEAAARwiFhYiZhIgCAgAMDWAA/v+rUIAcU7trkbuPs4EAt4r3gQHxggGm8IED';
+  const WAV_B64 = 'UklGRtYBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgATElTVBoAAABJTkZPSVNGVA4AAABMYXZmNjIuMTIuMTAyAGRhdGGQAQAAgYWKjY+PjoqFgHt2cnBwcXV5foSJjY+PjouGgXx3c3BwcXR4fYOIjI+PjoyHgn13c3BwcHN3fYKHjI6Pj4yIg314dHFwcHN3fIGGi46Pj42JhH55dXFwcHJ2e4CFio6Pj42KhYB6dXJwcHF1en+EiY2Pj46KhoF7dnJwcHF0eX6DiIyPj46Lh4J8d3NwcHFzeH2DiIyPkI+MiIN9eHRxcHBzd3yCh4uOj4+MiIN+eXRxcHBydnuBhoqOj4+NiYR/enVxcHBydXp/hYqNj4+OioWAe3ZycHBxdXl+hImNj4+Oi4aBfHdzcHBxdHh9g4iMj4+OjIeCfXdzcHBwc3d8goeMjo+PjIiDfXh0cXBwc3d8gYaLjo+PjYmEfnl1cXBwcnZ7gIWKjo+PjYqFgHp1cnBwcXV6f4SJjY+PjoqGgXt2cnBwcXR5foOIjI+PjouHgnx3c3BwcXR4fYKIjI+Pj4yIgn14dHFwcHN3fIKHi46Pj4yIg355dHFwcHJ2e4GGio6Pj42JhH96dXFwcHJ1eg==';
+
+  /** Write one fixture into the shared temp directory and hand back its path. */
+  const fixture = (name, bytes) => {
+    const p = path.join(TMP, name);
+    fs.writeFileSync(p, bytes);
+    return p;
+  };
+  const webmBytes = Buffer.from(WEBM_B64, 'base64');
+
+  /**
+   * Send one file and wait until the receiver's row for it is finished.
+   *
+   * Sequential on purpose. The preview budget is a queue, so a check about WHICH preview
+   * was evicted is only meaningful if the order the rows arrived in is known, and firing
+   * several sends at once makes that a race. It also keeps each file out of the batch
+   * offer path, which is a different feature with its own prompt.
+   */
+  const sendFile = async (name, bytes) => {
+    await a.setFileInput('#file-input', [fixture(name, bytes)]);
+    await b.waitFor(
+      `[...document.querySelectorAll('#messages .msg')].some((r) => r.textContent.includes(${JSON.stringify(name)})
+        && r.querySelector('button.save-btn'))`,
+      { timeout: 40000, label: `${name} finished on the receiver` },
+    );
+  };
+
+  /** What tab B's transcript row for `name` looks like, read out of the DOM it renders. */
+  const rowShape = async (name) => JSON.parse(await b.eval(`
+    const row = [...document.querySelectorAll('#messages .msg')]
+      .find((r) => r.textContent.includes(${JSON.stringify(name)}));
+    if (!row) return JSON.stringify({ found: false });
+    const media = row.querySelector('.msg-media');
+    const btn = (label) => [...row.querySelectorAll('button')].some((x) => x.textContent === label);
+    return JSON.stringify({
+      found: true,
+      tag: media ? media.tagName : null,
+      src: media ? (media.currentSrc || media.src) : null,
+      controls: media ? media.controls === true : null,
+      preload: media ? media.getAttribute('preload') : null,
+      autoplayProp: media ? media.autoplay : null,
+      autoplayAttr: media ? media.hasAttribute('autoplay') : null,
+      loop: media ? media.loop : null,
+      muted: media ? media.muted : null,
+      ready: media && media.readyState !== undefined ? media.readyState : null,
+      videoWidth: media && 'videoWidth' in media ? media.videoWidth : null,
+      duration: media && 'duration' in media ? media.duration : null,
+      open: btn('Open'),
+      save: btn('Save'),
+      text: row.textContent,
+    });
+  `));
+
+  /**
+   * Is `url` still a resolvable object URL in tab B?
+   *
+   * Asked of the browser's own loader with a fresh element, not of the DOM: the claim
+   * under test is that the URL was REVOKED, and "the element was removed" is a different
+   * and much weaker statement that a leaking implementation would also satisfy.
+   */
+  const urlLives = (url) => b.eval(`
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    return await new Promise((resolve) => {
+      v.addEventListener('loadedmetadata', () => resolve('live'), { once: true });
+      v.addEventListener('error', () => resolve('revoked'), { once: true });
+      setTimeout(() => resolve('timeout'), 5000);
+      v.src = ${JSON.stringify(url)};
+    });
+  `);
+
+  await sendFile('clip1.webm', webmBytes);
+  // readyState >= 1 is HAVE_METADATA, not "the element exists". The element is appended
+  // before the browser has looked at a byte of it, so waiting on the node alone samples the
+  // row mid-load and reads back a player that has not decided anything yet. Swallowing the
+  // timeout rather than letting it throw keeps the assertion below the thing that reports
+  // the failure: a waitFor that aborts the suite says nothing about which property was
+  // wrong.
+  await b.waitFor("(document.querySelector('#messages video.msg-media')||{}).readyState >= 1",
+    { timeout: 30000, label: 'a video preview appears and decodes for the receiver' })
+    .then(() => true, () => false);
+  // Captured now, while it is still on screen. Once it is evicted the element is gone and
+  // there is nothing left to read the URL off, so the eviction check below could not be
+  // written at all without holding it here.
+  const clip1 = await rowShape('clip1.webm');
+  check('a received video renders as an inline player', clip1.tag === 'VIDEO', JSON.stringify(clip1).slice(0, 200));
+  check('and it actually decoded, so the player is not a placeholder',
+    clip1.ready >= 1 && clip1.videoWidth > 0, `readyState ${clip1.ready}, ${clip1.videoWidth}px wide`);
+  // The four properties that decide whether a file arriving in a chat can take over the
+  // room. Read as PROPERTIES and, for autoplay, as the attribute too: setting the property
+  // false while leaving the attribute on the element would still autoplay.
+  check('the player has controls and does not autoplay, loop or start muted',
+    clip1.controls === true && clip1.autoplayProp === false && clip1.autoplayAttr === false
+    && clip1.loop === false && clip1.muted === false,
+    JSON.stringify({
+      controls: clip1.controls, autoplayProp: clip1.autoplayProp,
+      autoplayAttr: clip1.autoplayAttr, loop: clip1.loop, muted: clip1.muted,
+    }));
+  check('and it fetches metadata only, not the whole body, before anyone presses play',
+    clip1.preload === 'metadata', String(clip1.preload));
+
+  await sendFile('tone.wav', Buffer.from(WAV_B64, 'base64'));
+  // Same bounded wait, same reason: an <audio> element exists before it has a duration.
+  await b.waitFor("((document.querySelector('#messages audio.msg-media')||{}).duration > 0)",
+    { timeout: 30000, label: 'an audio preview appears and decodes for the receiver' })
+    .then(() => true, () => false);
+  const wav = await rowShape('tone.wav');
+  check('a received audio file renders as an inline player with the same restraint',
+    wav.tag === 'AUDIO' && wav.controls === true && wav.preload === 'metadata'
+    && wav.autoplayProp === false && wav.loop === false,
+    JSON.stringify(wav).slice(0, 200));
+  check('and the audio decoded, so its duration is real',
+    Number(wav.duration) > 0, `duration ${wav.duration}`);
+
+  // ---- the Open allowlist, which is the part that must be exactly right ----
+  //
+  // A blob: URL is same-origin with the page that made it, so opening a peer-supplied
+  // text/html blob would run their markup in the gate's own origin with the room key in
+  // reach. text/html and image/svg+xml are the two shapes that attack takes, and both must
+  // come out of the transcript with no button at all: not a disabled one, not one that
+  // downloads instead. Absent.
+  await sendFile('evil.html', Buffer.from('<script>document.title="xss"</script>hello', 'utf8'));
+  const evil = await rowShape('evil.html');
+  check('a text/html file gets NO Open button, because a blob: document is same-origin',
+    evil.found === true && evil.open === false, JSON.stringify({ open: evil.open, save: evil.save }));
+  check('and it is still saveable, so refusing to open it costs the user nothing',
+    evil.save === true, JSON.stringify({ save: evil.save }));
+
+  await sendFile('drawing.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>', 'utf8'));
+  const svg = await rowShape('drawing.svg');
+  check('an SVG gets neither an inline preview nor an Open button: it is a document',
+    svg.found === true && svg.open === false && svg.tag === null,
+    JSON.stringify({ open: svg.open, tag: svg.tag }));
+
+  check('a video on the allowlist DOES get one, so the absences above are a decision',
+    clip1.open === true, JSON.stringify({ open: clip1.open }));
+
+  // ---- the type is FORCED, not copied ----
+  //
+  // text/plain is the fixture that can tell the difference: the table's value for it is
+  // "text/plain; charset=utf-8", which is not the string the browser put on the file, so a
+  // blob built from meta.mime and a blob built from the table are distinguishable. The
+  // charset is pinned for a reason of its own: charset confusion was historically the one
+  // way to get script out of a text document.
+  //
+  // Both hooks are installed for the duration of one click and removed straight after.
+  // The anchor's click is intercepted rather than followed, because letting it through
+  // would open a real tab and leave it there for the rest of the suite.
+  await sendFile('notes.txt', Buffer.from('plain text, nothing executable', 'utf8'));
+  const txt = await rowShape('notes.txt');
+  check('a text/plain file gets an Open button and no inline element',
+    txt.open === true && txt.tag === null, JSON.stringify({ open: txt.open, tag: txt.tag }));
+
+  await b.eval(`
+    window.__realCreate = URL.createObjectURL;
+    window.__lastBlobType = null;
+    URL.createObjectURL = function (blob) { window.__lastBlobType = blob.type; return window.__realCreate.call(URL, blob); };
+    window.__realClick = HTMLAnchorElement.prototype.click;
+    window.__opened = null;
+    HTMLAnchorElement.prototype.click = function () {
+      window.__opened = { href: this.href, target: this.target, rel: this.rel, type: window.__lastBlobType };
+    };
+    return true;
+  `);
+  await b.eval(`
+    const row = [...document.querySelectorAll('#messages .msg')].find((r) => r.textContent.includes('notes.txt'));
+    [...row.querySelectorAll('button')].find((x) => x.textContent === 'Open').click();
+    return true;
+  `);
+  await b.waitFor('!!window.__opened', { timeout: 10000, label: 'the Open button built a URL' });
+  const opened = JSON.parse(await b.eval('return JSON.stringify(window.__opened);'));
+  await b.eval(`
+    URL.createObjectURL = window.__realCreate;
+    HTMLAnchorElement.prototype.click = window.__realClick;
+    return true;
+  `);
+  check('Open builds its blob with the type from the allowlist, not the peer-declared one',
+    opened.type === 'text/plain; charset=utf-8', String(opened.type));
+  check('and it navigates to a blob: URL in a new tab with no opener back into the gate',
+    /^blob:/.test(String(opened.href)) && opened.target === '_blank'
+    && /noopener/.test(String(opened.rel)), JSON.stringify(opened).slice(0, 200));
+
+  // ---- a file that claims a media type and does not decode ----
+  //
+  // The same contract the broken <img> already had: no dead element left behind, the
+  // reason said in words, and Save still working, because the bytes are fine even though
+  // they are not what the name claimed.
+  await sendFile('broken.webm', Buffer.from('this is not a webm file at all', 'utf8'));
+  // The row finishes before the decoder has failed, exactly as it finishes before a good
+  // file has decoded, so the same bounded wait applies. The timeout is swallowed so that a
+  // player which never gets torn down is reported by the checks below rather than by an
+  // exception with no detail in it.
+  await b.waitFor(
+    `[...document.querySelectorAll('#messages .msg')]
+      .find((r) => r.textContent.includes('broken.webm'))?.querySelector('.msg-media') === null`,
+    { timeout: 20000, label: 'the undecodable player is torn down' },
+  ).then(() => true, () => false);
+  const broken = await rowShape('broken.webm');
+  check('a file claiming to be video that does not decode leaves no dead player behind',
+    broken.tag === null, `tag ${broken.tag}`);
+  check('and says so in words, with Save still offered',
+    /did not open as playable media/.test(broken.text) && broken.save === true,
+    JSON.stringify({ save: broken.save, text: broken.text.slice(-120) }));
+
+  // ---- eviction really revokes, for a video and not only for an image ----
+  //
+  // MAX_INLINE_PREVIEWS is 3 and the queue holds every kind of preview in one budget, so
+  // the rows are, oldest first: pixel.png, clip1.webm, tone.wav. Two more videos push
+  // pixel.png and then clip1.webm out of it. clip1 is the one that matters: releasing an
+  // image was already implemented, and the selector that did it could not see a <video>,
+  // so a video's object URL would have stayed live and pinned the whole file in memory for
+  // the life of the gate.
+  check('CONTROL: the video URL resolves while its preview is still on screen',
+    (await urlLives(clip1.src)) === 'live', clip1.src);
+
+  await sendFile('clip2.webm', webmBytes);
+  await sendFile('clip3.webm', webmBytes);
+  // Swallowed like the other waits in this block, and for the sharper version of the same
+  // reason: a release path that cannot see a <video> never removes it, so this predicate
+  // never becomes true, and letting it throw would abort the run at the exact point the
+  // three checks below are the ones that should be speaking. Measured: with the release
+  // selector reverted to 'img.msg-image' this threw and the eviction checks never ran at
+  // all, which is a suite that cannot report the bug it was written for.
+  await b.waitFor(
+    `[...document.querySelectorAll('#messages .msg')]
+      .find((r) => r.textContent.includes('clip1.webm')).querySelector('.msg-media') === null`,
+    { timeout: 30000, label: 'clip1 is evicted from the preview budget' },
+  ).then(() => true, () => false);
+  const evictedProbe = await urlLives(clip1.src);
+  check('evicting a video preview REVOKES its object URL, not merely removes the element',
+    evictedProbe === 'revoked', `${evictedProbe} for ${clip1.src}`);
+  const evicted = await rowShape('clip1.webm');
+  check('and the evicted row says why, and can still save the file',
+    /Preview released to free memory/.test(evicted.text) && evicted.save === true,
+    JSON.stringify({ save: evicted.save, text: evicted.text.slice(-120) }));
+  check('the newest previews survive the eviction, so the budget trims and does not clear',
+    (await rowShape('clip3.webm')).tag === 'VIDEO' && (await rowShape('tone.wav')).tag === 'AUDIO',
+    'the newest video and the audio should both still be rendered');
+
+  // ---- a file that went to disk: no blob, but a handle to read it back ----
+  //
+  // A disk sink streams the file straight to the location the user picked, so this page
+  // never holds the bytes. link.js passes on the FileSystemFileHandle that sink was already
+  // holding for resume, which is what turns "Written to the location you chose" from a dead
+  // end into a row that can still open the file.
+  //
+  // Driven against preview.js with a stub handle rather than through a real transfer,
+  // because NO browser in this harness has showSaveFilePicker: headless Brave takes the
+  // streaming-download route instead (tests/download.test.mjs is that route), so the disk
+  // sink is unreachable end to end here and a check that waited for it would be a check
+  // that never runs and never fails. What is asserted is exactly the half this change
+  // wrote: the same allowlist, the same forced type, and bytes read at CLICK time rather
+  // than held. The stub counts its own reads, so "read lazily" is measured and not assumed.
+  const disk = JSON.parse(await b.eval(`
+    const mod = await import('/js/preview.js');
+    const realClick = HTMLAnchorElement.prototype.click;
+    const realCreate = URL.createObjectURL;
+    let opened = null;
+    let lastType = null;
+    URL.createObjectURL = function (blob) { lastType = blob.type; return realCreate.call(URL, blob); };
+    HTMLAnchorElement.prototype.click = function () { opened = { href: this.href, rel: this.rel, target: this.target }; };
+    const ctx = {
+      objectUrls: new Set(), inlinePreviews: [], MAX_INLINE_PREVIEWS: 3,
+      releasePreview: () => {}, scrollMessages: () => {}, sanitizeFilename: (n) => n,
+    };
+    const make = (mime) => {
+      const row = document.createElement('div');
+      row.className = 'msg is-file';
+      const state = { reads: 0 };
+      const handle = {
+        getFile: async () => { state.reads += 1; return new Blob(['bytes on disk'], { type: 'application/octet-stream' }); },
+      };
+      mod.decorateFileRow(row, { name: 'from-disk', mime, blob: null, handle }, ctx);
+      return { row, state };
+    };
+    const ok = make('text/plain');
+    const bad = make('text/html');
+    const btn = [...ok.row.querySelectorAll('button')].find((x) => x.textContent === 'Open');
+    const readsBefore = ok.state.reads;
+    if (btn) btn.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const out = {
+      openOnAllowed: !!btn,
+      openOnHtml: [...bad.row.querySelectorAll('button')].some((x) => x.textContent === 'Open'),
+      previewDrawn: !!ok.row.querySelector('.msg-media'),
+      readsBefore,
+      readsAfter: ok.state.reads,
+      forcedType: lastType,
+      opened,
+      tracked: ctx.objectUrls.size,
+    };
+    URL.createObjectURL = realCreate;
+    HTMLAnchorElement.prototype.click = realClick;
+    return JSON.stringify(out);
+  `));
+  check('a file written to disk gets an Open button from its handle, and no preview',
+    disk.openOnAllowed === true && disk.previewDrawn === false,
+    JSON.stringify({ open: disk.openOnAllowed, preview: disk.previewDrawn }));
+  check('the disk route reads the file at CLICK time, not when the row is drawn',
+    disk.readsBefore === 0 && disk.readsAfter === 1, `${disk.readsBefore} read(s) -> ${disk.readsAfter}`);
+  check('and it forces the same type the in-memory route does',
+    disk.forcedType === 'text/plain; charset=utf-8', String(disk.forcedType));
+  check('and obeys the same allowlist: a handle to text/html gets no Open button either',
+    disk.openOnHtml === false, String(disk.openOnHtml));
+  check('the URL it opens is a tracked blob: URL with no opener back into the gate',
+    /^blob:/.test(String(disk.opened?.href)) && /noopener/.test(String(disk.opened?.rel))
+    && disk.opened?.target === '_blank' && disk.tracked === 1,
+    JSON.stringify(disk.opened) + ` tracked=${disk.tracked}`);
+
 
   // ------------------------------------------------------------ reload recovery
   // A reload used to be fatal: re-joining a gate you already occupy is correctly
@@ -2940,6 +3344,301 @@ try {
     await rsA.eval("document.getElementById('sever').click(); return true;");
     rsA.close();
     rsB.close();
+  }
+
+  // ------------------------------------------------------------ several files, ONE accept
+  //
+  // The reported problem, in the reporter's words: "so laptop side has to accept each
+  // individually instead of accepting a full batch". Several photos from a phone, one
+  // prompt per photo on the laptop.
+  //
+  // The prompt-per-file is not an oversight, it is what a user gesture costs: accepting
+  // opens a file-system dialog and those cannot be opened outside a click. So the fix
+  // spends ONE gesture on the whole set, and everything below tests the bound that has to
+  // come with it. A single click that grants unlimited writes into a folder the user chose
+  // would be a worse product than the five prompts it replaced.
+  //
+  // The forge hook rewrites the batch ANNOUNCEMENT on its way out of the sending tab, and
+  // nothing else: it is how a lying sender is tested without a second implementation of the
+  // protocol. It is narrow on purpose (it only ever sees objects whose kind is
+  // 'file-batch') because JSON.stringify is on far too many paths to patch broadly.
+  {
+    const fbA = await browser.newTab('about:blank');
+    const fbB = await browser.newTab('about:blank');
+    const FORGE_HOOK = `
+      window.__forge = null;
+      const S = JSON.stringify;
+      JSON.stringify = function (value, ...rest) {
+        if (window.__forge && value && typeof value === 'object' && value.kind === 'file-batch') {
+          value = window.__forge(value) || value;
+        }
+        return S.call(this, value, ...rest);
+      };
+      window.__blobs = [];
+      const realUrl = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = (blob) => { window.__blobs.push(blob); return realUrl(blob); };
+    `;
+    await fbA.send('Page.addScriptToEvaluateOnNewDocument', { source: FORGE_HOOK });
+    await fbB.send('Page.addScriptToEvaluateOnNewDocument', { source: FORGE_HOOK });
+
+    await fbA.send('Page.navigate', { url: APP });
+    await fbA.waitFor("!document.getElementById('screen-home').hidden", { timeout: 30000, label: 'batch: tab A home' });
+    await fbA.eval(NET_ACK);
+    await fbA.eval("document.getElementById('create-btn').click(); return true;");
+    await fbA.waitFor("!document.getElementById('screen-waiting').hidden", { timeout: 40000, label: 'batch: tab A waiting' });
+    await fbA.eval("document.getElementById('reveal-share').click(); return true;");
+    await fbA.waitFor("document.getElementById('share-shown').hidden === false", { label: 'batch: share revealed' });
+    const fbCode = await fbA.eval("return document.getElementById('room-code').textContent.trim();");
+
+    await fbB.send('Page.navigate', { url: `${APP}#${fbCode}` });
+    await clickThroughNetNotice(fbB, 'batch: tab B notice');
+    await fbB.waitFor("!document.getElementById('screen-connected').hidden",
+      { timeout: 90000, label: 'batch: tab B connected' });
+    await fbA.waitFor("!document.getElementById('screen-connected').hidden",
+      { timeout: 90000, label: 'batch: tab A connected' });
+
+    // Waits that report rather than throw. A build with the batch path broken must produce
+    // BAD lines that name what was actually on screen, not one timeout that kills every
+    // later assertion in this block and leaves the other two bounds untested.
+    const settled = async (tab, expression, ms, label) => {
+      try {
+        await tab.waitFor(expression, { timeout: ms, label });
+        return true;
+      } catch (err) {
+        void err.message;
+        return false;
+      }
+    };
+    // How many batch rows have ever been drawn on the receiving side. Counted rather than
+    // asked as a yes/no, because two of the checks below are about a row NOT appearing and
+    // "none on screen" would also be true if the row had appeared and been removed.
+    const batchRows = () => fbB.eval(
+      "return [...document.querySelectorAll('#messages .msg.is-file')].filter((r) => r.id.startsWith('transfer-batch-')).length;",
+    );
+
+    const mk = (name, bytes) => {
+      const p = path.join(TMP, name);
+      const payload = crypto.randomBytes(bytes);
+      fs.writeFileSync(p, payload);
+      return { path: p, name, payload, digest: crypto.createHash('sha256').update(payload).digest('hex') };
+    };
+
+    // ---------------------------------------------------- three files, one Accept
+    //
+    // 300 KB each: many chunks, so this is a real transfer and not a single frame, and
+    // small enough that three of them cross a loopback data channel in seconds. All three
+    // are UNDER the auto-accept threshold, which makes the assertion below strictly
+    // stronger than the reported case: before this change three small files drew ZERO
+    // accept controls and three separate large ones drew THREE. Exactly one is neither.
+    const trio = [mk('batch-one.bin', 300 * 1024), mk('batch-two.bin', 300 * 1024), mk('batch-three.bin', 300 * 1024)];
+    await fbA.eval('window.__forge = null; return true;');
+    await fbA.setFileInput('#file-input', trio.map((f) => f.path));
+
+    const sawRow = await settled(fbB,
+      "[...document.querySelectorAll('#messages .msg.is-file')].some((r) => r.id.startsWith('transfer-batch-'))",
+      30000, 'batch: the receiver drew one row for the whole set');
+    check('three files sent together draw a batch row on the receiving side', sawRow === true,
+      `batch rows: ${await batchRows()}`);
+
+    const controls = JSON.parse(await fbB.eval(`
+      const buttons = [...document.querySelectorAll('#messages button')].filter((b) => !b.disabled);
+      return JSON.stringify({
+        accepts: buttons.filter((b) => /^Accept/.test(b.textContent)).length,
+        labels: buttons.map((b) => b.textContent),
+        names: (document.querySelector('#messages .file-names') || {}).textContent || '',
+      });
+    `));
+    check('exactly ONE accept control is drawn for three files, not one per file',
+      controls.accepts === 1, JSON.stringify(controls.labels));
+    check('and it says how many files and how much, so the click is informed',
+      /Accept 3 files/.test(controls.labels.join(' ')), JSON.stringify(controls.labels));
+    check('the row lists every filename it is asking about',
+      trio.every((f) => controls.names.includes(f.name)), controls.names);
+
+    await fbB.eval(`
+      const btn = [...document.querySelectorAll('#messages button')].find((b) => /^Accept 3 files/.test(b.textContent));
+      if (!btn) return false;
+      btn.click();
+      return true;
+    `);
+
+    const allThree = await settled(fbB,
+      "[...document.querySelectorAll('#messages button')].filter((x) => x.textContent === 'Save').length === 3",
+      120000, 'batch: all three files finished');
+    check('one click delivers all three files', allThree === true,
+      await fbB.eval("return String([...document.querySelectorAll('#messages button')].filter((x) => x.textContent === 'Save').length);"));
+
+    // Byte-for-byte, per file. "Three rows appeared" would pass against a build that
+    // delivered the same file three times, or truncated two of them.
+    const received = JSON.parse(await fbB.eval(`
+      const out = [];
+      for (const row of document.querySelectorAll('#messages .msg.is-file')) {
+        const save = [...row.querySelectorAll('button')].find((x) => x.textContent === 'Save');
+        if (!save) continue;
+        const before = window.__blobs.length;
+        save.click();
+        if (window.__blobs.length === before) continue;
+        const blob = window.__blobs[window.__blobs.length - 1];
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const d = await crypto.subtle.digest('SHA-256', bytes);
+        out.push({
+          title: (row.querySelector('.file-title') || {}).textContent || '',
+          size: bytes.length,
+          hash: [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join(''),
+        });
+      }
+      return JSON.stringify(out);
+    `));
+    const matched = trio.filter((f) => received.some(
+      (r) => r.title.includes(f.name) && r.size === f.payload.length && r.hash === f.digest));
+    check('all three arrived byte-for-byte, each under its own name',
+      matched.length === 3, `${matched.length}/3 matched, got ${JSON.stringify(received.map((r) => [r.title, r.size]))}`);
+    check('negative control: the three files were not three copies of one file',
+      new Set(trio.map((f) => f.digest)).size === 3, trio.map((f) => f.digest.slice(0, 8)).join(' '));
+
+    // ---------------------------------------------------- peer-chosen names reach the DOM
+    //
+    // The names on a batch offer are the only peer-written strings this row displays, and
+    // they are displayed before anything has been agreed to. A right-to-left override
+    // disguises an extension and a NUL blanks the rest of a line, so both are planted here
+    // and the rendered text is read back.
+    await fbA.eval(`
+      window.__forge = (m) => ({ ...m, names: m.names.map((n, i) => (i === 0 ? '\\u202Egnp.evil\\u0000.exe' : n)) });
+      return true;
+    `);
+    const pair = [mk('hostile-one.bin', 64 * 1024), mk('hostile-two.bin', 64 * 1024)];
+    await fbA.setFileInput('#file-input', pair.map((f) => f.path));
+    const sawHostile = await settled(fbB,
+      "[...document.querySelectorAll('#messages .msg.is-file')].filter((r) => r.id.startsWith('transfer-batch-')).length === 2",
+      30000, 'batch: the second offer was drawn');
+    check('a second batch offer draws its own row', sawHostile === true, `batch rows: ${await batchRows()}`);
+
+    // Null-safe on purpose. A build with the batch path broken has no row here at all, and
+    // an eval that throws would end this block on its first failure and leave the other
+    // three bounds below untested: a negative control has to produce its BAD line and then
+    // let the rest of the run continue.
+    const shown = await fbB.eval(`
+      const rows = [...document.querySelectorAll('#messages .msg.is-file')].filter((r) => r.id.startsWith('transfer-batch-'));
+      const el = rows.length ? rows[rows.length - 1].querySelector('.file-names') : null;
+      return el ? el.textContent : '';
+    `);
+    check('a bidi override in a peer-chosen filename never reaches the row',
+      !shown.includes('\u202E'), JSON.stringify(shown));
+    check('and neither does a NUL, which would blank the rest of the line',
+      !shown.includes('\u0000'), JSON.stringify(shown));
+    check('negative control: the hostile name really was sent, so the strip is doing work',
+      /exe/.test(shown), JSON.stringify(shown));
+    check('the names are text, not markup: no element came out of the peer\'s string',
+      (await fbB.eval(`
+        const rows = [...document.querySelectorAll('#messages .msg.is-file')].filter((r) => r.id.startsWith('transfer-batch-'));
+        const el = rows.length ? rows[rows.length - 1].querySelector('.file-names') : null;
+        return el ? el.children.length : -1;
+      `)) === 0);
+
+    // Refuse, and the whole set must go: a batch that is refused and then delivers its
+    // small files anyway through the auto-accept path would be the button lying.
+    await fbB.eval(`
+      const btn = [...document.querySelectorAll('#messages button')].find((b) => b.textContent === 'Refuse');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    `);
+    // Named per file, because "something was refused" would also pass against a build that
+    // refused the file in hand and quietly auto-accepted the second one behind it: the
+    // second file is the whole point of latching the refusal.
+    const refusedBoth = await settled(fbA,
+      "/could not send hostile-one\\.bin/.test(document.getElementById('log').textContent)"
+      + " && /could not send hostile-two\\.bin/.test(document.getElementById('log').textContent)",
+      30000, 'batch: the sender was told about both refused files');
+    check('Refuse refuses the whole set, not just the file already in flight',
+      refusedBoth === true, (await fbA.eval("return document.getElementById('log').textContent;")).slice(-240));
+    // A refused file still gets a row, saying it was not accepted. What must not exist is a
+    // SAVE button on one: that is the only thing that means bytes were actually taken.
+    const leaked = await fbB.eval(`
+      return String([...document.querySelectorAll('#messages .msg.is-file')].filter((r) =>
+        /hostile-/.test((r.querySelector('.file-title') || {}).textContent || '')
+        && [...r.querySelectorAll('button')].some((b) => b.textContent === 'Save')).length);
+    `);
+    check('no refused file was saved anyway', leaked === '0', `${leaked} refused files were saved`);
+
+    // ---------------------------------------------------- a count that disagrees with names
+    //
+    // count and names.length are two statements about the same set, and a row built from a
+    // message where they disagree would misstate what the click agrees to. The receiver
+    // must drop it where it stands. The log line is asserted as well as the missing row:
+    // without it "no row appeared" would also pass if the message had never arrived, which
+    // is a check that measures nothing.
+    const rowsBeforeBad = Number(await batchRows());
+    await fbA.eval('window.__forge = (m) => ({ ...m, names: m.names.slice(0, m.count - 1) }); return true;');
+    const liars = [mk('liar-one.bin', 64 * 1024), mk('liar-two.bin', 64 * 1024)];
+    await fbA.setFileInput('#file-input', liars.map((f) => f.path));
+    const complained = await settled(fbB,
+      "/malformed offer of several files/.test(document.getElementById('log').textContent)",
+      30000, 'batch: the receiver rejected the inconsistent offer');
+    check('a batch whose count and names disagree is rejected on arrival',
+      complained === true, (await fbB.eval("return document.getElementById('log').textContent;")).slice(-240));
+    check('and no prompt is drawn from it',
+      Number(await batchRows()) === rowsBeforeBad, `${await batchRows()} rows vs ${rowsBeforeBad} before`);
+
+    // ---------------------------------------------------- a fourth file under a three-file grant
+    //
+    // The security property, stated as a test. A one-click grant is bounded by what was
+    // announced, so a sender that says three and then pushes a fourth gets the ordinary
+    // treatment for the fourth: consent covered three files, and it is spent.
+    //
+    // The fourth is 11 MiB, over the auto-accept threshold, so "ordinary treatment" is
+    // visible as an Accept control of its own. It is never accepted, so those bytes are
+    // announced and not sent.
+    await fbA.eval('window.__forge = (m) => ({ ...m, count: 3, names: m.names.slice(0, 3) }); return true;');
+    const four = [
+      mk('grant-one.bin', 200 * 1024), mk('grant-two.bin', 200 * 1024),
+      mk('grant-three.bin', 200 * 1024), mk('grant-four.bin', 11 * 1024 * 1024),
+    ];
+    await fbA.setFileInput('#file-input', four.map((f) => f.path));
+    const sawGrantRow = await settled(fbB,
+      `[...document.querySelectorAll('#messages .msg.is-file')].filter((r) => r.id.startsWith('transfer-batch-')).length === ${rowsBeforeBad + 1}`,
+      30000, 'batch: the three-file offer was drawn');
+    check('the understated offer is drawn as a three-file batch', sawGrantRow === true, `batch rows: ${await batchRows()}`);
+    await fbB.eval(`
+      const btn = [...document.querySelectorAll('#messages button')].find((b) => /^Accept 3 files/.test(b.textContent));
+      if (!btn) return false;
+      btn.click();
+      return true;
+    `);
+
+    const fourthAsked = await settled(fbB,
+      `[...document.querySelectorAll('#messages .msg.is-file')].some((row) => /grant-four\\.bin/.test(
+         (row.querySelector('.file-title') || {}).textContent || '')
+         && [...row.querySelectorAll('button')].some((b) => b.textContent === 'Accept'))`,
+      120000, 'batch: the fourth file was offered on its own');
+    check('a fourth file under a three-file grant is offered rather than taken',
+      fourthAsked === true,
+      await fbB.eval("return document.getElementById('messages').textContent.slice(-240);"));
+    const fourthTaken = await fbB.eval(`
+      const row = [...document.querySelectorAll('#messages .msg.is-file')].find(
+        (r) => /grant-four\\.bin/.test((r.querySelector('.file-title') || {}).textContent || ''));
+      if (!row) return 'no row';
+      return [...row.querySelectorAll('button')].some((b) => b.textContent === 'Save') ? 'saved' : 'not saved';
+    `);
+    check('and it was not written anywhere while it waits to be answered',
+      fourthTaken === 'not saved', String(fourthTaken));
+    check('the three files the grant did cover still arrived',
+      (await fbB.eval(`
+        const titles = [...document.querySelectorAll('#messages .msg.is-file')]
+          .filter((r) => [...r.querySelectorAll('button')].some((b) => b.textContent === 'Save'))
+          .map((r) => (r.querySelector('.file-title') || {}).textContent || '').join(' ');
+        return String(['grant-one.bin', 'grant-two.bin', 'grant-three.bin'].filter((n) => titles.includes(n)).length);
+      `)) === '3',
+      await fbB.eval("return document.getElementById('messages').textContent.slice(-240);"));
+
+    check('batch: the receiving tab raised no uncaught page errors',
+      fbB.pageErrors.length === 0, fbB.pageErrors.join(' | '));
+    check('batch: the sending tab raised no uncaught page errors',
+      fbA.pageErrors.length === 0, fbA.pageErrors.join(' | '));
+
+    await fbA.eval("document.getElementById('sever').click(); return true;");
+    fbA.close();
+    fbB.close();
   }
 
   severTested = true;

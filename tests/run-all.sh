@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.." || exit 2
 # It was not an exclusion, it was an omission: the file exists, passes 24/24 offline and
 # needs no network. That is the failure mode this list has, so the completeness of the list
 # is now checked below rather than trusted.
-suites=(crypto qr qrdecode size signalling http suggest download browser mesh games gameplay saswords pwa motion legal securecontext)
+suites=(crypto qr qrdecode size signalling http suggest download outbound browser mesh games gameplay saswords pwa motion legal securecontext)
 
 # Deliberately not run, and therefore deliberately not a gap. Anything in tests/ that is
 # neither here nor above is an omission and stops the run.

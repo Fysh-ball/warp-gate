@@ -18,7 +18,7 @@
      start_url, a scope and a share target on a SERVER, and this document is served out of
      an extension package, so it only produced a console 404. The share target went with it:
      that was delivered by public/sw.js, and Chromium refuses to let an extension page
-     register a service worker at all. See js/download.js. -->
+     register a service worker at all. See js/streamable.js. -->
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)">
@@ -541,22 +541,29 @@
          its foot by `margin-top: auto`. One element, two layouts, no duplication.
 
          Reading the verification code aloud is the only security check this interface
-         asks a person to make, so it is the largest thing in the rail rather than a
-         small grey run of text sharing a line with a badge, and the instruction for it
-         is printed underneath rather than folded behind a disclosure nobody opens. The
-         wording is unchanged; only its size and its position are. -->
+         asks a person to make, so it is legible and it is never folded behind a
+         disclosure. It is NOT the loudest thing on the screen any more: at 46px in a
+         filled accent panel it read as heavy as the conversation itself, which is the
+         one thing the rail must not do. The digits and the words share a line now and
+         the instruction is one sentence. Nothing was removed, only sized. -->
     <div class="conn-rail">
       <div class="sas-box">
-        <p class="rail-k">Verification code</p>
-        <p class="sas-v"><strong id="sas">-----</strong></p>
-        <!-- The same number as two words. Five digits read aloud over a phone are five
-             chances to hear a six as a nine; two words are one comparison, and a listener
-             who does not speak the language of the digits can still match them. It carries
-             exactly the bits the digits do, no more: see js/saswords.js. -->
-        <p class="sas-words" id="sas-words" aria-live="polite"></p>
-        <p class="rail-note">Both devices should show the same five digits, and the same two
-        words. If you read them aloud and they match, nothing has been substituted between
-        you. If they differ, burn the gate.</p>
+        <!-- Label, digits and words on ONE baseline. Three stacked blocks cost 18px of a
+             rail that sits above the conversation on a phone, and the label is a caption
+             rather than a heading: it belongs beside the thing it names.
+
+             The same number as two words, alongside rather than under it. Five digits
+             read aloud over a phone are five chances to hear a six as a nine; two words
+             are one comparison, and a listener who does not speak the language of the
+             digits can still match them. It carries exactly the bits the digits do, no
+             more: see js/saswords.js. -->
+        <div class="sas-line">
+          <p class="rail-k">Verification code</p>
+          <p class="sas-v"><strong id="sas">-----</strong></p>
+          <p class="sas-words" id="sas-words" aria-live="polite"></p>
+        </div>
+        <p class="rail-note">Both devices should show the same digits and the same two words.
+        Read them aloud. If they differ, burn the gate.</p>
       </div>
 
       <button id="sever" class="danger">Burn the gate</button>
@@ -735,12 +742,21 @@
     <div class="wg-modal-head">
       <h2 id="net-title" class="wg-modal-title">Before you open a gate</h2>
     </div>
-    <p class="muted small">This connection is direct, device to device, which is what keeps
-    the server out of your data. The trade is that the two devices see each other's IP
-    address, and an IP address is roughly your city and your internet provider.</p>
-    <p class="muted small">If that matters for what you are about to send, turn on a VPN on
-    both devices first. We cannot see whether you have one: this page is not allowed to ask
-    anyone, which is the same rule that stops it talking about you.</p>
+    <!-- Lead phrase in bold, body after it, the same shape the landing page uses for its
+         lists. Three short claims a person can take one at a time, rather than two dense
+         paragraphs that have to be read whole to find the one instruction in them. The
+         middle one is the instruction, and it now says so in the imperative: the previous
+         wording buried "turn on a VPN" inside a conditional clause, which reads as a
+         footnote rather than as the recommendation it is. -->
+    <p class="muted small"><strong>Both devices will see each other's IP address.</strong>
+    The connection is direct, device to device, which is what keeps the server out of your
+    data. The trade is that an IP address is roughly your city and your internet
+    provider.</p>
+    <p class="muted small"><strong>We recommend a VPN on both devices.</strong> Turn one on
+    before you continue if the other person should not learn roughly where you are, or if
+    you do not already know who is on the other end.</p>
+    <p class="muted small"><strong>This page cannot tell whether you have one.</strong> It
+    is not allowed to ask anyone, which is the same rule that stops it talking about you.</p>
     <div class="net-actions">
       <button id="net-continue" class="primary" type="button">Continue anyway</button>
       <button id="net-cancel" class="secondary" type="button">Not yet</button>

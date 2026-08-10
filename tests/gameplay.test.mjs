@@ -8,7 +8,8 @@
 // The negative controls are at the bottom and each one runs the SAME predicate the real
 // check ran, against input it must reject. A check that has never failed is not evidence.
 
-import { check, summary } from './lib/harness.mjs';
+import { check, summary, startServer } from './lib/harness.mjs';
+import { launchBrowser, findBrowser } from './lib/cdp.mjs';
 import { GameSession, SEATS, MIRRORED, playableGames } from '../public/js/gameplay.js';
 import { GAME_IDS, getGame } from '../public/js/games/index.js';
 
@@ -365,6 +366,191 @@ for (const id of GAME_IDS) {
   check('CONTROL: the seat-order check can fail',
     entry.engine.status(entry.engine.create()).turn !== bogus.tictactoe[0],
     'a reversed table was not accepted as correct');
+}
+
+// ================================================================ the drawer it is drawn in
+//
+// Everything above this line is the protocol, and every check in it passed while the
+// feature was broken in a real gate between two devices. That is the point of this block.
+//
+// The failure was not in the match layer, in an engine or on the wire. An invitation
+// arrives, gameplay.js accepts it, gameui.js renders the Play button, and all of that
+// happens inside `<details id="games-disc">`, which is SHUT, because its summary reads
+// "something to do while you wait" and nobody opens that while they are waiting for
+// something else. Measured in a real browser before the fix: the button existed,
+// checkVisibility() returned false, and document.elementFromPoint at its own coordinates
+// returned `screen-connected`, the page behind it. The inviter waited on "Waiting for them
+// to accept" forever, and the person who was asked was never told.
+//
+// So this runs in a real browser against the real /app document, because it is the only
+// place the defect exists: a node assertion about GameSession cannot see a disclosure
+// widget, which is exactly how it shipped. One tab, no gate and no WebRTC: the transport
+// is already covered above and by tests/browser.test.mjs, and what is under test here is
+// whether the answer this screen demands is on screen at all.
+
+if (!findBrowser()) {
+  // Not skipped. A check that quietly does not run reports the same 0 failed as a check
+  // that passed, and this is the only block in the file that can see the bug it guards.
+  check('a browser is available to test the games drawer in', false,
+    'no Chromium-based browser found, so the drawer regression was NOT measured');
+} else {
+  const PORT = 3843;
+  const STUN = 3844;
+  const CDP_PORT = 9843;
+  const server = await startServer({
+    WG_HTTP_PORT: String(PORT),
+    WG_STUN_PORT: String(STUN),
+    WG_STUN_URL: `stun:127.0.0.1:${STUN}`,
+  });
+  const browser = await launchBrowser({ port: CDP_PORT });
+  try {
+    const tab = await browser.newTab(`http://127.0.0.1:${PORT}/app`);
+
+    // The drawer lives on the connected screen, so that screen has to be the one showing
+    // or every visibility answer below would be about the screen rather than the drawer.
+    // Nothing else is touched: the disclosure is left in the state a person leaves it in.
+    const raw = await tab.eval(`
+      for (const s of document.querySelectorAll('section.screen')) s.hidden = s.id !== 'screen-connected';
+      const [play, ui] = await Promise.all([import('/js/gameplay.js'), import('/js/gameui.js')]);
+
+      const drawer = document.getElementById('games-disc');
+      const area = document.getElementById('game-area');
+      const settle = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      // Where the Play button really is: visible to the browser's own test, and the thing
+      // that answers a hit test at its own centre. Two different questions, because
+      // checkVisibility alone would still pass for a button under an overlay.
+      const reachable = () => {
+        const b = [...area.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Play');
+        if (!b) return { found: false };
+        b.scrollIntoView({ block: 'center' });
+        const r = b.getBoundingClientRect();
+        const x = Math.round(r.left + r.width / 2);
+        const y = Math.round(r.top + r.height / 2);
+        const hit = document.elementFromPoint(x, y);
+        return {
+          found: true,
+          visible: b.checkVisibility({ checkVisibilityCSS: true, contentVisibilityAuto: true, opacityProperty: true }),
+          hitIsButton: hit === b,
+          hitWas: hit ? (hit.id || hit.className || hit.tagName) : 'nothing',
+        };
+      };
+
+      const build = (peerLabel) => {
+        const notices = [];
+        const games = new play.GameSession({ send: async () => true });
+        const gameUi = new ui.GameUI({
+          root: area,
+          games,
+          partners: () => [{ peer: 'peer-them', label: peerLabel }],
+          onNotice: (t) => notices.push(t),
+        });
+        return { games, gameUi, notices };
+      };
+
+      const out = {};
+
+      // 1. The measurement itself has to be able to say "visible". Drawer open by hand.
+      {
+        const { games, gameUi, notices } = build('Open Drawer');
+        area.replaceChildren();
+        drawer.open = true;
+        gameUi.render();
+        await games.receive('peer-them', { t: 'invite', mid: 'aaaa000000000001', game: 'tictactoe', seat: 'x' });
+        await settle();
+        out.whenOpen = { ...reachable(), drawerOpen: drawer.open, notices: notices.slice() };
+      }
+
+      // 2. The real case. The drawer is SHUT, which is how it is delivered and how a
+      //    person who has not gone looking for games leaves it.
+      {
+        const { games, gameUi, notices } = build('Their Device');
+        area.replaceChildren();
+        drawer.open = false;
+        gameUi.render();
+        out.shutBefore = drawer.open;
+        await games.receive('peer-them', { t: 'invite', mid: 'aaaa000000000002', game: 'chess', seat: 'w' });
+        await settle();
+        out.whenShut = { ...reachable(), drawerOpen: drawer.open, notices: notices.slice() };
+
+        // 3. Somebody who shuts it again has answered by shutting it. A later render
+        //    must not fight them for it.
+        drawer.open = false;
+        gameUi.render();
+        await settle();
+        out.reshutStaysShut = drawer.open === false;
+      }
+
+      // 4. A peer that REUSES a match id. An honest client rolls a fresh one per
+      //    invitation, so this needs a peer that does not, which is exactly the party
+      //    whose input must not be able to switch the announcement off. Decline the first
+      //    invitation, shut the drawer, then send the same mid again.
+      {
+        const { games, gameUi, notices } = build('Repeat Offender');
+        area.replaceChildren();
+        drawer.open = false;
+        gameUi.render();
+        await games.receive('peer-them', { t: 'invite', mid: 'bbbb000000000001', game: 'chess', seat: 'w' });
+        await settle();
+        await games.decline();
+        drawer.open = false;
+        gameUi.render();
+        await settle();
+        const before = notices.length;
+        await games.receive('peer-them', { t: 'invite', mid: 'bbbb000000000001', game: 'chess', seat: 'w' });
+        await settle();
+        out.repeatedMid = {
+          drawerOpen: drawer.open,
+          announced: notices.length > before,
+          notices: notices.slice(),
+        };
+      }
+
+      // 5. Control: with nothing to answer, a shut drawer stays shut.
+      {
+        const { gameUi } = build('Nobody');
+        area.replaceChildren();
+        drawer.open = false;
+        gameUi.render();
+        await settle();
+        out.noInviteStaysShut = drawer.open === false;
+      }
+
+      return JSON.stringify(out);
+    `);
+    const seen = JSON.parse(raw);
+
+    // Runs first on purpose. If this fails, every "not reachable" answer below is about a
+    // broken measurement rather than about the drawer, and the block reports nothing.
+    check('CONTROL: an invitation in an OPEN drawer is visible and answers a hit test',
+      seen.whenOpen.found === true && seen.whenOpen.visible === true && seen.whenOpen.hitIsButton === true,
+      JSON.stringify(seen.whenOpen));
+
+    check('an invitation arriving at a SHUT drawer opens it, so the answer it wants is on screen',
+      seen.shutBefore === false && seen.whenShut.drawerOpen === true
+      && seen.whenShut.found === true && seen.whenShut.visible === true
+      && seen.whenShut.hitIsButton === true,
+      JSON.stringify(seen.whenShut));
+
+    check('and the invitation is also written to the activity log, which outlives the drawer',
+      seen.whenShut.notices.some((n) => /wants to play Chess/.test(n)),
+      JSON.stringify(seen.whenShut.notices));
+
+    check('a drawer the person shuts again is not reopened by the next render',
+      seen.reshutStaysShut === true, `drawer.open after a re-render: ${!seen.reshutStaysShut}`);
+
+    check('a second invitation reusing the same match id is still announced, so the latch '
+      + 'cannot be switched off by the sender',
+      seen.repeatedMid.drawerOpen === true && seen.repeatedMid.announced === true,
+      JSON.stringify(seen.repeatedMid));
+    check('CONTROL: with nothing to answer, a shut drawer stays shut',
+      seen.noInviteStaysShut === true, 'an unconditional open would pass the check above for free');
+  } catch (err) {
+    check('the games drawer block ran to completion', false, err.message);
+  } finally {
+    await browser.close();
+    await server.stop();
+  }
 }
 
 process.exit(summary('gameplay') ? 0 : 1);

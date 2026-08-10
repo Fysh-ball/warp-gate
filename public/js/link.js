@@ -17,12 +17,47 @@ import {
 } from './crypto.js';
 import { Peer } from './peer.js';
 import {
-  CHUNK_BYTES, readChunkRanges, createSink, canAccept, formatBytes,
+  CHUNK_BYTES, readChunkRanges, createSink, primeSink, canAccept, formatBytes,
   fingerprintFile, compareFingerprints, saveResume, listResume, clearResume, clearRoomResume,
 } from './transfer.js';
 // The frame layout and the chunk arithmetic: needed at module evaluation time and once per
 // chunk in the send loop, so static.
-import { CHUNK_INDEX_BYTES, chunkCount, frameChunk, unframeChunk } from './chunkwire.js';
+import {
+  CHUNK_INDEX_BYTES, chunkCount, expectedChunkBytes, frameChunk, unframeChunk,
+} from './chunkwire.js';
+
+/**
+ * How many bytes of the FILE the sender has covered, indexed by chunk.
+ *
+ * THE BUG THIS EXISTS FOR, measured on a real 434 MB transfer that arrived perfectly and
+ * was then thrown away. `out.sent` used to be a running total of bytes PUSHED, incremented
+ * once per chunk sent. A resume rebased it to what the receiver already held and then
+ * re-drove the file. When a resume landed while the previous run was still unwinding, the
+ * rebase happened anyway (it sits before the `streaming` latch that stops the double
+ * send), and the old loop went on adding to the rebased figure. FILE_END then declared
+ * 832,087,527 bytes for a 455,030,247 byte file: exactly the 377,057,280 the receiver
+ * already had, plus the whole file again. The receiver had every chunk, in the right
+ * order, with the right length and the right total, and failed the transfer on the
+ * sender's arithmetic alone.
+ *
+ * Counting coverage per index instead makes the total idempotent: re-sending a chunk adds
+ * nothing, because the slot already holds that chunk's length. Overlapping runs, a resume
+ * mid-unwind and a re-send of a range the receiver already had all become harmless, which
+ * is the property the latch was trying to provide and could not.
+ *
+ * A Uint32Array rather than a Set or a Map: one slot per chunk, 4 bytes each. A 30 GiB
+ * file at the 16 KiB floor is 7.9 MB, and at the 256 KiB a real connection negotiates it
+ * is 492 KB. Lengths rather than bits, so the total is a byte count and can be compared
+ * with the file's size directly.
+ *
+ * What it does NOT do, and the comment here used to claim it did: catch a truncating read.
+ * readChunkRanges throws on a short read (transfer.js) rather than yielding one, so a short
+ * chunk never reaches this map, and abandonOutbound ends the transfer there. That guard is
+ * the one to keep; do not delete it believing this replaces it.
+ */
+function newCoverage(size, chunkSize) {
+  return new Uint32Array(chunkCount(size, chunkSize));
+}
 
 /**
  * The resume NEGOTIATION half of chunk-level resume, fetched the first time a transfer
@@ -143,6 +178,16 @@ const EARLY_LIMIT_BYTES = 4 * 1024 * 1024;
 // two orders of magnitude and still small enough that a peer cannot use the game channel
 // as a way to make this page allocate.
 const GAME_MESSAGE_LIMIT = 4096;
+// The most files one batch offer may name. Two bounds in one number: what a single click
+// may consent to, which is the security property the grant exists for, and how many
+// peer-chosen names one message may put on screen. A sender with more files announces a
+// second batch, which gets its own row and its own click.
+export const MAX_BATCH_FILES = 64;
+// The only shape a batch id may have: base64url of the 8 random bytes the sender mints.
+// Checked as a charset and not just a length because this string is used as a key and put
+// into an element id by the UI. Both ends are this codebase, so nothing legitimate is
+// excluded and a peer cannot smuggle whitespace or markup through it.
+const BATCH_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_AUTH_FAILURES = 3;
 // Reconnect backoff while a transfer is paused. The owner's rule is that one side still
 // being present keeps the gate waiting, so there is no attempt ceiling: only a cap on how
@@ -275,6 +320,19 @@ export class Link extends EventTarget {
     this.confirmSent = false;
     this.confirmTimer = null;
     this.incoming = null;
+    // {batch, count, bytes, names}: a batch the peer ANNOUNCED and this side has not agreed
+    // to. Holds no consent at all, it is only what the UI draws one row from. Cleared when
+    // it is accepted or refused and on close, so a batch nobody answered leaves nothing
+    // behind for a later transfer to inherit.
+    this.pendingBatch = null;
+    // {batch, files, bytes, directory}: a batch the user HAS agreed to, and the two counters
+    // that bound the agreement. Both are spent down per file and the whole grant is dropped
+    // when either runs out, so one click never becomes permission for the next forty files
+    // or the next four gigabytes.
+    this.batchGrant = null;
+    // The id of the last batch this side said Refuse to. One string, replaced by the next
+    // announcement: a latch, not a growing list of grudges.
+    this.refusedBatch = null;
     this.sendQueue = Promise.resolve();
     // Frames are delivered from an event listener, so without a queue two of them are
     // decrypted and applied concurrently and their order is whatever the event loop
@@ -1345,6 +1403,7 @@ export class Link extends EventTarget {
       return;
     }
     if (control.kind === 'sever') { this.session.teardown('The other device burned the gate.'); return; }
+    if (control.kind === 'file-batch') { this.onBatchOffer(control); return; }
     if (control.kind === 'file-accept' || control.kind === 'file-reject') {
       const out = this.outbound;
       if (!out || control.id !== out.id) {
@@ -1531,11 +1590,42 @@ export class Link extends EventTarget {
       return false;
     }
 
-    // What the receiver already holds, so the running total still ends at the file's size
-    // and a truncating read still shows up as a shortfall. Nothing is adopted from the
-    // peer's own counter any more: `remaining` came from ranges this side validated, and
-    // FILE_END's chunk count is derived from the size and chunk size fixed at FILE_START.
-    out.sent = Number(out.size) - remaining;
+    // What the receiver already holds, so the running total still ends at the file's size.
+    // Nothing is adopted from the peer's own counter: `remaining` came from ranges this
+    // side validated, and FILE_END's chunk count is derived from the size and chunk size
+    // fixed at FILE_START. Be honest about what the seeded slots are: for a chunk this run
+    // never reads, the length written here comes from the declared size, not from the
+    // disk. It is the only figure available, the receiver's own size check is the
+    // independent guard, and the receiver's indexed sink refuses a wrong-length chunk on
+    // arrival, so it can never report holding one that is short.
+    //
+    // Seeded into the coverage map rather than assigned to the total. The old line set
+    // `out.sent` directly, which was correct only if nothing was still sending: this runs
+    // BEFORE driveOutbound consults its `streaming` latch, so a resume arriving while the
+    // previous run was still unwinding rebased the figure and then let that run keep
+    // adding to it. Marking the chunks the receiver already has as covered gets the same
+    // starting total and stays right no matter how the two runs overlap, because every
+    // chunk can only ever contribute its own length once.
+    // Seeding ADDS what the receiver reports it already holds. It never takes coverage
+    // away, and that distinction cost a test: replacing the map wholesale also erased the
+    // chunks the still-running send had already pushed, so a resume asking for a range the
+    // old loop had passed under-declared by exactly those chunks. Coverage is a record of
+    // what was actually read and sent; only a read can write it, and only upwards.
+    const total = chunkCount(out.size, out.chunkSize);
+    if (!out.coverage || out.coverage.length !== total) out.coverage = newCoverage(out.size, out.chunkSize);
+    const wanted = new Uint8Array(total);
+    for (const [from, to] of ranges) {
+      for (let i = from; i < to && i < total; i += 1) wanted[i] = 1;
+    }
+    let covered = 0;
+    for (let i = 0; i < total; i += 1) {
+      // Outside the requested ranges the receiver has the chunk, so it counts at its full
+      // length. Inside them it counts only for what this side has actually read, which is
+      // how a truncating read still shows up as a shortfall at FILE_END.
+      if (!wanted[i]) out.coverage[i] = expectedChunkBytes(i, out.chunkSize, out.size);
+      covered += out.coverage[i];
+    }
+    out.sent = covered;
     // A per-run counter now, used only to throttle progress events. The count that goes on
     // the wire at FILE_END is derived from the file, not counted from this run.
     out.chunks = 0;
@@ -1777,8 +1867,11 @@ export class Link extends EventTarget {
    * the transcript rather than one per peer. The guard below is per link, which is the
    * point: one file in flight per peer, never one globally, so a peer on a slow link
    * cannot hold up everybody else's copy.
+   *
+   * `batch` names the announcement this file belongs to, and is null for a single-file
+   * send. Null is not sent: see the FILE_START below.
    */
-  async sendFile(file, id, fingerprint) {
+  async sendFile(file, id, fingerprint, batch = null) {
     this.requireConnected();
     if (this.outbound?.active) throw new Error('another file is already being sent to this device');
     // Ask the connection how big a frame it will actually carry rather than assuming the
@@ -1798,6 +1891,9 @@ export class Link extends EventTarget {
       file,
       fingerprint,
       sent: 0,
+      // Byte coverage of the file, per chunk index. `sent` is its running sum, so the two
+      // are updated together in driveOutbound and nowhere else.
+      coverage: newCoverage(file.size, chunkSize),
       chunks: 0,
       active: true,
       stalled: false,
@@ -1827,9 +1923,14 @@ export class Link extends EventTarget {
       await this.enqueue(async () => {
         // Name, MIME type, size and fingerprint travel inside the ciphertext. The server
         // never sees any of them (DESIGN.md 1.4, section 8).
-        await this.peer.send(await this.channel.sealJson(TYPE.FILE_START, {
+        const start = {
           id, name: out.name, mime: out.mime, size: out.size, chunkSize: out.chunkSize, fingerprint,
-        }));
+        };
+        // ADDED, never written as `batch: null`. A single-file send has to put exactly the
+        // bytes on the wire it always did, so the one-file path is unchanged rather than
+        // merely equivalent.
+        if (batch) start.batch = batch;
+        await this.peer.send(await this.channel.sealJson(TYPE.FILE_START, start));
       });
 
       // Awaited OUTSIDE the send queue, so chat still flows while the other side decides,
@@ -1872,7 +1973,25 @@ export class Link extends EventTarget {
    */
   driveOutbound(ranges) {
     const out = this.outbound;
-    if (!out || !out.file || !out.active || out.streaming) return;
+    if (!out || !out.file || !out.active) return;
+    // PARKED, never dropped. The latch used to be a bare `return`, and the ranges the
+    // caller was holding went with it. serveResume had already sent `file-resume-ok` by
+    // then, so a resume that landed while the previous run was still unwinding told the
+    // receiver "continuing from here" and then sent nothing: if the requested chunks were
+    // behind the running iterator's cursor, which is exactly the case when the receiver
+    // lost frames from the middle of the window, they never arrived and the transfer died
+    // on the quiet timer. Correct arithmetic on a transfer that never finishes is not a
+    // fix, so the ranges wait for the running pass to unwind and are drained below.
+    //
+    // The NEWEST plan replaces an older parked one rather than merging with it. A resume
+    // plan is a statement of everything the receiver still lacks, not a delta, so the
+    // later one already covers the earlier one; merging two would also have to re-sort and
+    // re-coalesce them to satisfy readChunkRanges, which rejects overlapping or unordered
+    // ranges on purpose.
+    if (out.streaming) {
+      if (ranges?.length) out.parked = ranges;
+      return;
+    }
     out.streaming = true;
     // Deliberately NOT wrapping the whole loop in enqueue(). Doing so made the send
     // queue exclusive to this transfer for its entire duration, so a chat message typed
@@ -1881,56 +2000,94 @@ export class Link extends EventTarget {
     // atomic, which matters because the AEAD counter has to increment in the same order
     // the frames go out or the peer's replay guard rejects them, while letting chat
     // interleave between chunks.
+    // Anything parked by an earlier pass is superseded by the plan this run was handed:
+    // a resume plan already describes everything the receiver lacks, so keeping the old
+    // one would re-send chunks nobody asked for a second time.
+    out.parked = null;
     (async () => {
-      const iterator = readChunkRanges(out.file, out.chunkSize, ranges)[Symbol.asyncIterator]();
+      let iterator = null;
+      const closeIterator = async () => {
+        const it = iterator;
+        iterator = null;
+        if (it) { try { await it.return?.(); } catch (err) { void err; } }
+      };
       try {
+        let todo = ranges;
+        // One pass per set of ranges. The second and later passes exist only for a resume
+        // that landed while this run was still unwinding: see the parking note above.
         for (;;) {
-          if (this.severed) throw new Error('gate burned during transfer');
-          // Superseded by a newer transfer, or abandoned. Stop without touching anything.
-          if (this.outbound !== out || !out.active) return;
+          iterator = readChunkRanges(out.file, out.chunkSize, todo)[Symbol.asyncIterator]();
+          for (;;) {
+            if (this.severed) throw new Error('gate burned during transfer');
+            // Superseded by a newer transfer, or abandoned. Stop without touching anything.
+            if (this.outbound !== out || !out.active) return;
 
-          let step;
-          try {
-            step = await iterator.next();
-          } catch (err) {
-            this.abandonOutbound(out, `${out.name} could not be read: ${err.message}`);
-            return;
-          }
-          if (step.done) break;
+            let step;
+            try {
+              step = await iterator.next();
+            } catch (err) {
+              this.abandonOutbound(out, `${out.name} could not be read: ${err.message}`);
+              return;
+            }
+            if (step.done) break;
 
-          try {
-            await this.enqueue(async () => {
-              await this.peer.send(
-                await this.channel.seal(TYPE.FILE_CHUNK, frameChunk(step.value.index, step.value.bytes)),
-              );
-            });
-          } catch (err) {
-            if (this.severed) throw err;
-            out.stalled = true;
-            this.emit('file-stalled', {
-              direction: 'out',
-              id: out.id,
-              name: out.name,
-              sent: out.sent,
-              total: out.size,
-              message: `Paused after ${formatBytes(out.sent)}: ${err.message}. Waiting to continue.`,
-            });
-            this.scheduleRestart(`sending ${out.name} was interrupted`);
-            return;
+            try {
+              await this.enqueue(async () => {
+                await this.peer.send(
+                  await this.channel.seal(TYPE.FILE_CHUNK, frameChunk(step.value.index, step.value.bytes)),
+                );
+              });
+            } catch (err) {
+              if (this.severed) throw err;
+              out.stalled = true;
+              this.emit('file-stalled', {
+                direction: 'out',
+                id: out.id,
+                name: out.name,
+                sent: out.sent,
+                total: out.size,
+                message: `Paused after ${formatBytes(out.sent)}: ${err.message}. Waiting to continue.`,
+              });
+              this.scheduleRestart(`sending ${out.name} was interrupted`);
+              return;
+            }
+            // Coverage, not a push counter: the slot for this index is SET to the length
+            // that was read, and `sent` moves by the difference. Sending the same chunk
+            // twice therefore adds nothing the second time, which is what makes an
+            // overlapping resume harmless. See newCoverage for the transfer this lost.
+            {
+              const at = step.value.index;
+              const len = step.value.bytes.byteLength;
+              if (at < out.coverage.length && out.coverage[at] !== len) {
+                out.sent += len - out.coverage[at];
+                out.coverage[at] = len;
+              }
+            }
+            out.chunks += 1;
+            if (out.chunks % 32 === 0) {
+              this.emit('file-progress', { direction: 'out', id: out.id, sent: out.sent, total: out.size, name: out.name });
+            }
           }
-          out.sent += step.value.bytes.byteLength;
-          out.chunks += 1;
-          if (out.chunks % 32 === 0) {
-            this.emit('file-progress', { direction: 'out', id: out.id, sent: out.sent, total: out.size, name: out.name });
-          }
+          await closeIterator();
+          // Drain a parked plan BEFORE FILE_END, never after. FILE_END is the receiver's
+          // signal to check what it holds and either keep the file or throw it away, so a
+          // chunk arriving behind it is a chunk arriving after the verdict.
+          if (!out.parked?.length) break;
+          todo = out.parked;
+          out.parked = null;
         }
 
         await this.enqueue(async () => {
           await this.peer.send(await this.channel.sealJson(TYPE.FILE_END, {
-            // `bytes` stays the sender's own running total, which is what catches a read
-            // that silently returned short. `chunks` is derived rather than counted: the
-            // sender only sends the chunks the receiver was missing, so a counter would be
-            // the count of THIS run and not of the file.
+            // `bytes` is the sender's own coverage total. For every chunk this side
+            // actually read it is the length that came off the disk; for a chunk the
+            // receiver told us it already holds it is the length the file's size says it
+            // must be, which is the only figure available for bytes this run never
+            // touched. The receiver checks its own total against the size it was given at
+            // FILE_START independently, so a wrong figure here cannot pass a bad file.
+            // `chunks` is derived rather than counted: the sender only sends the chunks
+            // the receiver was missing, so a counter would be the count of THIS run and
+            // not of the file.
             id: out.id, bytes: out.sent, chunks: chunkCount(out.size, out.chunkSize),
           }));
         });
@@ -1953,7 +2110,7 @@ export class Link extends EventTarget {
         else this.emit('warning', `the transfer ended: ${err.message}`);
       } finally {
         out.streaming = false;
-        try { await iterator.return?.(); } catch (err) { void err; }
+        await closeIterator();
       }
     })();
   }
@@ -1987,9 +2144,149 @@ export class Link extends EventTarget {
 
   // ------------------------------------------------------------ receiving files
 
+  /**
+   * The peer says the next few FILE_STARTs belong together, so this side can ask once.
+   *
+   * Accepting has to happen inside a click, because both file pickers require a user gesture
+   * and a gesture cannot be manufactured after the fact: that is why a phone sending five
+   * photos made the laptop press Accept five times. One announcement means one row, one
+   * click, one bounded grant.
+   *
+   * All of it is peer-controlled and validated before it is shown. `count` bounds how many
+   * files one click may consent to, `bytes` how much, and `names` must agree with `count` or
+   * a row built from it would misstate what is being agreed to. Failing any of these drops
+   * the message with NO reply, as a malformed game message is dropped: answering would tell
+   * a peer which of its guesses parsed. Names are sanitised at the DOM boundary in app.js
+   * and not here, so the record of what was offered is not rewritten in the middle.
+   */
+  onBatchOffer(control) {
+    const { batch, count, bytes, names } = control;
+    if (typeof batch !== 'string' || !BATCH_ID_SHAPE.test(batch)
+      || !Number.isInteger(count) || count < 2 || count > MAX_BATCH_FILES
+      || !Number.isSafeInteger(bytes) || bytes < 0
+      || !Array.isArray(names) || names.length !== count
+      || names.some((name) => typeof name !== 'string')) {
+      this.emit('warning', 'ignored a malformed offer of several files');
+      return;
+    }
+    // A second announcement replaces the first rather than stacking: two live offers would
+    // mean two rows and two clicks, which is the thing being removed. It deliberately does
+    // NOT touch an existing grant, so a peer cannot refresh its own allowance by announcing
+    // again.
+    this.pendingBatch = { batch, count, bytes, names };
+    // A NEW announcement clears the old refusal, because that refusal was about a different
+    // set of files. Not cleared when the ids match: re-announcing the same id after a Refuse
+    // would otherwise be a way to ask again until the answer changes.
+    if (this.refusedBatch !== batch) this.refusedBatch = null;
+    this.emit('files-offered', { batch, count, bytes, names });
+  }
+
+  /**
+   * Turn the announced batch into a bounded grant. Called from the user's click, and the
+   * directory is chosen by app.js inside that same click and handed down: nothing the PEER
+   * sends can open a picker, because a message must not put a dialog in front of the user.
+   */
+  async acceptBatch({ directory = null } = {}) {
+    const pending = this.pendingBatch;
+    if (!pending) throw new Error('there is no batch of files to accept');
+    // Consumed here, not on the first file. Leaving it set would let a FILE_START arriving
+    // after the grant is spent fall back into "still waiting for the user" instead of into
+    // the ordinary per-file offer it is supposed to get.
+    this.pendingBatch = null;
+    this.batchGrant = {
+      batch: pending.batch, files: pending.count, bytes: pending.bytes, directory,
+    };
+    // The first FILE_START of a batch nearly always lands BEFORE the click: the sender
+    // announces and immediately offers file one, and onFileStart parked it because the batch
+    // row is its row. Without this, the click would grant a batch whose first file was
+    // already sitting unanswered and the sender would wait on an accept that never came.
+    const inbound = this.incoming;
+    if (inbound && !inbound.sink && inbound.meta?.batch === pending.batch) {
+      await this.acceptFromGrant(inbound);
+    }
+    return true;
+  }
+
+  /**
+   * The other answer to the batch row. Drops the offer and refuses the file already parked
+   * against it, so the sender is told rather than left streaming into a bounded buffer.
+   */
+  async refuseBatch(reason = 'the other device refused these files') {
+    const pending = this.pendingBatch;
+    if (!pending) return false;
+    this.pendingBatch = null;
+    // Latched, so the REST of the batch goes too. Without it only the parked file was
+    // rejected and every later file under the same id fell through to the ordinary path,
+    // where anything under the auto-accept threshold takes itself: "refused these five
+    // photos, then took three of them anyway" is not what the button says.
+    this.refusedBatch = pending.batch;
+    const inbound = this.incoming;
+    if (inbound && !inbound.sink && inbound.meta?.batch === pending.batch) {
+      this.incoming = null;
+      await this.control({ kind: 'file-reject', id: inbound.meta.id, reason });
+      this.emit('file-refused', { ...inbound.meta, reason });
+    }
+    return true;
+  }
+
+  /**
+   * Take one file under an existing grant, spending the counters BEFORE the file is taken
+   * and never after: if the sink fails to open the allowance is still gone, or a peer that
+   * can make sink creation fail gets unlimited retries against one click of consent.
+   *
+   * Does not throw. Both callers want the same thing on failure (tell the peer, tell the
+   * user, forget the transfer) and neither has anything to do with an exception.
+   */
+  async acceptFromGrant(inbound) {
+    const grant = this.batchGrant;
+    const { meta } = inbound;
+    if (!grant) return false;
+    const size = Number(meta.size) || 0;
+    grant.files -= 1;
+    grant.bytes -= size;
+    // Read out BEFORE the grant can be dropped on the next line, or the last file of a batch
+    // would be the one file that did not go into the chosen folder.
+    const { directory } = grant;
+    if (grant.files <= 0 || grant.bytes <= 0) this.batchGrant = null;
+    try {
+      // Both awaits inside the try, exactly as the auto-accept path does it: a failure to
+      // fetch the resume machinery is reported and rejected like a sink that would not open.
+      const R = await loadResume();
+      // With a directory: straight to disk, no dialog, the folder the user picked. Without
+      // one: the picker is bypassed and this takes the streaming-download or memory route a
+      // browser with no showSaveFilePicker already uses for every file today.
+      this.adoptSink(R, inbound, await createSink(meta, directory ? { directory } : { noPicker: true }));
+      await this.flushEarly(inbound);
+      await this.rememberInboundRecord(inbound);
+      await this.control({ kind: 'file-accept', id: meta.id, token: inbound.token });
+      this.armInboundQuiet(inbound);
+      // Both, for the same reason acceptIncoming emits the first: the user clicked Accept
+      // and is owed the note saying where this is going, which for a memory sink is the
+      // difference between "saved" and "held in this tab until it finishes". file-incoming
+      // is what titles the row.
+      this.emit('file-accepted-local', { ...meta, sink: inbound.sink.kind, note: inbound.sink.note ?? null });
+      this.emit('file-incoming', meta);
+      return true;
+    } catch (err) {
+      this.emit('warning', `could not start receiving ${meta.name}: ${err.message}`);
+      if (this.incoming === inbound) this.incoming = null;
+      await this.control({ kind: 'file-reject', id: meta.id, reason: err.message });
+      this.emit('file-refused', { ...meta, reason: err.message });
+      return false;
+    }
+  }
+
   async onFileStart(meta) {
     if (this.incoming) {
       await this.control({ kind: 'file-reject', id: meta.id, reason: 'another transfer is already in progress' });
+      return;
+    }
+    // A batch the user already said no to. Checked before anything else looks at this file,
+    // and before this.incoming is set, so the refusal costs no state at all.
+    if (this.refusedBatch && meta.batch === this.refusedBatch) {
+      const reason = 'the other device refused these files';
+      await this.control({ kind: 'file-reject', id: meta.id, reason });
+      this.emit('file-refused', { ...meta, reason });
       return;
     }
     const verdict = canAccept(meta.size);
@@ -2010,6 +2307,25 @@ export class Link extends EventTarget {
       // what makes a resume for it refusable without the refusal saying so.
       token: null,
     };
+
+    // The grant is asked BEFORE the auto-accept threshold below, and that is not a
+    // preference: a grant can carry a directory the user chose while auto-accept goes
+    // straight to a memory sink, so the other order would land a batch's small files in this
+    // tab's heap and its large ones in the chosen folder, from one click that said all of
+    // them were going into that folder.
+    const batch = typeof meta.batch === 'string' ? meta.batch : null;
+    if (batch && this.batchGrant?.batch === batch
+      && this.batchGrant.files > 0 && (Number(meta.size) || 0) <= this.batchGrant.bytes) {
+      await this.acceptFromGrant(this.incoming);
+      return;
+    }
+    // Announced, drawn, not answered yet: the batch row already carries the Accept covering
+    // this file, so file-offered here would draw a SECOND control for the same consent. Park
+    // it; acceptBatch takes it on the click and refuseBatch tells the sender.
+    if (batch && this.pendingBatch?.batch === batch) return;
+    // Falls through on purpose when the id is unknown or the grant is spent, which is the
+    // whole bound: a peer that announced three files and sends a fourth under the same id
+    // gets the ordinary treatment for the fourth.
 
     if (meta.size <= AUTO_ACCEPT_BYTES) {
       // No user gesture here, so never try to open a save dialog: straight to memory.
@@ -2072,7 +2388,15 @@ export class Link extends EventTarget {
     // adopt, and an await between the two would reopen the exact window that check exists
     // to close. Doing it first also overlaps the fetch with the dialog, which is the
     // longest wait on this path by orders of magnitude.
-    const R = await loadResume();
+    //
+    // primeSink rides along in the SAME await rather than being left to createSink's own
+    // first-use fetch below. Two reasons, and the second is the one that matters: sequential
+    // awaits would put two round trips between the click and showSaveFilePicker, and a save
+    // dialog is only allowed while the transient user activation from that click is still
+    // alive. One parallel await spends the same wall clock the single loadResume() already
+    // spent. If either fetch fails this rejects with that fetch's own message, which is the
+    // behaviour loadResume() alone already had here.
+    const [R] = await Promise.all([loadResume(), primeSink()]);
     let sink = null;
     try {
       sink = await createSink(meta);
@@ -2201,7 +2525,10 @@ export class Link extends EventTarget {
    */
   async adoptInbound(record) {
     if (this.incoming) throw new Error('another transfer is already in progress');
-    const R = await loadResume();
+    // Both fetches in one await, for the reason spelled out in acceptIncoming: this path is
+    // also inside a user gesture, because re-granting write permission on a stored handle
+    // prompts, and a prompt outside a live activation is refused outright.
+    const [R] = await Promise.all([loadResume(), primeSink()]);
     // startOffset is a request; the sink clamps it to what the file actually contains,
     // because everything written and not committed before the reload was discarded.
     const chunkSize = Number(record.meta.chunkSize) || CHUNK_BYTES;
@@ -2425,7 +2752,19 @@ export class Link extends EventTarget {
     } catch (err) {
       this.emit('warning', `the file was saved but the other device could not be told: ${err.message}`);
     }
-    this.emit('file-received', { ...inbound.meta, blob, sink: inbound.sink.kind, human: formatBytes(inbound.received) });
+    // `handle` is the FileSystemFileHandle the disk sink already holds, null for the memory
+    // and stream sinks. Passed along, not newly retained: rememberInboundRecord has stored
+    // the same object for resume all along, so no protocol and no storage changes. It is
+    // what stops a file written straight to disk being a dead end in the transcript, since
+    // app.js can read those bytes back on demand. A reference to a file the user chose, not
+    // its contents, and it goes no further than this page.
+    this.emit('file-received', {
+      ...inbound.meta,
+      blob,
+      sink: inbound.sink.kind,
+      handle: inbound.sink.handle ?? null,
+      human: formatBytes(inbound.received),
+    });
   }
 
   async control(message) {
@@ -2506,6 +2845,14 @@ export class Link extends EventTarget {
     // it to be quiet and fires into a torn-down link.
     this.clearInboundQuiet(this.incoming);
     this.incoming = null;
+    // Consent does not survive the gate it was given in. A grant is permission to write onto
+    // this user's disk, given once, about a specific set of files; carrying it past a sever
+    // would leave a live directory handle and a live allowance on a link that no longer
+    // exists, ready for whatever reconnected next. The unanswered offer goes with it, so a
+    // batch that was never accepted leaves nothing for a later transfer to inherit.
+    this.pendingBatch = null;
+    this.batchGrant = null;
+    this.refusedBatch = null;
     this.earlyFrames = [];
     this.deriving = null;
     this.peer = null;

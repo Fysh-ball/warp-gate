@@ -115,7 +115,7 @@ tell you when it has fallen behind.
 | `js/signal.js` | 5 request URLs go through `api()`: `/api/events`, `/api/relay`, `/api/bye`, `/api/room`, `/api/config`. |
 | `js/session.js` | `postRoom()`'s `fetch(path)` goes through `api()`. Covers `/api/create` and `/api/join`. |
 | `js/app.js` | The shareable gate link is `gateLink(code)` instead of `location.origin + location.pathname`. The "who is serving you this page" block is rewritten. |
-| `js/download.js` | `supportsStreamDownload()` returns false on an extension origin. See "Streaming download" below. |
+| `js/streamable.js` | `supportsStreamDownload()` returns false on an extension origin. See "Streaming download" below. The patch used to sit in `js/download.js` and followed the function when upstream moved it into its own module; `download.js` re-exports the binding, so both call sites still get the patched answer. |
 | `app.html` | The web app manifest link is removed, the instance disclosure is rewritten, and links to `/` point at this package's `index.html`. |
 | `faq/privacy/terms/acceptable-use.html` | Links to `/` point at this package's `index.html`. |
 
@@ -166,8 +166,9 @@ ever asked to.
   `isSecureContext` are both true. On Chromium this costs little, because
   `showSaveFilePicker` is the preferred route anyway and works here. On a browser without
   the picker it is a real regression: files above the 500 MB memory limit cannot be
-  received. `js/download.js` is patched so the capability gate says no up front rather than
-  accepting a transfer it cannot deliver.
+  received. `js/streamable.js` is patched so the capability gate says no up front rather
+  than accepting a transfer it cannot deliver. `js/download.js` re-exports that same
+  predicate, so patching the one definition covers `transfer.js` and `download.js` both.
 - **The share target is gone** with the service worker. Sharing a file into Warp Gate from
   the OS is a PWA feature and has no extension equivalent here.
 - **QR scanning is untested.** `getUserMedia` on an extension page should prompt and work,
@@ -198,9 +199,10 @@ directory carry less of its own.
    page and wrong for any client that is not served by the server it signals to.
 3. **Fix `supportsStreamDownload()` upstream.** It reports true on any origin where a page
    service worker cannot be registered, and it is consulted as a capability gate before a
-   large file is accepted. This is a real bug in `public/js/download.js` independent of the
+   large file is accepted. This is a real bug in `public/js/streamable.js` independent of the
    extension: the predicate promises a route it cannot open, and the failure lands after the
-   user has clicked Accept.
+   user has clicked Accept. Upstream now documents it as a KNOWN GAP in the doc comment above
+   the function, which is an improvement on silence but is still the bug rather than the fix.
 4. **Consider making the "who is serving you this page" copy data-driven** rather than
    keyed on `location.hostname`, so a client that was not served by the signalling origin
    can state its own situation without a patched block.

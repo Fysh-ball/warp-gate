@@ -3,24 +3,6 @@
 // This file owns the DOM and nothing else. All protocol and cryptography lives in
 // session.js, crypto.js, peer.js and signal.js.
 
-import {
-  generateGateCode, decodeGateCode, tryDecodeGateCode, deriveSecret, clearSecretCache,
-  GateCodeError, deriveRoomId,
-} from './crypto.js';
-import { fetchConfig, checkRoom } from './signal.js';
-import { Session, STATE } from './session.js';
-import { checkWebRtcCapability, hostSuppressedAdvice } from './peer.js';
-import {
-  describeLimit, canAccept, formatBytes, saveBlob, sanitizeFilename, revokeAllObjectUrls,
-  canStreamToDisk,
-} from './transfer.js';
-import { encodeQr, drawQr } from './qr.js';
-import { applySourceLink, copyText as writeClipboard } from './support.js';
-import { forgetPasswordKey, forgetAllPasswordKeys } from './vault.js';
-// gameplay.js, gameui.js and the four engines are ~88 KB and none of it can run until
-// somebody decides to play. They are therefore NOT imported here: see loadGames().
-// saswords.js is likewise not imported here: see loadSasWords(), which starts the fetch
-// the moment a gate exists.
 // EXTENSION COPY of public/js/app.js. Every change is marked `EXTENSION PATCH` and is
 // listed in extension/README.md. It is produced by extension/sync-from-public.mjs and
 // checked by extension/drift-check.mjs, so diff this against public/js/app.js and the only
@@ -30,10 +12,51 @@ import { forgetPasswordKey, forgetAllPasswordKeys } from './vault.js';
 // resolve against `chrome-extension://<id>` here and reach nothing. The upstream change
 // that would delete this copy is written up in extension/README.md.
 
-import { initShare } from './share.js';
+import {
+  generateGateCode, decodeGateCode, tryDecodeGateCode, deriveSecret, clearSecretCache,
+  GateCodeError, deriveRoomId,
+} from './crypto.js';
 // EXTENSION PATCH: this page is not served by the signalling server, so neither the API
 // origin nor the shareable gate link can be read off `location`. See js/endpoint.js.
 import { signalOrigin, gateLink, DEFAULT_ORIGIN } from './endpoint.js';
+import { fetchConfig, checkRoom } from './signal.js';
+import { Session, STATE } from './session.js';
+import { checkWebRtcCapability, hostSuppressedAdvice } from './peer.js';
+import {
+  describeLimit, canAccept, formatBytes, saveBlob, sanitizeFilename, revokeAllObjectUrls,
+  canStreamToDisk,
+} from './transfer.js';
+// qr.js and share.js are reached through import() rather than a static import, so neither
+// is fetched to open a gate. See loadQr() and the initShare() call at the foot of this
+// file for why each is off the critical path.
+
+// common.js, not support.js. Both documents need these two; only the landing has the
+// donation cards and the modal markup that the rest of support.js drives, so importing it
+// here fetched 7.2 KB of UI this document cannot display. See common.js.
+import { applySourceLink, copyText as writeClipboard } from './common.js';
+import { forgetPasswordKey, forgetAllPasswordKeys } from './vault.js';
+// gameplay.js, gameui.js and the four engines are ~88 KB and none of it can run until
+// somebody decides to play. They are therefore NOT imported here: see loadGames().
+// saswords.js is likewise not imported here: see loadSasWords(), which starts the fetch
+// the moment a gate exists.
+
+/**
+ * Fetch the QR encoder, once, the first time somebody asks to see a code.
+ *
+ * qr.js is 13 KB of encoder and generator polynomials that nothing needs in order to open
+ * or join a gate: the only two things that draw with it are the share panel, which is
+ * revealed by a press and deliberately renders nothing until then, and the donation modal
+ * in support.js. Both are decisions made after the page is usable, which is exactly the
+ * rule tests/size.test.mjs applies to everything else it keeps off the eager graph.
+ *
+ * The module namespace is cached rather than the promise being re-awaited per call so
+ * that a second reveal is synchronous in everything but name.
+ */
+let qrMod = null;
+async function loadQr() {
+  if (!qrMod) qrMod = await import('./qr.js');
+  return qrMod;
+}
 
 const $ = (id) => document.getElementById(id);
 const SCREENS = ['onboarding', 'home', 'password', 'waiting', 'connected', 'severed', 'failed'];
@@ -73,9 +96,11 @@ let everConnected = false;
 // dies. #log has had this discipline since it was written; #messages needs it too.
 const MAX_MESSAGES = 200;
 
-// Inline image previews are the expensive kind of row: each one pins a decoded bitmap
-// plus the blob behind an object URL, and session.js accepts anything under 10 MB with
-// no prompt at all. Only the newest few stay rendered; older ones become Save-only.
+// Inline previews are the expensive kind of row: each one pins a decoded bitmap or a
+// demuxed media header plus the blob behind an object URL, and session.js accepts anything
+// under 10 MB with no prompt at all. Only the newest few stay rendered; older ones become
+// Save-only. Images, video and audio share this one budget on purpose: the cost being
+// bounded is memory, and memory does not care which tag is holding it.
 const MAX_INLINE_PREVIEWS = 3;
 
 // A participant's display name is derived here rather than received (session.js), so it
@@ -85,17 +110,9 @@ const MAX_INLINE_PREVIEWS = 3;
 // stop, and there is no path where a longer one is allowed through instead.
 const MAX_NAME_CHARS = 32;
 
-// Only these render inline. The MIME string is chosen by the peer, so a prefix test on
-// "image/" also matched image/svg+xml, which browsers render as a document.
-const INLINE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
-// type/subtype, RFC 6838 restricted-name characters only. Anything else is not a MIME.
-const MIME_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
-
-/** Reduce a peer-supplied MIME string to one that is safe to act on, or '' if it is not. */
-function safeMime(mime) {
-  const value = typeof mime === 'string' ? mime.trim().toLowerCase() : '';
-  return MIME_PATTERN.test(value) ? value : '';
-}
+// The MIME allowlists, the inline elements and the Open button all live in preview.js,
+// which is fetched only once a file has actually been received. See the head of that file
+// for why, and renderFilePreview() below for the call site.
 
 // How many local sends are in flight. renderProgress consults this so it can refuse to
 // CREATE a row for an outbound transfer this side never started (see H7).
@@ -323,11 +340,18 @@ function maybeAskForSupport() {
  * because boot's auto-join follows a link straight into startJoin() without passing
  * through runFlow, and a warning the link path skips is a warning most people never see.
  */
-function confirmNetworkExposure() {
+function confirmNetworkExposure(mode) {
   if (isDismissed('net-modal')) return Promise.resolve(true);
   const modal = $('net-modal');
   // No markup, no gate. This must never be the thing that stops somebody connecting.
   if (!modal) return Promise.resolve(true);
+
+  // One modal serves both paths, and the title was written for only one of them: somebody
+  // following a link was told "Before you open a gate" while joining one. The body is the
+  // same either way, because the exposure is the same either way.
+  $('net-title').textContent = mode === 'join'
+    ? 'Before you join a gate'
+    : 'Before you open a gate';
 
   return new Promise((resolve) => {
     const finish = (proceed) => {
@@ -871,7 +895,10 @@ function loadGames(active) {
         // Asked for on every render rather than captured once: people join and leave a
         // gate, and a stale partner list offers a game to somebody who is not here.
         partners: () => (session === active ? active.gamePartners() : []),
-        onNotice: (text) => log(text, 'warn'),
+        // Neutral, not 'warn'. This channel now carries "X wants to play Chess", which is
+        // an invitation and not a problem, and styling it as a warning next to real ones
+        // teaches people to discount the colour.
+        onNotice: (text) => log(text),
       });
       // Drain BEFORE publishing `games`, and drain synchronously, so an invite that
       // arrived during the fetch is applied ahead of any message that arrives after it.
@@ -1109,6 +1136,7 @@ function wire(active) {
 
   // --- file events
   active.addEventListener('file-offered', (event) => renderOffer(event.detail));
+  active.addEventListener('files-offered', (event) => renderBatchOffer(event.detail));
   active.addEventListener('file-refused', (event) => {
     const d = event.detail ?? {};
     log(`refused incoming file: ${d.reason}`, 'bad');
@@ -1377,19 +1405,34 @@ function renderDiagnostics() {
 
 const objectUrls = new Set();
 
-// Rows currently showing an inline image preview, oldest first. Held so the newest few
-// can be kept and the rest released without walking the whole transcript.
+// Rows currently showing an inline preview, oldest first. Held so the newest few can be
+// kept and the rest released without walking the whole transcript.
 const inlinePreviews = [];
 
+// EVERY inline preview element carries this class, whatever its tag. This was
+// 'img.msg-image', which could not release anything that was not an image: adding <video>
+// without changing it would leave the object URL live, and a live object URL pins the
+// ENTIRE file in memory for the life of the gate. One class, one selector.
+const PREVIEW_SELECTOR = '.msg-media';
+
 /**
- * Release the inline preview a row is holding: revoke its object URL and swap the image
+ * Release the inline preview a row is holding: revoke its object URL and swap the element
  * for a line saying so. The Save button is untouched, so the file is still recoverable.
  */
 function releasePreview(row) {
-  const img = row.querySelector?.('img.msg-image');
-  if (!img) return;
-  const url = img.src;
-  img.remove();
+  const el = row.querySelector?.(PREVIEW_SELECTOR);
+  if (!el) return;
+  // Read the URL BEFORE tearing the element down: clearing the source below empties .src.
+  const url = el.currentSrc || el.src;
+  // A detached <video>/<audio> keeps playing in Chromium, so removing the node does not
+  // stop it: a player still audible after its row says the preview was released is worse
+  // than the memory that bought. pause, drop the source, load() to let go of the blob.
+  if (typeof el.pause === 'function') {
+    el.pause();
+    el.removeAttribute('src');
+    el.load();
+  }
+  el.remove();
   if (url) {
     URL.revokeObjectURL(url);
     objectUrls.delete(url);
@@ -1414,9 +1457,18 @@ function releaseAllPreviews() {
 function discardRow(row) {
   const i = inlinePreviews.indexOf(row);
   if (i !== -1) inlinePreviews.splice(i, 1);
-  for (const img of row.querySelectorAll?.('img[src^="blob:"]') ?? []) {
-    URL.revokeObjectURL(img.src);
-    objectUrls.delete(img.src);
+  // Not 'img[src^="blob:"]': a video or an audio element holds exactly the same kind of
+  // URL and would have been walked straight past. Any element with a blob: source, and a
+  // media element is stopped first so it cannot outlive its own row.
+  for (const el of row.querySelectorAll?.('[src^="blob:"]') ?? []) {
+    const url = el.src;
+    if (typeof el.pause === 'function') {
+      el.pause();
+      el.removeAttribute('src');
+      el.load();
+    }
+    URL.revokeObjectURL(url);
+    objectUrls.delete(url);
   }
 }
 
@@ -1558,7 +1610,7 @@ function addSecret({ from, text, who = null }) {
   scrollMessages();
 }
 
-// One implementation, in support.js, because the landing needs it too. The only
+// One implementation, in common.js, because the landing needs it too. The only
 // difference here is where a refusal is reported: this document has a status log.
 async function copyText(text) {
   return writeClipboard(text, log);
@@ -1782,7 +1834,36 @@ function setProgress(row, sent, total) {
   bar.value = sent;
 }
 
-/** Show an image inline once it has arrived; anything else gets a save button. */
+// The inline preview and the Open button live in preview.js, fetched only once a file has
+// actually been received. Same rule as the batch prompt above: unreachable by a gate used
+// for chat alone, so it is not weight every gate pays. See the head of tests/size.test.mjs.
+let previewMod = null;
+
+/**
+ * Grow a finished row's preview and Open button, if its type earns either.
+ *
+ * Called AFTER the Save button exists and never awaited. Save is the guarantee: a failed
+ * fetch, or a throw while drawing, still leaves a row whose file is recoverable, which is
+ * why the failure below is a note in the row rather than a rethrow nobody would catch.
+ */
+async function renderFilePreview(row, meta) {
+  try {
+    if (!previewMod) previewMod = await import('./preview.js');
+    previewMod.decorateFileRow(row, meta, {
+      objectUrls, inlinePreviews, MAX_INLINE_PREVIEWS, releasePreview, scrollMessages, sanitizeFilename,
+    });
+  } catch (err) {
+    // The caller discards this promise, so without this a failed fetch would drop the
+    // preview and the Open button in silence, indistinguishable from a type that gets none.
+    const note = document.createElement('div');
+    note.className = 'muted small';
+    note.textContent = `The preview could not be prepared (${err.message}). Save still works.`;
+    row.appendChild(note);
+  }
+  scrollMessages();
+}
+
+/** Show a preview inline once the file has arrived; everything gets a save button. */
 function finishFileRow(row, meta, from) {
   row.querySelector('progress')?.remove();
   // A finished transfer must not keep showing "paused, waiting to continue" from the last
@@ -1817,49 +1898,24 @@ function finishFileRow(row, meta, from) {
       ? 'Saved by this browser to your downloads folder.'
       : 'Written to the location you chose.';
     row.appendChild(done);
+    // A disk sink kept the handle for the file the user picked and link.js passes it here,
+    // so Open can read those bytes back on demand. No inline preview on this route: the
+    // file went to disk precisely so it would not be held in memory, and drawing it would
+    // pull the whole thing back in. The stream sink has no handle and cannot be opened,
+    // which is why its wording above stays a dead end.
+    if (meta.handle) void renderFilePreview(row, meta);
     return;
   }
 
-  // The MIME is peer-chosen, so it is checked against an allowlist rather than a
-  // "image/" prefix test: image/svg+xml is a document, not a picture.
-  if (INLINE_IMAGE_TYPES.has(safeMime(meta.mime))) {
-    const url = URL.createObjectURL(meta.blob);
-    objectUrls.add(url);
-    const img = document.createElement('img');
-    img.className = 'msg-image';
-    img.alt = name;
-    img.addEventListener('load', () => {
-      // Keep only the newest few rendered. Each preview pins a decoded bitmap and a blob
-      // that nothing else releases while the gate is live, and files under 10 MB are
-      // accepted with no prompt at all, so an unbounded run of them is a peer's choice.
-      //
-      // Counted on LOAD, not on insert: a peer sending three files that merely claim to
-      // be images used to evict all three genuine previews with rows that never decoded.
-      inlinePreviews.push(row);
-      while (inlinePreviews.length > MAX_INLINE_PREVIEWS) releasePreview(inlinePreviews.shift());
-      scrollMessages();
-    });
-    img.addEventListener('error', () => {
-      // Declared as an image and is not one: a ZIP named .jpg, or text sent as image/png.
-      // Leaving the broken <img> in place rendered a 0x0 element with no explanation.
-      img.remove();
-      objectUrls.delete(url);
-      URL.revokeObjectURL(url);
-      const note = document.createElement('div');
-      note.className = 'muted small';
-      note.textContent = 'This did not open as an image. Use Save to keep the file as it was sent.';
-      row.appendChild(note);
-      scrollMessages();
-    });
-    img.src = url;
-    row.appendChild(img);
-  }
-
   const save = document.createElement('button');
-  save.className = 'secondary';
+  // save-btn is not decoration: preview.js anchors the inline element above it and the
+  // Open button after it, so the row reads content, Open, Save whichever of the three
+  // this file's type earns.
+  save.className = 'secondary save-btn';
   save.textContent = 'Save';
   save.addEventListener('click', () => saveBlob(meta.blob, meta.name));
   row.appendChild(save);
+  void renderFilePreview(row, meta);
   scrollMessages();
 }
 
@@ -1902,6 +1958,28 @@ function renderOffer(meta) {
     }
   });
   row.appendChild(accept);
+}
+
+// The batch accept row lives in batchui.js and is fetched only when a peer actually offers
+// several files at once. It is the drawing half of the batch feature: the protocol half
+// (parse, validate, bound the grant) is in link.js and stays on the boot path, because a
+// control frame arrives whether or not this module was ever fetched. See the head of
+// tests/size.test.mjs for why anything reachable only after an unmade decision is loaded
+// this way.
+let batchUiMod = null;
+
+async function renderBatchOffer(d) {
+  try {
+    if (!batchUiMod) batchUiMod = await import('./batchui.js');
+    batchUiMod.renderBatchOffer(d, {
+      fileRow, rowTitle, rowStatus, log, scrollMessages, session,
+    });
+  } catch (err) {
+    // Nothing above this catches: the event listener that calls this discards the promise,
+    // so a failed fetch or a throw while drawing would lose the offer in silence and leave
+    // the sender waiting on an accept this side was never able to ask for.
+    log(`could not draw the prompt for these ${d.count} files: ${err.message}`, 'bad');
+  }
 }
 
 function renderProgress({ direction, id, sent, total, name, label = null }) {
@@ -1988,12 +2066,28 @@ async function sendFilesNow(list) {
     }
     return;
   }
+  // Announce the whole set BEFORE the first FILE_START, so the other side draws one Accept
+  // for all of them instead of one per file. Only for more than one: a single send
+  // announces nothing, carries no batch id, and behaves exactly as it did.
+  let batch = null;
+  if (list.length > 1) {
+    try {
+      batch = await session.announceFileBatch(list);
+    } catch (err) {
+      // Never fatal: without the announcement the receiver asks per file, which is what it
+      // did before this, so the files still go. Only the convenience is lost, and losing it
+      // quietly is what would be wrong.
+      log(`could not offer these ${list.length} files as one batch, so the other device will `
+        + `ask about each one: ${err.message}`, 'warn');
+      batch = null;
+    }
+  }
   for (const file of list) {
     if (!session) return;
     // renderProgress reads this to tell a send this side started from a forged one.
     localSends += 1;
     try {
-      await session.sendFile(file);
+      await session.sendFile(file, batch);
     } catch (err) {
       log(`could not send ${file.name}: ${err.message}`, 'bad');
       noteFileOutcome('me', file.name, `Not sent: ${err.message}`);
@@ -2062,7 +2156,7 @@ async function discardSession() {
 }
 
 async function startCreate() {
-  if (!(await confirmNetworkExposure())) return;
+  if (!(await confirmNetworkExposure('create'))) return;
   await discardSession();
 
   // Reset the waiting screen this is about to use. The join, resume and password paths
@@ -2105,17 +2199,29 @@ async function startCreate() {
     // default.
     let drawn = false;
     const revealShare = () => {
+      // The code itself is written synchronously and the panel is revealed synchronously.
+      // Only the canvas waits for the encoder, because the readable code is the thing the
+      // press asked for and the QR is the convenience beside it: making the whole reveal
+      // await a fetch would put a network round trip between the press and the words.
       $('room-code').textContent = formatted;
-      if (!drawn) {
-        try {
-          drawQr($('qr'), encodeQr(link));
-          drawn = true;
-        } catch (err) {
-          log(`could not render a QR code: ${err.message}. Use the link instead.`, 'warn');
-        }
-      }
       $('share-hidden').hidden = true;
       $('share-shown').hidden = false;
+      if (drawn) return;
+      // Set before the await, not after: two fast presses would otherwise both pass the
+      // check and draw the same code twice.
+      drawn = true;
+      loadQr().then(({ encodeQr, drawQr }) => {
+        drawQr($('qr'), encodeQr(link));
+        // Set only after the pixels are actually on the canvas. An empty canvas reads as
+        // fully transparent, which samples as every pixel dark, so "is there a code here
+        // yet" cannot be answered from the bitmap alone: this is the signal that says the
+        // draw landed, for anything waiting on it.
+        $('qr').dataset.drawn = '1';
+      }).catch((err) => {
+        drawn = false;
+        delete $('qr').dataset.drawn;
+        log(`could not render a QR code: ${err.message}. Use the link instead.`, 'warn');
+      });
     };
     const hideShare = () => {
       $('room-code').textContent = '';
@@ -2161,7 +2267,7 @@ async function startJoin(text) {
 
   // After the code is known to be well formed, so a typo gets the typo message rather than
   // a privacy notice it has no way to act on.
-  if (!(await confirmNetworkExposure())) return;
+  if (!(await confirmNetworkExposure('join'))) return;
 
   // Only now pay for the stretch. Cached in crypto.js, so the resume path below and a later
   // reload of this tab do not pay it again.
@@ -2714,7 +2820,11 @@ function afterAgreement() {
 // it. Nothing about a shared file touches the network: it comes back out of the Cache
 // Storage the worker put it in. Deliberately not awaited and never fatal, so a browser
 // with none of this loads the gate exactly as before.
-initShare().then((files) => {
+// Reached by import() rather than a static import for the same reason it was already not
+// awaited: nothing here is needed to open or join a gate, so it must not be one of the
+// files a browser fetches before the page is usable. The behaviour is unchanged, because
+// the result was only ever consumed in a .then().
+import('./share.js').then(({ initShare }) => initShare()).then((files) => {
   if (!files.length) return;
   pendingShare = files;
   log(files.length === 1

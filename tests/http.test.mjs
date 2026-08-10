@@ -98,10 +98,17 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
     !/https?:\/\//.test(csp) && !/\*/.test(csp), csp);
   check("the policy allows neither 'unsafe-inline' nor 'unsafe-eval'",
     !/unsafe-inline|unsafe-eval/.test(csp), csp);
-  // blob: is the one exception and it is same-origin data the page made itself, needed
-  // to preview a received image. It must be confined to images.
-  check('blob: is permitted for images only',
-    /img-src[^;]*blob:/.test(csp) && !/(script|connect|style|font|default)-src[^;]*blob:/.test(csp), csp);
+  // blob: is the one exception and it is same-origin data the page made itself, needed to
+  // preview a received image and, since inline players landed, a received video or audio
+  // file. It must be confined to those two directives: enumerated positively rather than
+  // by listing the directives it must NOT appear in, because that form passes for any
+  // directive nobody thought to add to the deny list, which is how media-src would have
+  // slipped in unreviewed.
+  const blobDirectives = csp.split(';').map((d) => d.trim())
+    .filter((d) => /(^|\s)blob:/.test(d)).map((d) => d.split(/\s+/)[0]).sort();
+  check('blob: is permitted for inline images and media only',
+    JSON.stringify(blobDirectives) === JSON.stringify(['img-src', 'media-src']),
+    `${blobDirectives.join(' ')} || ${csp}`);
 
   const isolation = surfaces[0][1].headers;
   check('the page opens in its own browsing context group',
