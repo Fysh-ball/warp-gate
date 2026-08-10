@@ -107,6 +107,12 @@ try {
   `);
   await a.waitFor("!document.getElementById('screen-home').hidden", { label: 'home screen' });
   await a.eval("document.getElementById('create-btn').click(); return true;");
+  // The pre-flight network notice stands in front of both create and join. Clicking
+  // through it is what a person does, so the test does the same rather than
+  // pre-dismissing it in sessionStorage and skipping the path a real visitor takes.
+  await a.waitFor("!document.getElementById('net-modal').hidden",
+    { timeout: 20000, label: 'network notice shown before a gate is created' });
+  await a.eval("document.getElementById('net-continue').click(); return true;");
   await a.waitFor("!document.getElementById('screen-waiting').hidden", { timeout: 25000, label: 'gate created through Cloudflare' });
   const created = await a.eval(`
     return JSON.stringify({
@@ -131,6 +137,11 @@ try {
   check('a gate code is produced', /^WARP-/.test(code));
 
   const b = await browser.newTab(link);
+  // A joiner arriving on a link meets the same notice, and until it is answered the
+  // gate shows no screen at all, so this has to come before any screen assertion.
+  await b.waitFor("!document.getElementById('net-modal').hidden",
+    { timeout: 20000, label: 'network notice shown to the joiner' });
+  await b.eval("document.getElementById('net-continue').click(); return true;");
   await a.waitFor("!document.getElementById('screen-connected').hidden",
     { timeout: 45000, label: 'creator reached connected over the public path' });
   await b.waitFor("!document.getElementById('screen-connected').hidden",
