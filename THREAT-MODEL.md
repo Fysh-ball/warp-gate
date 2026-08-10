@@ -6,10 +6,19 @@ Written to be precise rather than reassuring. If something is not protected, it 
 
 A 128-bit room secret is generated in the creating browser and never sent to the
 server: it lives in the URL fragment, which browsers do not transmit, and it reaches
-the other device by QR code or by a link you share. The room id the server sees is
-derived from that secret through HKDF, so it reveals nothing. Both devices perform an
-ephemeral ECDH P-256 exchange, mix the room secret into the key schedule as the HKDF
-salt, and prove to each other that they hold the same secret before any data flows.
+each joining device by QR code or by a link you share. The room id the server sees is
+derived from that secret through HKDF, so it reveals nothing. A gate seats up to six
+devices (`WG_MAX_PARTICIPANTS`, operator-configurable), and **every pair of devices**
+performs its own ephemeral ECDH P-256 exchange, mixes the room secret into that
+pair's key schedule as the HKDF salt, and proves to the other end that it holds the
+same secret before any data flows: the exchange is two-party per pair, and a gate is
+a mesh of such pairs.
+An optional room password, if the creator sets one, is stretched with PBKDF2 and
+appended to that salt, so that both the link and the password are then needed to
+derive the same keys.
+A joining device also presents a separate one-way derivation of the secret to the
+server, which lets the server refuse a seat to anyone who does not hold the link
+without learning anything it could decrypt with.
 All application data, and all signalling, is AES-256-GCM under keys derived from that
 schedule.
 
@@ -19,16 +28,46 @@ schedule.
 |---|---|---|
 | The server operator reading messages or files | Payload keys come from ECDH plus a secret the server never receives | Holds only while the server serves honest code: see "You are trusting whoever serves the page" |
 | The server being compromised *after* you loaded the page | It holds no plaintext and no keys at any point. There is no storage layer to breach | None |
-| The server or Cloudflare learning peer IP addresses from the SDP | Signalling payloads are encrypted under a key derived from the room secret, so the relay sees only `{n, c}` | Cloudflare still sees the two client IPs from the HTTP connections themselves |
-| An active man in the middle at the signalling layer | The key schedule mixes the room secret, and both sides exchange an explicit key confirmation before the UI reports "connected" | Someone who obtains the link is not a man in the middle; they are a participant |
+| The server or Cloudflare learning peer IP addresses from the SDP | Signalling payloads are encrypted under a key derived from the room secret, so the relay sees only `{n, c}` | Cloudflare still sees every participant's client IP from the HTTP connections themselves |
+| An active man in the middle at the signalling layer | Each pair's key schedule mixes the room secret, and the two ends of every link exchange an explicit key confirmation before the UI reports that link connected | Someone who obtains the link is not a man in the middle; they are a participant |
+| Someone who obtains the link but not the room password | If a password was set, the key schedule needs it as well: PBKDF2-HMAC-SHA256 at 600,000 iterations, salted with the room secret, appended to the HKDF salt | Only helps if a password was set and did not travel alongside the link. The server does not and cannot enforce it |
 | Recording traffic now to decrypt later | Session keys need the ephemeral ECDH secret, which dies with the tab | None for message and file content |
 | Tampering with any payload | AEAD on every frame; a single altered bit fails authentication and the frame is dropped | None |
 | Replaying a captured frame | A strictly increasing per-direction counter, bound into both the nonce and the authenticated data | None |
 | Passing a file chunk off as a chat message | The frame type is authenticated, so relabelling breaks the tag | None |
-| Guessing a room code to read traffic | The room id is derived from a 128-bit secret; holding the id does not yield the secret, and key confirmation fails | Guessing can deny service, see below |
-| A third device joining | Rooms lock at two participants, each holding an unguessable capability token | None |
+| Guessing a room code to read traffic | The room id is derived from a 128-bit secret; holding the id does not yield the secret, and key confirmation fails | A guessed id can confirm a room exists, and that probe is rate limited. It can no longer take a seat: see the next row |
+| A device without the link taking a seat | Joining requires presenting a proof derived from the room secret (a one-way HKDF value; the server stores only its hash and compares in constant time), and each seated participant holds an unguessable capability token. Rooms also cap at a configured seat limit (`WG_MAX_PARTICIPANTS`, default 6) | Anyone who obtains the link holds the secret, so they can take a seat: they are a participant, not an intruder |
 | Data outliving the session | State is a single in-memory map. No database, no disk, no logs. A restart destroys every room | None |
-| A session being reused after expiry | Two TTLs plus a sweeper, and the room is deleted on sever | None |
+| A session being reused after expiry | Idle, hard and absolute deadlines plus a sweeper, and the room is deleted on sever | None |
+
+## The landing and the gate are separate documents
+
+Everything above about what the page cannot leak rests on one thing: the page loads no
+code from anywhere but this origin. `default-src 'none'` says so, and the browser
+enforces it.
+
+That guarantee is exactly as strong as the weakest thing the same document is allowed
+to load, and a marketing page has commercial reasons to want to load something. So the
+landing (`index.html`, at `/`) and the gate (`app.html`, at `/app`) are two documents,
+with two Content-Security-Policy headers, and no shared script, storage key or JS heap.
+
+- The gate is served with `default-src 'none'` and no exception of any kind. Nothing an
+  operator can configure widens it. `WG_AD_ORIGINS` is matched against the resolved
+  **filename** in `server/index.js`, not against a request path, so no route, redirect
+  or traversal can carry a third-party origin onto it.
+- The landing may be widened by `WG_AD_ORIGINS`, and only for `script-src`, `img-src`
+  and `frame-src`. Never `connect-src`: a sponsor that can open its own connections is
+  a sponsor that can report what it saw. Empty by default, and empty means the two
+  documents get a byte-identical policy.
+- Nothing about a gate is reachable from the landing even in principle. The secret
+  lives in a URL fragment, which is never sent to a server, and a fragment aimed at the
+  landing is handed straight to `/app` before anything else runs.
+
+The tests assert both halves against a server with the variable actually set, because a
+check run only with it unset would pass on a build where the split had been undone.
+
+What this does NOT buy you: it is a containment boundary, not a trust boundary. A
+hostile operator serves both documents and the section below still applies in full.
 
 ## You are trusting whoever serves the page
 
@@ -52,11 +91,15 @@ So the guarantees above should be read precisely:
 What follows from that:
 
 1. **Only use an instance you trust to run honest code.** The only instance the authors
-   operate is **https://wg.fysh.site**. Check the address bar before sending anything
+   operate is **https://warpgate.fysh.site**. Check the address bar before sending anything
    sensitive.
-2. **Anyone may host their own copy**, and the source is public so that they can. An
-   instance someone else runs inherits none of the authors' trust, and the authors
-   cannot vouch for it, audit it, or even know it exists.
+2. **Anyone may host their own copy**, and the project is licensed and built so that
+   they can. An instance someone else runs inherits none of the authors' trust, and the
+   authors cannot vouch for it, audit it, or even know it exists.
+   The source is published at `https://github.com/Fysh-ball/warp-gate` and the running
+   site serves that link at `/api/config`, so point 3 below is actionable: you can read
+   what is meant to be running and host it yourself. Warp Gate is AGPL-3.0 and section 13
+   requires that offer to be a real one.
 3. **If you need certainty, host it yourself** from source you have read. That is the
    only configuration where the trust question has a definite answer, and it is why the
    project has no dependencies and no build step: the files served are the files in the
@@ -69,18 +112,24 @@ What follows from that:
 These are real limits, not hypotheticals.
 
 - **A compromised device, browser or extension** on either end. Everything is visible there.
-- **The other person.** Anyone holding the link is a legitimate participant. They can save,
-  screenshot, and forward anything you send. There is no way to prevent this and Warp Gate
-  does not pretend to.
-- **The two peers learning each other's IP address.** This is inherent to a direct
-  connection and is the property most at odds with using Warp Gate between identities you
-  want kept apart. It is stated in the onboarding for that reason.
+- **The other participants.** Anyone holding the link is a legitimate participant. They can
+  save, screenshot, and forward anything you send. There is no way to prevent this and Warp
+  Gate does not pretend to.
+- **Participants learning each other's IP addresses.** Every pair in a gate connects
+  directly, so every participant learns every other participant's address. This is
+  inherent to a direct connection and is the property most at odds with using Warp Gate
+  between identities you want kept apart. It is stated in the onboarding for that reason.
 - **Cloudflare metadata**, when served through a tunnel: client IPs, timing, room ids,
   request sizes and session duration. Cloudflare terminates TLS in that topology. The
   payloads it carries are ciphertext, but the metadata is real. The same applies to the
   STUN server, which is deliberately Cloudflare's: it learns each device's public
   address, which Cloudflare already observes from the signalling connection itself. The
-  point of choosing it is that it adds no party that was not already there.
+  point of choosing it is that it adds no party that was not already there. STUN is
+  **opt-in**: a fresh checkout advertises no STUN server and starts no UDP listener, so
+  a self-hoster who copies the repository does not get an outward-facing service they
+  did not ask for. `warpgate.fysh.site` sets `WG_STUN_URL` to Cloudflare's in its compose
+  file, and the choice is therefore visible in the deployment rather than implicit in
+  the code.
 - **Your real address, even behind a proxy.** WebRTC discovers the network address of
   the interface it actually sends from. Loading the page through a proxy does not
   change that, which is why the onboarding says Warp Gate is confidential, not
@@ -92,18 +141,57 @@ These are real limits, not hypotheticals.
 - **Clipboard clearing.** Best effort only. Other applications may already have taken a
   copy, and no browser guarantees a clipboard can be cleared.
 - **Anonymity.** Warp Gate is confidential, not anonymous.
-- **Denial of service.** Someone who guesses a room id can occupy the second slot and stop
-  the intended device joining. They learn nothing, and key confirmation fails, but they
-  can be a nuisance. Re-create the gate if it happens.
+- **Denial of service.** Someone who merely guesses a room id can no longer occupy a
+  seat: joining requires proof of knowledge of the room secret, and the proof is checked
+  before the server reveals anything about the room's occupancy. What remains is
+  ordinary resource flooding, which is rate limited, and a person who already holds the
+  link taking a seat, which is the "other person" case above. Re-create the gate if a
+  seat is held by someone unwanted.
 
 ## Design decisions worth knowing
 
-**There is no password option.** A short password that a human speaks aloud, hashed into
-a key, can be attacked offline by exactly the adversary such a password is meant to stop.
-Doing it properly needs a PAKE such as CPace, and no reviewed browser implementation was
-available under this project's no-dependency constraint. A 128-bit secret carried by the
-link and the QR code is strictly stronger, and the optional five digit verification code
-covers the "say it aloud" case.
+**The room password is a second factor for a leaked link, not a substitute for the
+link.** An earlier version of this document said there was no password option. There is
+one now, and this is what it does and does not do.
+
+When the creator sets a password, it is stretched with **PBKDF2-HMAC-SHA256 at 600,000
+iterations**, salted with the 128-bit room secret itself (`secret || "wg/v1/password"`),
+and the result is **appended to the room secret in the HKDF salt** of the session key
+schedule. So the derived keys depend on both values. Someone who has the link but not
+the password derives different keys, fails key confirmation, and gets nothing.
+
+Why that is not the trap a spoken password usually is: the password is never the only
+secret. The 128-bit link secret is still there and still doing the authentication work.
+An observer of the signalling channel has no offline target to grind, because they do
+not hold the link secret either. The password's actual job is the case where **the link
+leaks** but the password did not travel with it: pasted into the wrong chat, shoulder
+surfed, screenshotted, left in a scrollback. 600,000 PBKDF2 iterations then make each
+guess expensive for someone who has the link and is guessing the password.
+
+What it is not:
+
+- **The server does not enforce it.** The room carries a `requiresPassword` flag, the
+  server stores it and reports it so the joining page can prompt, and that is all it is:
+  **advisory**. The server never sees the password, cannot see it, and cannot check one.
+  Do not read the flag as an access control.
+- **It is not a PAKE.** A password used as the sole secret would still need CPace or
+  similar, and no reviewed browser implementation is obtainable under this project's
+  no-dependency constraint. That reasoning has not changed. What changed is that the
+  password here is layered on top of a 128-bit secret rather than standing in for one.
+- **It does not stop someone who has the link from occupying a seat.** The server
+  admits anyone who proves knowledge of the link secret, and the password never reaches
+  it, so a person with the link but not the password can still take a seat: they derive
+  different keys, fail confirmation and read nothing, but they hold the seat until the
+  gate is re-created. (A guesser who has only a room id cannot take a seat at all:
+  joining requires a proof derived from the link secret. See "Denial of service"
+  above.)
+
+**`/api/health` returns liveness and nothing else.** It answers `{"ok":true}`. It used
+to also publish a live count of open gates, which was a usage side channel on a tool
+whose whole premise is that the server learns nothing: anyone could poll it and watch
+when the instance was in use and by roughly how many people, and someone guessing room
+ids could use it as a progress meter. The container healthcheck only ever needed `ok`,
+so the count was removed rather than access-controlled.
 
 **There is no whole-file hash.** Every chunk is individually authenticated and bound to
 its position in the sequence, so a file-level hash would add no security property. What
@@ -116,4 +204,6 @@ would carry ciphertext only, and would be labelled in the interface when in use.
 **Key material is non-extractable.** Session keys are `CryptoKey` objects the browser
 will not export, so the raw bytes never enter JavaScript memory. Dropping the reference
 on sever is the strongest erasure a browser offers, since a JavaScript byte array cannot
-be reliably wiped.
+be reliably wiped. (One narrow engine fallback exists: a browser that refuses the direct
+ECDH-to-HKDF derivation briefly holds the shared secret as bytes, which are zeroed
+immediately, and the fallback announces itself rather than passing silently.)

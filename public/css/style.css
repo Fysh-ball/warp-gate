@@ -5,12 +5,100 @@
   --line: #2a323c;
   --text: #e6ebf0;
   --muted: #8b98a6;
-  --accent: #4bd0c0;
-  --accent-dim: #1d5f58;
+  --accent: #e8a33d;
+  --accent-dim: #6d4a12;
+  /* Teal is no longer the brand colour, it means "connected". */
+  --live: #4bd0c0;
   --danger: #ff6b5e;
   --warn: #ffc857;
   --ok: #57d977;
   --radius: 10px;
+  --radius-sm: 6px;
+  --radius-pill: 999px;
+
+  /* ---- one type system, named once ------------------------------------------------
+     Prose is the sans stack. Anything that is DATA rather than prose is the mono stack
+     with tabular figures: gate codes, byte counts, timers, verification codes, ports,
+     and the uppercase eyebrows that open a section. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Comfortable reading measure. Prose wider than this is harder to read on a big
+     screen, which is why widening a page is never just raising its max-width. */
+  --measure: 68ch;
+
+  /* ---- semantic lines and washes --------------------------------------------------
+     These used to be six copies of #5a4a20 and friends scattered through the file, so
+     the light palette could not restate them and a warn border stayed dark-on-white.
+     Every one of them is a token now, and every token has a light value below. */
+  /* A rule, not a border. --line draws the edge of a PANEL and is meant to be seen;
+     this one separates two rows of a list and is meant to be felt. They have to be two
+     tokens: a ruled list drawn in --line reads as a stack of borderless boxes, which is
+     the thing the onboarding screen was redrawn to stop doing. */
+  --hairline: #1e242d;
+  --line-warn: #5a4a20;
+  --line-live: #1f5b54;
+  --line-danger: #6b2b26;
+  --line-ok: #245c33;
+  --warn-wash: rgba(255, 200, 87, 0.10);
+  --warn-wash-strong: rgba(255, 200, 87, 0.16);
+  --accent-wash: rgba(232, 163, 61, 0.07);
+  /* Text printed ON the accent. Amber is light, so the dark theme puts near-black on
+     it; the light theme's accent is a dark amber and needs white. Without this token
+     a.kofi shipped #231703 on #8a5410 in light mode, which is 2.6:1. */
+  --on-accent: #231703;
+  /* Small accent-coloured text (10-13px labels). The light accent is 3.99:1 on a card,
+     which is fine for a 28px word and short of AA for a 10.5px label. */
+  --accent-text: var(--accent);
+  /* Always paper, in both themes: a QR code is only scannable as dark-on-white. */
+  --qr-paper: #ffffff;
+  /* Full-bleed scrim over the page (drop veil, status log). */
+  --scrim: rgba(11, 13, 16, 0.96);
+  --scrim-veil: rgba(11, 13, 16, 0.86);
+  --shadow-lift: 0 24px 60px -40px rgba(0, 0, 0, 0.55);
+
+  /* The height the status log may grow to. It is the bottom row of the page's flex
+     column, so this bounds the row rather than reserving space under an overlay. */
+  --log-max: 26vh;
+
+  /* ---- the shell -------------------------------------------------------------------
+     ONE container width for the whole application, and it is a function of the VIEWPORT
+     rather than a fixed number of pixels. `min(2160px, 90vw)` means the window keeps 5%
+     of itself as margin on each side from a phone all the way to 2400px: the column
+     grows when the window grows instead of sitting in the middle of it.
+
+     Measured before this rule, at 1920x1080: onboarding was a 1280px column with 313px
+     of dead margin on the left and 328px on the right, which is 16% of the window doing
+     nothing, and the home screen's Create button was below the fold at every width from
+     390px to 1920px. Both were the same bug: a phone layout served to a desktop.
+
+     The ceiling is 2160px rather than the 1680px first tried here, because 1680 put that
+     same 16% of dead margin back on a 2560px monitor: it just moved the bug to a bigger
+     screen. The ceiling is NOT what keeps text readable. Every run of prose carries its
+     own measure (--measure, or a local ch cap: see .ob-head, .lp-lede, main.legal li), so
+     line length is bounded whatever the shell does. What the ceiling bounds is how far
+     the two column grids may stretch, and 2160 leaves 7.8% margin at 2560 while changing
+     nothing at or below 2400, where 90vw is the smaller term and already wins.
+
+     Box-sizing is border-box everywhere, so the 16px of gutter INSIDE the shell is part
+     of this number and the header can align to the same edge with one calc. */
+  --shell: 100%;
+  --gutter: 16px;
+  /* The legal pages size their column to the measure plus this, so it is a token rather
+     than a literal in three places: change it and the column follows. */
+  --legal-pad: 18px;
+}
+
+@media (min-width: 700px) {
+  :root { --shell: min(2160px, 90vw); }
+}
+/* A phone has no width to spend on a gutter that is not text. Below this the legal
+   column keeps every pixel it can for the prose, which at 360px is the difference
+   between a comfortable line and a ladder of three-word rows. */
+@media (max-width: 420px) {
+  :root { --legal-pad: 13px; }
+}
+@media (min-width: 1100px) {
+  :root { --legal-pad: 26px; }
 }
 
 * { box-sizing: border-box; }
@@ -26,7 +114,7 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 16px/1.55 var(--font-sans);
   -webkit-text-size-adjust: 100%;
 }
 
@@ -35,7 +123,12 @@ html, body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 16px;
+  /* The rule under the header runs the full width of the window; the brand and the
+     badge line up with the shell. One calc rather than a second centred wrapper.
+     No + var(--gutter): the bar is chrome, not a column of prose, and inset to the
+     text column as well the wordmark read as floating in the middle of nowhere. It
+     hangs a gutter outboard of the content now, which is where a masthead belongs. */
+  padding: 12px max(12px, calc((100% - var(--shell)) / 2));
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   position: sticky;
@@ -43,19 +136,40 @@ html, body {
   z-index: 5;
 }
 
+/* The wordmark is the only thing in the bar carrying the name, and at 14px in a 49px
+   bar it read as a caption of the rule underneath rather than as the masthead. */
 .brand {
   font-weight: 700;
-  letter-spacing: 0.18em;
-  font-size: 14px;
+  letter-spacing: 0.2em;
+  font-size: 17px;
+  line-height: 1.2;
   color: var(--accent);
 }
 
-.bar-right { display: flex; align-items: center; gap: 10px; }
+.bar-right { display: flex; align-items: center; gap: 6px; }
+
+/* The two marks in the corner: source, and the tip jar. Square hit areas rather than
+   bare glyphs, because a 17px icon is a 17px target and these are tapped on phones. */
+.bar-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-decoration: none;
+  /* The colour moves on hover, the box does not: a bar that reflows under the cursor
+     is worse than one that does nothing. */
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.bar-ico .ico { width: 19px; height: 19px; vertical-align: 0; }
+.bar-ico:hover, .bar-ico:focus-visible { color: var(--accent); background: var(--panel-2); }
 
 .badge {
   display: inline-block;
   padding: 3px 9px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 12px;
   font-weight: 600;
   border: 1px solid var(--line);
@@ -64,14 +178,24 @@ html, body {
   white-space: nowrap;
 }
 .badge-idle { color: var(--muted); }
-.badge-work { color: var(--warn); border-color: #5a4a20; }
-.badge-direct { color: var(--ok); border-color: #245c33; }
-.badge-relay { color: var(--warn); border-color: #5a4a20; }
-.badge-bad { color: var(--danger); border-color: #6b2b26; }
+.badge-work { color: var(--warn); border-color: var(--line-warn); }
+.badge-direct { color: var(--live); border-color: var(--line-live); }
+.badge-relay { color: var(--warn); border-color: var(--line-warn); }
+.badge-bad { color: var(--danger); border-color: var(--line-danger); }
 
 .ttl { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
 
-main { max-width: 640px; margin: 0 auto; padding: 20px 16px 4px; }
+/* Every content row takes the shell. Nothing carries a max-width of its own any more:
+   the screens used to each set their own with `main:has(> #screen-x:not([hidden]))`,
+   which meant seven numbers to keep consistent and seven chances for one of them to be
+   a phone column. */
+main, .extras, .banner, .foot {
+  width: var(--shell);
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+main { padding: 20px var(--gutter) 4px; }
 
 h1 { font-size: 20px; line-height: 1.35; margin: 8px 0 18px; font-weight: 650; }
 h2 { font-size: 15px; margin: 0 0 6px; font-weight: 650; }
@@ -88,12 +212,27 @@ h2 { font-size: 15px; margin: 0 0 6px; font-weight: 650; }
 }
 .note p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
 .note ul { margin: 6px 0 0 18px; color: var(--muted); font-size: 14px; }
-.note.warn { border-color: #5a4a20; }
+.note.warn { border-color: var(--line-warn); }
 .note.warn h2 { color: var(--warn); }
 
 label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 
-input[type=text], input[type=file], select, textarea {
+/* Gives a control a real <label for> that screen readers announce without adding
+   anything to the layout. A placeholder is not an accessible name: it disappears the
+   moment the field is typed into. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+input[type=text], input[type=password], input[type=file], select, textarea {
   width: 100%;
   padding: 11px 12px;
   background: var(--panel-2);
@@ -103,7 +242,7 @@ input[type=text], input[type=file], select, textarea {
   font: inherit;
   margin-bottom: 10px;
 }
-textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
+textarea { resize: vertical; font-family: var(--font-mono); font-size: 14px; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
 
 button {
@@ -115,9 +254,9 @@ button {
   cursor: pointer;
   width: 100%;
 }
-button.primary { background: var(--accent); color: #06211e; }
+button.primary { background: var(--accent); color: var(--on-accent); }
 button.secondary { background: var(--panel-2); color: var(--text); border-color: var(--line); }
-button.danger { background: transparent; color: var(--danger); border-color: #6b2b26; margin-top: 20px; }
+button.danger { background: transparent; color: var(--danger); border-color: var(--line-danger); margin-top: 20px; }
 button.link { background: none; border: none; color: var(--accent); padding: 0; width: auto; text-decoration: underline; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -127,7 +266,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .qr-wrap {
   display: flex;
   justify-content: center;
-  background: #ffffff;
+  background: var(--qr-paper);
   border-radius: var(--radius);
   padding: 14px;
   margin-bottom: 16px;
@@ -143,15 +282,52 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .code-block .label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 .code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 15px;
   letter-spacing: 0.06em;
-  word-break: break-all;
+  /* Hyphen joined words, so the natural break opportunities are the hyphens themselves.
+     break-all was right for one unbroken base32 string and splits MEADOW into MEAD / OW
+     here, which is exactly the code somebody is trying to read aloud. `anywhere` stays as
+     the last resort for a very narrow phone, and cannot trigger at seven letters. */
+  word-break: normal;
+  overflow-wrap: anywhere;
   color: var(--accent);
 }
 
 .route-line { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
-#sas { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); letter-spacing: 0.15em; }
+
+/* Who is in the gate. One pill per participant, this device first. It lives inside
+   .route-line rather than as a grid child of #screen-connected, because that grid places
+   every one of its children by hand and an unplaced item would land in somebody's cell.
+   [hidden] is display:none !important globally, so an empty roster really disappears. */
+.roster { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* Pills, so the roster scans as a row of people rather than as a run-on sentence. */
+.roster .who-chip {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 4px 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* The name is set in the page font. The pill's monospace and letter-spacing exist for
+   codes, and a two-word name typeset in them reads as a serial number rather than as
+   something you would say out loud. The verification code keeps them, because it is one. */
+.roster .who-name {
+  font-family: var(--font-sans);
+  letter-spacing: normal;
+}
+.roster .who-sas { font-variant-numeric: tabular-nums; }
+.roster .who-chip.self { border-color: var(--accent); color: var(--accent); }
+.roster .who-chip.live { border-color: var(--line-ok); color: var(--text); }
+/* A peer that is not connected right now must not read the same as one that is. */
+.roster .who-chip.away { opacity: 0.6; font-style: italic; }
+
+/* With more than two people in the gate, a message says which of them it came from. */
+.msg .who.from-peer { color: var(--muted); }
 
 .tabs { display: flex; gap: 6px; margin: 16px 0 12px; }
 .tab {
@@ -190,6 +366,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-bottom: 8px;
   min-height: 76px;
   max-height: 220px;
+  /* Without this, one unbreakable token locks up the tab: Chromium laying out a
+     64 KiB word blocked the main thread for 8.5 seconds, and 200 KiB for 29. The
+     same bytes with newlines cost 377ms. A pasted key, JWT or password is exactly
+     that shape, so this is the composer's most common input, not an edge case.
+     .msg-text already wraps this way; the composer was simply missed. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-family: inherit;
   font-size: 15px;
   background: var(--panel-2);
@@ -220,7 +403,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(11, 13, 16, 0.86);
+  background: var(--scrim-veil);
   border: 3px dashed var(--accent);
   color: var(--accent);
   font-size: 22px;
@@ -252,8 +435,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--warn);
-  border: 1px solid #5a4a20;
-  border-radius: 999px;
+  border: 1px solid var(--line-warn);
+  border-radius: var(--radius-pill);
   padding: 1px 7px;
   margin-bottom: 5px;
 }
@@ -268,7 +451,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 14px;
 }
 .secret-value {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   word-break: break-all;
   background: var(--panel-2);
   border-radius: 6px;
@@ -276,7 +459,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin: 6px 0;
   white-space: pre-wrap;
 }
-.secret-value.masked { color: transparent; text-shadow: 0 0 9px var(--muted); user-select: none; }
+/* While masked the plaintext is not in the DOM at all: a fixed placeholder stands in
+   for it. So this styles the placeholder, and deliberately does not blur real text.
+   A blur still shows length and word shape on screen and in any screenshot; an even
+   run of dots shows neither. */
+.secret-value.masked {
+  color: var(--muted);
+  letter-spacing: 0.22em;
+  user-select: none;
+}
 .secret-actions { display: flex; gap: 8px; }
 .secret-actions button { width: auto; flex: 1; padding: 7px 10px; font-size: 13px; }
 
@@ -284,18 +475,88 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
 
 .error { color: var(--danger); font-size: 14px; }
 
+/* ---------------------------------------------- status log, and not covering things
+
+   The log used to be a fixed overlay with a padding reservation under the footer. That
+   reserves space at the END of the document and does nothing about the middle of it: at
+   any other scroll position the panel simply painted over whatever was beneath it. On a
+   browser without showSaveFilePicker the capability sentence made the panel permanent,
+   so the bottom 60px of EVERY screen was covered for the whole session.
+
+   It is a layout row now, not an overlay. `body` is a viewport-tall flex column of
+   [ .page | .log ], `.page` is the scroll container, and the log is the bottom row. The
+   scrollable area is therefore the viewport minus the log, and the two cannot intersect
+   at any scroll offset. `position: fixed` is kept as the default so that engines without
+   :has(), and the legal pages which have no `.page`, still get a visible log. */
 .log {
   position: fixed;
   left: 0; right: 0; bottom: 0;
   padding: 8px 14px;
-  background: rgba(11, 13, 16, 0.96);
+  background: var(--scrim);
   border-top: 1px solid var(--line);
-  font-size: 12.5px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--muted);
-  max-height: 26vh;
+  max-height: var(--log-max);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Above the sticky bar, below the drop veil. */
+  z-index: 40;
 }
 .log:empty { display: none; }
+
+@supports selector(:has(*)) {
+  body:has(> .page) {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  body:has(> .page) > .page {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    /* A flex column so that `order` can move a page-level note without moving it in the
+       DOM. Everything defaults to order 0 and stays exactly where it was written. */
+    display: flex;
+    flex-direction: column;
+  }
+  /* A block child of a flex column with `margin: 0 auto` is sized to its CONTENT, not
+     stretched: auto cross-axis margins switch stretch off. Without this, `main` stopped
+     honouring its own width and shrank to whatever its widest line happened to be. The
+     header and the status log take the whole window; the content rows take the shell,
+     and they have to say so HERE because this selector out-specifies a bare `main`. */
+  body:has(> .page) > .page > * { width: 100%; }
+  body:has(> .page) > .page > main,
+  body:has(> .page) > .page > .banner,
+  body:has(> .page) > .page > #extras,
+  body:has(> .page) > .page > .foot { width: var(--shell); max-width: 100%; }
+  body:has(> .page) > .page > #extras { order: 1; }
+  /* margin-top:auto in a flex column eats the free space ABOVE the footer, so on a short
+     screen it sits on the bottom edge instead of floating halfway up with dead space
+     under it. On a screen taller than the viewport there is no free space and this is a
+     no-op, so it never pushes the footer off the end of long content. The connected
+     screen overrides it back to 0: there `main` is the thing that grows. */
+  body:has(> .page) > .page > .foot { order: 2; margin-top: auto; }
+  /* What this browser can RECEIVE is a standing fact worth knowing, and it is not the
+     headline of the consent screen. It used to be the first thing on the page at every
+     width above 900px, so the first sentence a new visitor read was a caveat about file
+     sizes. `order` moves it below the screen without moving it in the DOM, so the
+     reading order for assistive tech is unchanged. */
+  body:has(> .page) > .page > #receive-note { order: 1; }
+  body:has(> .page) > .log {
+    position: static;
+    flex: 0 0 auto;
+  }
+}
+
+/* Engines without :has() keep the overlay, so they keep the reservation that goes with
+   it: better a strip of dead space at the foot than a buried Sever button. */
+@supports not selector(:has(*)) {
+  .foot { padding-bottom: calc(var(--log-max) + 16px); }
+}
 .log div { margin: 2px 0; }
 .log .bad { color: var(--danger); }
 .log .warn { color: var(--warn); }
@@ -312,7 +573,7 @@ details.disc {
   margin-bottom: 10px;
   overflow: hidden;
 }
-details.disc.warn { border-color: #5a4a20; }
+details.disc.warn { border-color: var(--line-warn); }
 details.disc.compact { margin-top: 14px; background: transparent; }
 
 details.disc > summary {
@@ -368,7 +629,7 @@ details.disc.warn .disc-title { color: var(--warn); }
 /* ---------------------------------------------- diagnostics */
 
 pre.diag {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12.5px;
   color: var(--muted);
   white-space: pre-wrap;
@@ -386,8 +647,10 @@ pre.diag {
   display: flex;
   gap: 18px;
   justify-content: center;
-  padding: 12px 16px 64px;
+  padding: 18px var(--gutter) 26px;
   font-size: 12.5px;
+  border-top: 1px solid var(--line);
+  margin-top: 30px;
 }
 .foot a { color: var(--muted); text-decoration: none; }
 .foot a:hover { color: var(--accent); text-decoration: underline; }
@@ -404,7 +667,7 @@ main.legal a { color: var(--accent); }
 main.legal strong { color: var(--text); }
 
 .fillme {
-  background: rgba(255, 200, 87, 0.16);
+  background: var(--warn-wash-strong);
   border: 1px dashed var(--warn);
   border-radius: 4px;
   padding: 0 5px;
@@ -415,10 +678,12 @@ main.legal strong { color: var(--text); }
 /* ---------------------------------------------- capability banner */
 
 .banner {
-  max-width: 640px;
-  margin: 14px auto 0;
-  padding: 12px 14px;
-  background: rgba(255, 200, 87, 0.1);
+  position: relative;
+  margin-top: 14px;
+  /* The right pad is the close button's 28px plus its 8px inset, so the heading and the
+     prose wrap before they reach it rather than running underneath it. */
+  padding: 12px 50px 12px 14px;
+  background: var(--warn-wash);
   border: 1px solid var(--warn);
   border-radius: var(--radius);
   color: var(--text);
@@ -427,13 +692,36 @@ main.legal strong { color: var(--text); }
 }
 .banner strong { display: block; color: var(--warn); margin-bottom: 4px; }
 /* Informational variant: a limitation worth knowing, not a failure. */
-.banner.note { background: rgba(75, 208, 192, 0.07); border-color: var(--accent-dim); }
+.banner.note { background: var(--accent-wash); border-color: var(--accent-dim); }
 .banner.note strong { color: var(--accent); }
-.banner code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.banner code { font-family: var(--font-mono); }
 .banner-steps { margin: 8px 0 10px; padding-left: 20px; color: var(--muted); }
 .banner-steps li { margin-bottom: 3px; }
 .banner .muted { margin: 6px 0; }
 .banner button { width: auto; padding: 7px 14px; font-size: 13px; margin-top: 4px; }
+/* Comes after `.banner button` deliberately: same specificity, so the later rule wins
+   and the close button keeps its own square shape. */
+.banner-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 0;
+  padding: 0;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+.banner-close:hover,
+.banner-close:focus-visible { color: var(--text); background: var(--panel-2); border-color: var(--line); }
 
 .path-row { display: flex; gap: 8px; align-items: stretch; margin: 8px 0 4px; }
 .path-row code {
@@ -469,7 +757,7 @@ main.legal strong { color: var(--text); }
 
 /* ---------------------------------------------- extras: bridge, steps, support */
 
-.extras { max-width: 640px; margin: 0 auto; padding: 8px 16px 8px; }
+.extras { padding: 8px var(--gutter); }
 
 .bridge { text-align: center; margin: 6px 0 20px; }
 .bridge svg { width: 100%; max-width: 380px; height: auto; }
@@ -517,22 +805,78 @@ main.legal strong { color: var(--text); }
   .steps { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* ---------------------------------------------- icons */
+
+/* The sprite is never painted; <use> clones out of it regardless. */
+.icon-sprite { display: none; }
+
+.ico {
+  width: 1em;
+  height: 1em;
+  /* The glyph sits on the text baseline rather than the line box, so a mark next to a
+     word lines up with the word instead of hanging below it. */
+  vertical-align: -0.125em;
+  flex: none;
+}
+
 /* ---------------------------------------------- support */
 
-/* Selector must out-specify `.disc-body a`, which would otherwise colour this link
-   accent-on-accent and render the label invisible. */
-.disc-body a.kofi, a.kofi {
-  display: block;
-  text-align: center;
-  background: var(--accent);
-  color: #06211e;
-  font-weight: 650;
-  padding: 11px 16px;
-  border-radius: var(--radius);
-  text-decoration: none;
-  margin: 12px 0 14px;
+/* This was a collapsed <details> that read as a footnote. It is a section now, in the
+   same shape as the landing's own sections: eyebrow, headline, lede, then a grid. */
+.support { margin: 30px 0 6px; }
+.support .lp-lede { margin-bottom: 18px; }
+
+.support-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1fr;
 }
-a.kofi:hover { filter: brightness(1.08); }
+@media (min-width: 700px) {
+  .support-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* Four across only when a card can still hold a wrapped Monero address without becoming
+   a column of single characters. Below that the coins keep the full row. */
+@media (min-width: 1200px) {
+  .support-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+.support-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  text-decoration: none;
+  color: var(--text);
+}
+a.support-card:hover { border-color: var(--accent-dim); }
+.support-mark {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.support-name { font-weight: 650; font-size: 15px; }
+.support-note { color: var(--muted); font-size: 13px; }
+
+/* The Ko-fi card is the lead action, so it is the one that carries the accent fill.
+   Selector must out-specify `.disc-body a` and `.support-card`, either of which would
+   otherwise colour this accent-on-accent and render the label invisible. */
+.disc-body a.kofi, a.kofi.support-card, a.kofi {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 650;
+  text-decoration: none;
+}
+a.kofi .support-mark, a.kofi .support-note { color: var(--on-accent); }
+a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
+
+/* The footer mark sits inline with its label. */
+.foot-gh { display: inline-flex; align-items: center; gap: 6px; }
 
 .coin {
   background: var(--panel-2);
@@ -541,18 +885,22 @@ a.kofi:hover { filter: brightness(1.08); }
   padding: 11px 12px;
   margin-bottom: 10px;
 }
+/* Inside the support grid the card already draws the panel, so the coin does not draw
+   a second one inside it. */
+.support-grid .coin { margin-bottom: 0; padding: 14px; }
+.support-grid .coin .coin-addr, .support-grid .coin .coin-actions { width: 100%; }
 .coin-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
 .coin-name { font-weight: 620; font-size: 14px; }
 .coin-tick {
   font-size: 11px;
   color: var(--accent);
   border: 1px solid var(--accent-dim);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 1px 7px;
 }
 .coin-addr {
   display: block;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--text);
@@ -564,27 +912,118 @@ a.kofi:hover { filter: brightness(1.08); }
 }
 .coin-actions { display: flex; gap: 8px; }
 .coin-actions button { flex: 1; padding: 8px 10px; font-size: 13px; }
-.coin-qr {
+/* ---------------------------------------------- QR lightbox
+   Replaces the panel that used to open inside the card. The code is scanned by holding
+   a phone to the screen, so it gets the middle of the viewport and a dimmed page behind
+   it instead of a slot in a four column grid. */
+.qr-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+/* The base rule sets display:flex, which beats the hidden attribute's UA style. Without
+   this the overlay is "hidden" and still painted over the whole page. */
+.qr-modal[hidden] { display: none; }
+.qr-modal.qr-open { opacity: 1; }
+
+.qr-modal-scrim {
+  position: absolute;
+  inset: 0;
+  /* Grey, not black: the page stays legible behind the code, which is what tells you
+     the site is still there and you are looking at something on top of it. */
+  background: rgba(12, 15, 19, 0.66);
+}
+
+.qr-modal-panel {
+  position: relative;
+  width: min(360px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  transform: translateY(8px) scale(0.98);
+  transition: transform 0.18s cubic-bezier(0.19, 1, 0.22, 1);
+}
+.qr-modal.qr-open .qr-modal-panel { transform: none; }
+
+.qr-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.qr-modal-title { font-size: 15px; font-weight: 650; margin: 0; }
+.qr-modal-close {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.qr-modal-close:hover { border-color: var(--accent); color: var(--accent); }
+
+.qr-modal-paper {
   display: flex;
   justify-content: center;
-  background: #ffffff;
+  background: var(--qr-paper);
   border-radius: 8px;
-  padding: 10px;
-  margin-top: 10px;
+  padding: 12px;
+  margin: 12px 0;
 }
-.coin-qr canvas { width: 100%; max-width: 220px; height: auto; image-rendering: pixelated; }
+/* pixelated, not smooth: a scaled QR with interpolated edges is measurably harder for
+   a phone camera to lock onto. */
+.qr-modal-paper canvas { width: 100%; max-width: 260px; height: auto; image-rendering: pixelated; }
+
+.qr-modal-addr {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: break-all;
+  color: var(--text);
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qr-modal, .qr-modal-panel { transition: none; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .bar::after, .bridge .flow { animation: none; }
 }
 
+/* The light palette. Every token the dark one defines is restated here, including the
+   semantic ones: --warn and --ok used to be left alone on the theory that they only ever
+   appeared on a dark panel, and #ffc857 on a white card is 1.7:1. A tag, a chip, a warn
+   heading and every 'warn' line in the status log were all unreadable in light mode. */
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f6f8fa; --panel: #ffffff; --panel-2: #eef2f6; --line: #d3dbe3;
-    --text: #101418; --muted: #5a6672; --accent: #0e8f80; --accent-dim: #9fd8d1;
+    --text: #101418; --muted: #55616d; --accent: #8a5410; --accent-dim: #e3c391; --live: #0b7a6b;
+    --warn: #8a6100; --ok: #16704a; --danger: #b3261e;
+    --line-warn: #d0a83a; --line-live: #7fbdb4; --line-danger: #e0a49c; --line-ok: #4aa863;
+    --warn-wash: rgba(180, 130, 0, 0.10);
+    --warn-wash-strong: rgba(180, 130, 0, 0.16);
+    --accent-wash: rgba(138, 84, 16, 0.06);
+    --on-accent: #ffffff;
+    --accent-text: #7a490e;
+    --scrim: rgba(246, 248, 250, 0.97);
+    --scrim-veil: rgba(246, 248, 250, 0.90);
+    --shadow-lift: 0 24px 60px -42px rgba(16, 20, 24, 0.35);
   }
-  button.primary { color: #ffffff; }
-  .log { background: rgba(246, 248, 250, 0.96); }
 }
 
 /* ---------------------------------------------- post-sever transcript */
@@ -596,5 +1035,1295 @@ a.kofi:hover { filter: brightness(1.08); }
   background: var(--panel-2);
   opacity: 0.95;
 }
-.messages.transcript .composer-box { display: none; }
 #clear-transcript { margin-top: 12px; }
+
+/* ---------------------------------------------------------------------------
+   Desktop layout for the connected screen.
+
+   The conversation takes the space; the things you consult rather than read (the
+   verification code, connection details, the burn control) sit in a rail beside it.
+   The transcript fills the column height at every width, so there is ONE scrollbar
+   instead of a small box inside a big page with dead space underneath it.
+   --------------------------------------------------------------------------- */
+/* The thread fills the column at EVERY width, not only on a desktop grid. It used to
+   sit in a 46vh box with whatever was left over painted empty underneath: at 768x1024
+   that was 301px of nothing below the composer. A flex column pinned to the viewport
+   height, with the transcript as the only growing row, means the space goes to the
+   conversation and there is exactly one scrollbar on the screen. */
+#screen-connected {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Fill the height by LAYOUT rather than by arithmetic. This used to be
+   `min-height: calc(100vh - 132px - var(--log-h))`, and the 132 was a guess at the
+   header plus main's padding: measured, it was 149 at 2560x1440, so the composer sat
+   33px below the bottom of the window on the widest screen and the page grew a
+   scrollbar it did not need. `.page` is already a viewport-tall flex column whose
+   height excludes the status log, so making `main` a growing row of it and the screen
+   a growing row of `main` gets the same result with no constant to be wrong.
+
+   `flex: 1 1 auto` without `min-height: 0`: the screen fills spare space when there is
+   any, and is still at least its own min-content tall when there is not, so a short
+   window scrolls the page instead of squashing the composer under the footer. */
+@supports selector(:has(*)) {
+  body:has(> .page) > .page > main:has(> #screen-connected:not([hidden])) {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+  }
+  main:has(> #screen-connected:not([hidden])) > #screen-connected { flex: 1 1 auto; }
+}
+#screen-connected > .route-line { margin: 0; flex: 0 0 auto; order: 0; }
+/* The rail's three children are laid out as siblings of the transcript on a narrow
+   screen, so the verification code sits above the conversation and the burn control
+   sits below everything, which is the same reading order the rail has vertically. */
+.conn-rail { display: contents; }
+.conn-rail > .sas-box { flex: 0 0 auto; order: 1; }
+#screen-connected > #messages { order: 2; }
+#screen-connected > #chat-form { flex: 0 0 auto; order: 3; }
+/* Connection details is a child of the screen now rather than of the rail, and keeps the
+   slot it had on a phone: after the composer, before the burn control. */
+#screen-connected > #conn-disc { flex: 0 0 auto; order: 4; }
+.conn-rail > #sever { flex: 0 0 auto; order: 5; }
+#screen-connected > #messages {
+  flex: 1 1 auto;
+  /* min-height:0 is what lets a flex item actually shrink, so the inner overflow works
+     instead of the item growing past its container. */
+  min-height: 160px;
+  max-height: none;
+  margin-bottom: 0;
+  overflow-y: auto;
+}
+
+/* A phone has no rail and no spare height. Nothing is removed, only tightened: the
+   composer has to be fully on screen with the transcript above it. */
+@media (max-width: 699px) {
+  #screen-connected { gap: 8px; }
+  #screen-connected > #messages { min-height: 120px; }
+  .conn-rail > #sever { margin-top: 10px; }
+}
+
+@media (min-width: 1024px) {
+  main:has(> #screen-connected:not([hidden])) { padding-bottom: 12px; }
+
+  #screen-connected {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 22vw, 400px);
+    /* Four rows: the last one is the connection-details disclosure, which is `auto` and
+       therefore costs one line while closed and takes what it needs while open. The
+       transcript is the only row that flexes, so opening it never squashes the composer. */
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    gap: 14px clamp(22px, 2.4vw, 46px);
+    align-items: start;
+  }
+
+  #screen-connected > .route-line { grid-column: 1; grid-row: 1; }
+  #screen-connected > #messages   { grid-column: 1; grid-row: 2; height: 100%; }
+  #screen-connected > #chat-form  { grid-column: 1; grid-row: 3; }
+  #screen-connected > #conn-disc  { grid-column: 1; grid-row: 4; }
+
+  /* The rail. The verification code sits at the top because reading it aloud is the one
+     security check this interface asks a person to make; Burn is pushed to the foot by
+     `margin-top: auto`, away from everything else, because it is destructive and
+     irreversible and a destructive control should never be next to a routine one. */
+  .conn-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    grid-column: 2;
+    grid-row: 1 / span 4;
+    height: 100%;
+    min-height: 0;
+  }
+  .conn-rail > * { width: 100%; margin: 0; }
+  .conn-rail > #sever { margin-top: auto; }
+
+  /* More room means a received image can be worth looking at. */
+  #screen-connected .msg img { max-height: 420px; }
+
+  /* A wide composer that is one line tall reads as an afterthought. */
+  #screen-connected #chat-input { min-height: 96px; }
+}
+
+/* Fallback for engines without :has(). They keep the flex column rather than getting a
+   broken grid, which is the safe direction to fail in. */
+@supports not selector(:has(*)) {
+  @media (min-width: 1024px) {
+    #screen-connected { display: flex; }
+  }
+}
+
+/* While a gate is open the footer is navigation nobody is going to use, and every pixel
+   it takes is a pixel the conversation does not get. It stays (the AGPL source link
+   lives there) and it gets less room. */
+body:has(#screen-connected:not([hidden])) .foot {
+  margin-top: 0;
+  padding-top: 10px;
+  padding-bottom: 12px;
+}
+
+/* ---- the verification code -------------------------------------------------------
+   The largest thing in the rail, in tabular monospace, because five digits read aloud
+   is the whole check. It was 15px grey text sharing a line with the route badge. */
+.sas-box {
+  background: var(--panel);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  padding: 14px 16px 15px;
+}
+.sas-box .rail-k {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+.sas-v { margin: 6px 0 0; }
+#sas {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(30px, 2.6vw, 46px);
+  line-height: 1.1;
+  letter-spacing: 0.14em;
+  font-weight: 700;
+  color: var(--text);
+  display: block;
+}
+.sas-box .rail-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: var(--measure);
+}
+/* On a phone there is no rail: the code sits above the thread, so it takes the room it
+   needs to be read out and not a pixel more. The instruction stays: it is the one thing
+   a person is asked to do, and hiding it to save 30px would be hiding the point. */
+@media (max-width: 699px) {
+  .sas-box { padding: 10px 12px 11px; }
+  #sas { font-size: 28px; letter-spacing: 0.12em; }
+  .sas-box .rail-note { font-size: 12.5px; margin-top: 7px; }
+}
+
+/* ---------------------------------------------------------------------------
+   Landing content on the home screen.
+
+   The home screen carries the pitch as well as the controls, so it is the one
+   screen that wants more than the 640px column the rest of the app is built
+   around. Everything here is prefixed `lp-` because the app already owns
+   `.card`, `.steps`, `.step`, `.code`, `.lede` and `.tag`, and a landing rule
+   that reached those would repaint the extras strip and the connected screen.
+
+   No new palette: the mockup's amber is dropped in favour of the app's own
+   tokens, so light mode is inherited rather than re-implemented.
+   --------------------------------------------------------------------------- */
+
+.lp-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ---------------------------------------------- hero */
+
+/* Phone order: headline, the two actions, then everything that supports them. The gate
+   is what the page is for, so nothing optional is allowed above the controls. */
+.lp-hero { display: flex; flex-direction: column; gap: 16px; }
+.lp-hero-head { order: 1; }
+.lp-actions { order: 2; }
+.lp-hero-gate { order: 3; }
+.lp-hero-tail { order: 4; }
+.lp-hero-brow { order: 5; }
+
+.lp-h1 {
+  /* Tied to the VIEWPORT, and the cap is high enough that it is not reached until
+     2000px. Before this the headline was 46px on a 1280px laptop and 46px on a 2560px
+     display: the type did not know how big the screen was, which is most of what makes
+     a desktop page look like a phone page that has been stretched. */
+  font-size: clamp(25px, 3.2vw, 64px);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  margin: 6px 0 0;
+  text-wrap: balance;
+}
+
+/* An inline-block baselines on its bottom edge, which lifts the whole box out of
+   line with the word beside it. Centre the two on the cross axis instead. */
+.lp-for-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  /* The font-size is here, not only on the children, so this em resolves against the
+     size of the words either side of the gap. Inherited at body size it worked out to
+     about 5px next to a 27px word, which read as "ForFriends" once the flip face lost
+     the padding that had been quietly widening it. */
+  font-size: clamp(19px, 1.9vw, 38px);
+  gap: 0 0.3em;
+  margin-top: 14px;
+}
+.lp-for {
+  font-size: clamp(19px, 1.9vw, 38px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* The flipping box. A gate opens, shows one thing, closes: the same gesture.
+   Width and height are set from landing.js, measured off the widest word so the
+   headline does not jump on every flip. */
+.lp-flipper {
+  display: inline-block;
+  perspective: 800px;
+  vertical-align: baseline;
+  /* No panel and no border. The box is sized to the LONGEST word so the headline does
+     not jump, which meant a visible frame sat empty to the right of every short word.
+     overflow stays: it is what clips the face rotating out, not decoration. */
+  overflow: hidden;
+}
+.lp-flip-box {
+  position: relative;
+  display: block;
+  transform-style: preserve-3d;
+  transition: transform 0.62s cubic-bezier(0.19, 1, 0.22, 1);
+  will-change: transform;
+}
+/* One line of text centred by its own line-height. Flex centring inside a box
+   that was itself mis-measured only hid the sizing bug; this way the height IS
+   the line box. */
+.lp-flip-face {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  backface-visibility: hidden;
+  color: var(--accent);
+  white-space: nowrap;
+  /* No inset now that there is no frame to sit inside: the 0.14em used to hold the word
+     off the border, and with the border gone it read as a second gap after "For", on top
+     of the 0.32em the line already has. landing.js measures with the same padding, so
+     these two have to change together or the box is measured wider than the word. */
+  padding: 0;
+  /* Left, not centre. The box is as wide as the LONGEST word so the headline does not
+     jump on every flip, so centring pushed the short words away from "For" and read as
+     a gap: "For        Friends". Aligning left keeps every word starting at the same
+     place, hard against the word it completes, and lets the spare width fall where
+     nothing is looking. */
+  text-align: left;
+  font-size: clamp(19px, 1.9vw, 38px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.lp-sub {
+  color: var(--muted);
+  font-size: 16.5px;
+  max-width: 48ch;
+  margin: 0;
+}
+
+.lp-assurances {
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+.lp-assurances li::before { content: "- "; color: var(--accent); }
+
+/* ---- the two actions --------------------------------------------------------------
+   Equal in function, unequal in weight. They used to be a pair of flat grey cards a
+   screen further down, under a small "Start here" label, on the page whose entire
+   purpose they are. Only the lead carries the accent line: an accent on both would
+   say the same thing twice and therefore say nothing. */
+.lp-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin-top: 8px;
+}
+@media (min-width: 700px) {
+  .lp-actions { grid-template-columns: 1fr 1fr; align-items: start; }
+}
+@media (min-width: 900px) {
+  .lp-actions { margin-top: clamp(28px, 3vw, 52px); }
+}
+.lp-action {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: clamp(14px, 1.2vw, 22px);
+  display: flex;
+  flex-direction: column;
+}
+.lp-action-lead { border-color: var(--accent-dim); }
+.lp-action h2 {
+  font-size: clamp(17px, 1.15vw, 22px);
+  letter-spacing: -0.01em;
+  font-weight: 650;
+  margin: 0;
+}
+.lp-action > p { margin: 6px 0 12px; line-height: 1.45; }
+.lp-action label { margin-bottom: 4px; }
+.lp-action select,
+.lp-action input { margin-bottom: 8px; }
+/* Push the button to the bottom so the two cards' actions line up whatever the copy
+   above them costs. */
+.lp-action > button { margin-top: auto; }
+
+/* The landing's two calls to action are ANCHORS, not buttons: the form they lead to
+   lives in the other document now, and something that navigates should be a link so
+   middle-click, "open in new tab" and the status bar preview all work. They borrow
+   the button skin; they are not buttons. */
+.lp-action > a.primary,
+.lp-action > a.secondary {
+  display: block;
+  margin-top: auto;
+  padding: 11px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
+.lp-action > a.primary { background: var(--accent); color: var(--on-accent); }
+.lp-action > a.secondary { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+.lp-actions #home-error { grid-column: 1 / -1; display: block; margin: 0; }
+
+/* Expiry and room password: one line of plain text saying what will happen, and a
+   change link. app.js writes the line from the live values of #ttl-select and
+   #room-password, so the sentence cannot drift from what Create will actually do. */
+.gate-opts { margin: 0 0 12px; }
+.gate-opts-line {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--muted);
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+#gate-opts-toggle { font-size: 13.5px; }
+.gate-opts-panel { padding-top: 10px; }
+.gate-opts-panel > *:last-child { margin-bottom: 0; }
+
+/* Phone. The whole point of this block is that "Create gate" and "Join gate" are
+   both inside the first 844px of a 390px-wide viewport, measured, not assumed. It
+   buys that back from spacing rather than from content: nothing here is hidden,
+   only tightened. */
+@media (max-width: 899px) {
+  main:has(> #screen-home:not([hidden])) { padding-top: 12px; }
+  .lp-hero { gap: 12px; }
+  .lp-h1 { font-size: clamp(24px, 5.2vw, 52px); margin-top: 2px; }
+  .lp-for-line { margin-top: 8px; }
+  .lp-action { padding: 12px; }
+  .lp-action > p { margin-bottom: 9px; }
+  .lp-action > button { padding: 10px 16px; }
+}
+
+@media (min-width: 900px) {
+  .lp-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
+    grid-template-areas:
+      "brow gate"
+      "head gate"
+      "tail gate"
+      "acts acts";
+    /* The gate column spans the first three rows and is the taller of the two, so its
+       overflow has to land somewhere. Without this it is shared out between the
+       rows and opens a hole under the headline; `1fr` on the third row sends all of
+       it below the supporting copy instead. */
+    grid-template-rows: auto auto 1fr auto;
+    column-gap: clamp(36px, 4vw, 88px);
+    row-gap: 0;
+    align-items: start;
+    margin-top: 12px;
+  }
+  .lp-hero-brow { grid-area: brow; }
+  .lp-hero-head { grid-area: head; }
+  .lp-hero-tail { grid-area: tail; margin-top: 26px; }
+  /* Centred in its three-row span. Left as `start` it sat at the top and left a
+     300px hole under itself, because the preview is shorter than the copy beside it. */
+  .lp-hero-gate { grid-area: gate; align-self: center; }
+  .lp-actions { grid-area: acts; }
+  .lp-sub { font-size: clamp(16.5px, 0.95vw, 21px); }
+}
+
+/* ---------------------------------------------- landing sections */
+
+.lp-section {
+  padding: 44px 0 0;
+  border-top: 1px solid var(--line);
+  margin-top: 40px;
+}
+.lp-section + .lp-section { margin-top: 44px; }
+
+.lp-h2 {
+  font-size: clamp(21px, 2.05vw, 40px);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  margin: 10px 0 0;
+  text-wrap: balance;
+}
+.lp-lede { color: var(--muted); max-width: 62ch; margin: 12px 0 0; font-size: 15px; }
+
+/* Numbered because it genuinely is a sequence. */
+.lp-steps {
+  display: grid;
+  gap: 24px;
+  margin-top: 30px;
+  grid-template-columns: 1fr;
+  counter-reset: lpstep;
+}
+@media (min-width: 760px) { .lp-steps { grid-template-columns: repeat(3, 1fr); } }
+.lp-step { border-top: 2px solid var(--line); padding-top: 14px; counter-increment: lpstep; }
+.lp-step::before {
+  content: counter(lpstep, decimal-leading-zero);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+}
+.lp-step h3 { margin: 7px 0 5px; font-size: 16px; letter-spacing: -0.01em; font-weight: 650; }
+.lp-step p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+/* ---------------------------------------------- funding */
+
+.lp-slots { display: grid; gap: 16px; margin-top: 28px; grid-template-columns: 1fr; }
+@media (min-width: 820px) { .lp-slots { grid-template-columns: 1fr 1fr; } }
+.lp-slot {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  background: var(--panel);
+}
+.lp-slot-free { border-style: solid; border-color: var(--accent-dim); }
+.lp-slot-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lp-slot-free .lp-slot-label { color: var(--accent); }
+.lp-list { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 14.5px; }
+.lp-list li { margin-bottom: 7px; }
+.lp-list li:last-child { margin-bottom: 0; }
+.lp-list strong { color: var(--text); }
+
+/* ---------------------------------------------- roadmap */
+
+.lp-road { display: grid; gap: 12px; margin-top: 28px; grid-template-columns: 1fr; }
+@media (min-width: 800px) { .lp-road { grid-template-columns: 1fr 1fr; } }
+.lp-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 15px 17px;
+}
+.lp-card h3 { margin: 8px 0 5px; font-size: 15.5px; letter-spacing: -0.01em; font-weight: 650; }
+.lp-card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+.lp-tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.lp-tag-gap { color: var(--warn); border-color: var(--line-warn); }
+.lp-tag-live { color: var(--ok); border-color: var(--line-ok); }
+
+/* ---------------------------------------------- pledge */
+
+.lp-pledge blockquote {
+  margin: 22px 0 0;
+  padding: 18px 20px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--panel);
+  font-size: 16.5px;
+  max-width: 62ch;
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  /* The 3D tumble degrades to a crossfade; landing.js swaps the word at the
+     bottom of the fade rather than rotating the box. */
+  .lp-flip-box { transition: opacity 0.3s ease; }
+}
+
+/* The three light-mode patches that used to live here are gone: --warn, --ok and
+   --accent-text are tokens now, so .lp-tag-gap, .lp-tag-live and .lp-slot-label pick up
+   legible light values from the palette instead of from one-off rules that had to be
+   remembered every time a warn or ok colour was used somewhere new. The teal that used
+   to sit on .lp-slot-label went with them: teal means live, it is not a second accent. */
+.lp-slot-free .lp-slot-label { color: var(--accent-text); }
+
+/* Engines without :has() never widen `main`, so the hero would be a two column grid
+   squeezed into a 640px column. They keep the phone layout at every width instead,
+   which is narrow but correct: the same direction the connected screen fails in. */
+@supports not selector(:has(*)) {
+  @media (min-width: 900px) {
+    .lp-hero {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .lp-hero-tail { margin-top: 0; }
+  }
+}
+
+/* ------------------------------------------- hero gate preview and CTAs
+
+   The hero's right column is a picture of a gate mid-transfer, matching the approved
+   direction. It is decorative: nothing here is interactive, and the whole block carries
+   a single aria-label so assistive tech gets one description instead of a pile of
+   meaningless numbers. The working controls live in #gate-controls below. */
+
+.lp-preview {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: var(--shadow-lift);
+}
+.lp-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.lp-preview-label {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lp-preview-code {
+  font-family: var(--font-mono);
+  font-size: clamp(14px, 3.2vw, 19px);
+  letter-spacing: 0.06em;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 13px 14px;
+  /* A long code must never widen the page. It used to scroll sideways inside its own box,
+     which was fine for 24 characters and hides most of a 50-character word code behind an
+     edge nobody thinks to drag. Wrapping on the hyphens shows the whole thing instead. */
+  overflow-x: auto;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+.lp-preview-meter { margin-top: 14px; }
+.lp-preview-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.lp-preview-bar {
+  height: 4px;
+  background: var(--panel-2);
+  border-radius: var(--radius-pill);
+  margin: 7px 0 12px;
+  overflow: hidden;
+}
+.lp-preview-bar > i { display: block; height: 100%; width: 62%; background: var(--accent); }
+
+/* ---- the conversation inside the preview ----------------------------------------
+
+   landing.js runs this panel as a loop: connecting, paired, three messages, a file
+   crossing, then a fresh gate. Every message is in the flow from the first paint and
+   the script only moves its opacity, which is what keeps the panel one fixed height
+   while a conversation arrives inside it. Nothing here sets a height, and nothing
+   here should: the height is the sum of three messages that are always present. */
+
+.lp-preview-chat {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* The script parks the typing indicator over the slot of the message that is about
+     to land, so this has to be the containing block for it. The script sets this
+     property too, for the same reason it takes over the width of the bar fill: a
+     decorative loop must not be able to break because a stylesheet rule moved. */
+  position: relative;
+}
+
+/* Prose, not data, so these keep the sans stack. The mono in this panel means "this
+   is a value you might read out": the gate code, the byte counts, the timer. */
+.lp-msg {
+  margin: 0;
+  max-width: 82%;
+  padding: 7px 11px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.lp-msg-them {
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+}
+.lp-msg-you {
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+  background: var(--accent-wash);
+  border-color: var(--accent-dim);
+}
+
+/* What stands where the conversation will be, before anybody has joined. The script
+   centres it over the block and fades it out the moment the gate is paired, so it is
+   never on screen at the same time as a message. Muted, and quieter than a message:
+   it is a state, not something either device said. */
+.lp-msg-wait {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+.lp-msg-wait[hidden] { display: none; }
+
+/* The typing indicator is `hidden` in the markup and stays hidden for good if the
+   script never runs: three dots that never resolve are worse than no dots. Restating
+   [hidden] is NOT redundant here. The rules above are author rules and would beat the
+   UA sheet's `[hidden] { display: none }` on their own, so without this line a page
+   with no JavaScript would print a permanent typing indicator. */
+.lp-msg-typing { padding: 9px 11px; }
+.lp-msg[hidden] { display: none; }
+
+.lp-dot {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--muted);
+  /* Driven from landing.js, one write per dot per step. No keyframes: the dots are
+     part of the same script as the messages they precede, and two clocks running the
+     one indicator is how a typing dot ends up still bouncing after the message has
+     landed. */
+  opacity: 0.3;
+}
+.lp-dot:last-child { margin-right: 0; }
+
+/* Sponsor slot, landing document only.
+   A reserved box with a fixed minimum height, so a creative that arrives after the
+   page has painted cannot reflow the section under a reader's cursor. Hidden outright
+   when nothing is configured: an empty deployment gets no grey rectangle standing
+   where an ad would be. The [hidden] rule has to restate display, because the base
+   rule sets flex and that would otherwise beat the UA sheet. */
+.ad-slot {
+  width: min(100%, 728px);
+  margin: clamp(28px, 4vw, 56px) auto 0;
+  min-height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.ad-slot[hidden] { display: none; }
+.ad-slot > * { max-width: 100%; }
+
+/* Landing on this section from the CTA should not tuck its heading under the sticky
+   header, and a focused Create button should not sit hard against the viewport edge. */
+#gate-controls,
+#gate-links { scroll-margin-top: 72px; }
+
+/* ===========================================================================
+   THE DESIGN SYSTEM
+   ===========================================================================
+
+   The landing hero was the only part of the product designed rather than
+   assembled, so it is now the language for all of it. Four moves, applied
+   everywhere:
+
+     1. TYPE IS THE STRUCTURE. A section opens with a monospace uppercase
+        eyebrow, then a heavy display heading with negative tracking, then a
+        muted lede at a comfortable measure. `.eyebrow` / `.wg-h1` / `.wg-h2` /
+        `.lede`. `.lp-*` are the hero's originals and share the same values.
+     2. AMBER IS THE ACCENT. Teal means "connected" and nothing else. Warn, ok
+        and danger stay semantic and are never used decoratively.
+     3. DATA IS MONOSPACE with tabular figures: gate codes, byte counts,
+        timers, verification codes, ports, badges. Prose never is.
+     4. CARDS ARE PANEL + ONE PIXEL OF LINE + THE SHARED RADIUS, and space is
+        the main tool. Only the hero preview carries a shadow.
+   =========================================================================== */
+
+.eyebrow,
+.lp-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* Display headings. The hero's own .lp-h1 is capped at 46px because it shares a
+   row with the gate preview; a screen headline runs longer, so it caps lower and
+   stays on two lines instead of four. */
+.wg-h1 {
+  /* Capped in em, not ch: a `ch` is a character of the BODY font, so a 22ch cap on a
+     38px headline is 350px and every word lands on its own line. */
+  max-width: 17em;
+  font-size: clamp(23px, 2.7vw, 54px);
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  margin: 10px 0 0;
+  text-wrap: balance;
+}
+.wg-h2 {
+  font-size: clamp(19px, 1.75vw, 34px);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  margin: 8px 0 0;
+  text-wrap: balance;
+}
+.wg-h3 {
+  font-size: 16.5px;
+  letter-spacing: -0.01em;
+  font-weight: 650;
+  margin: 6px 0 0;
+}
+
+/* One lede rule for the whole product. It used to carry a negative top margin to
+   pull itself under a 20px h1; the eyebrow/headline/lede triad sets its own
+   rhythm, so it does not need to fight the block above it any more. */
+.lede {
+  color: var(--muted);
+  font-size: 16px;
+  max-width: 60ch;
+  margin: 12px 0 0;
+}
+
+/* Prose never runs wider than a comfortable measure, however wide the screen. */
+.disc-body p,
+.disc-body ul,
+.banner .muted,
+main.legal p,
+main.legal li { max-width: var(--measure); }
+
+/* Data, everywhere it appears. */
+.badge,
+.step-n,
+.lp-slot-label,
+.lp-preview-label {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.badge {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 11px;
+  font-weight: 600;
+}
+#sas,
+.ttl,
+.code,
+.coin-addr,
+pre.diag,
+.file-title,
+.file-status,
+.lp-preview-row,
+.secret-value { font-variant-numeric: tabular-nums; }
+/* The session timer counts down in place; a proportional font makes it jitter. */
+.ttl { font-family: var(--font-mono); }
+progress { accent-color: var(--accent); }
+
+/* A short screen (a prompt, a result, a waiting state) is a single column of
+   content, not a full-width layout. Centred so it does not hang off the left of a
+   wide window, and capped at a measure that stays readable. */
+.pane { max-width: min(100%, 640px); margin: 0 auto; }
+.pane > .eyebrow { margin-bottom: 2px; }
+.pane .wg-h1 { margin-bottom: 4px; }
+.pane > .lede { margin-bottom: 22px; }
+
+/* Screens open with the triad, so the old bare-h1 top margin would double it up. */
+.screen > .pane,
+.ob-grid { padding-top: 6px; }
+
+/* ---------------------------------------------------------------------------
+   ONBOARDING
+
+   Measured before: at 1900x1000 `main` was 640px with 630px of dead margin on
+   each side, five collapsed cards filled the viewport, and the whole consent gate
+   was a phone column on a widescreen.
+
+   Now: the headline and the disclosures take the main column, the agreement is a
+   sticky rail beside them, and the disclosures ship OPEN and split into two
+   columns at 1440px. More of the disclosure is visible on a wide screen than
+   before, not less, and the primary action is above the fold without collapsing
+   anything to get it there.
+   --------------------------------------------------------------------------- */
+
+.ob-head { max-width: 46ch; }
+.ob-notes-brow { margin: 26px 0 10px; }
+.ob-agree { margin-top: 20px; }
+
+/* The agreement is the one card on the page that is an ACTION, so it is the one
+   card on the page at all. Everything else here is type and rules. */
+#screen-onboarding .agreement {
+  margin-top: 0;
+  border-color: var(--accent-dim);
+  padding: 16px 16px 14px;
+}
+#screen-onboarding .agreement .eyebrow { margin-bottom: 12px; }
+#screen-onboarding .agreement .check span { font-size: 13.5px; }
+#screen-onboarding .agreement .muted { text-align: left; }
+
+/* ---- the five disclosures, as a ruled list ----------------------------------------
+   They were five identical cards, which put the one that actually matters (everyone in
+   a gate sees everyone else's IP address) at exactly the same volume as the rest, and
+   which cost this screen five of its eight panels. They are the same five <details>
+   with the same five bodies of text: what is gone is the panel around each one.
+
+   Still <details>, because a phone cannot show five open disclosures without burying
+   the agreement, and app.js closes them below 1024px. Above that they are all open and
+   the list reads as a numbered list, which is what it is. */
+.ob-notes { counter-reset: wgdisc; }
+#screen-onboarding .ob-notes details.disc {
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  margin: 0;
+  overflow: visible;
+  counter-increment: wgdisc;
+}
+#screen-onboarding .ob-notes details.disc:last-of-type { border-bottom: 1px solid var(--hairline); }
+
+#screen-onboarding .ob-notes details.disc > summary {
+  display: grid;
+  grid-template-columns: 2.4em minmax(0, 1fr);
+  column-gap: 14px;
+  padding: 15px 30px 14px 0;
+}
+/* The mark. Numbered, except for the severe one, which breaks the sequence with "!"
+   so it can be found without being read. The counter still increments through it, so
+   the list stays 01 02 ! 04 05 and nothing looks lost. */
+#screen-onboarding .ob-notes details.disc > summary::before {
+  content: counter(wgdisc, decimal-leading-zero);
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: start;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  line-height: 1.9;
+  color: var(--muted);
+}
+#screen-onboarding .ob-notes details.disc.warn > summary::before {
+  content: "!";
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--danger);
+}
+#screen-onboarding .ob-notes details.disc.warn .disc-title { color: var(--danger); }
+#screen-onboarding .ob-notes .disc-title { grid-column: 2; grid-row: 1; }
+#screen-onboarding .ob-notes .disc-hint { grid-column: 2; grid-row: 2; }
+/* The chevron belongs to the row, not to a card edge. */
+#screen-onboarding .ob-notes details.disc > summary::after { right: 4px; top: 21px; }
+#screen-onboarding .ob-notes details.disc[open] > summary::after { top: 24px; }
+#screen-onboarding .disc-title { font-size: 15.5px; letter-spacing: -0.01em; }
+#screen-onboarding .ob-notes .disc-body {
+  border-top: 0;
+  padding: 0 30px 16px calc(2.4em + 14px);
+}
+#screen-onboarding .ob-notes .disc-body > *:first-child { margin-top: 0; }
+.ob-assurances { margin-top: 20px; }
+
+/* The close of the consent screen: the diagram, then the agreement, both centred in
+   their own segment under the ruled list.
+
+   There is no rail. The agreement was a sticky second column, which put the button above
+   the fold but left a column of dead page beneath it for the whole height of the
+   disclosures, and let you agree while the reading was still off to one side. The list
+   now takes the full width it was already designed for at 1360px, and the agreement is
+   the last thing on the screen, which is the order the words are actually in. */
+.ob-close {
+  border-top: 1px solid var(--line);
+  margin-top: 28px;
+  padding-top: 26px;
+}
+.ob-close .bridge { margin: 0 0 22px; }
+.ob-agree {
+  /* Not the full shell. An agreement is a paragraph you have to read, so it keeps a
+     measure like any other paragraph, and centres in the space instead of stretching
+     to 2160px on a wide monitor. */
+  max-width: 62ch;
+  margin: 0 auto;
+}
+
+@media (min-width: 1024px) {
+  .ob-head { max-width: none; }
+  .ob-head .lede { max-width: 52ch; }
+  .ob-notes-brow { margin-top: 30px; }
+}
+
+/* Wide enough for the row to become a definition: the title on the left, the prose it
+   introduces beside it. That is what the extra width is FOR. Below this the two stack,
+   which is the same list with the same words in the same order. Only [open] rows get
+   the grid: a closed <details> has nothing in its second column. */
+@media (min-width: 1360px) {
+  #screen-onboarding .ob-notes details.disc[open] {
+    display: grid;
+    grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+    column-gap: clamp(24px, 2.6vw, 56px);
+    align-items: start;
+  }
+  #screen-onboarding .ob-notes details.disc[open] > summary {
+    grid-column: 1;
+    grid-row: 1;
+    /* The chevron is absolutely positioned against its nearest positioned ancestor. While
+       that was the summary it resolved `right: 4px` against the RIGHT EDGE OF THE LEFT
+       COLUMN, which put it in the middle of the row, touching neither the title it belongs
+       to nor the body it reveals. Moving the containing block to the whole row puts it at
+       the row's right edge, which is where a disclosure marker is looked for. */
+    position: static;
+    /* The 30px reserve on the one-column layout held that gap open. In two columns the
+       chevron is no longer inside this box, so the reserve is just a hole. */
+    padding-right: 0;
+  }
+  #screen-onboarding .ob-notes details.disc[open] { position: relative; }
+  #screen-onboarding .ob-notes details.disc[open] > .disc-body {
+    grid-column: 2;
+    grid-row: 1;
+    /* Right reserve, because the chevron now hangs at the row's right edge and this is
+       the box under it. The prose is capped at --measure and would not reach it today,
+       but that is a coincidence of two independent numbers, not a guarantee. */
+    padding: 15px 30px 16px 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   WAITING, PASSWORD, SEVERED, FAILED
+
+   Same triad, same cards. The waiting screen gets the QR and the code side by
+   side once there is room, because a 320px QR above a code block wastes half the
+   width of a laptop and pushes Cancel off the bottom.
+   --------------------------------------------------------------------------- */
+
+#screen-waiting .qr-wrap { padding: 16px; }
+#screen-waiting .code-block { border-color: var(--accent-dim); }
+#screen-severed .messages.transcript { max-height: 40vh; }
+#transcript-holder .eyebrow { margin-top: 26px; }
+
+@media (min-width: 900px) {
+  #screen-waiting .pane { max-width: min(100%, 860px); }
+  #share-shown {
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr);
+    column-gap: 26px;
+    align-items: start;
+  }
+  #share-shown > .qr-wrap { grid-column: 1; grid-row: 1 / span 3; margin-bottom: 0; }
+  #share-shown > .code-block,
+  #share-shown > .row,
+  #share-shown > .muted { grid-column: 2; }
+
+  #screen-severed .pane { max-width: min(100%, 820px); }
+}
+
+/* ---------------------------------------------------------------------------
+   CONNECTED
+
+   Finish only. The two column layout, the transcript filling the column height
+   and the burn control never being buried are all deliberate and are left alone.
+   --------------------------------------------------------------------------- */
+
+#screen-connected .route-line { padding-bottom: 2px; }
+#screen-connected #messages { background: var(--panel); }
+.msg .who { letter-spacing: 0.01em; font-weight: 600; }
+.file-title { letter-spacing: -0.005em; }
+.chip { font-family: var(--font-mono); }
+
+/* ---------------------------------------------------------------------------
+   THE LEGAL PAGES
+
+   Same language: eyebrow, display heading, lede, hairline-ruled sections, prose
+   at a measure. Presentation only. Not one word of any obligation, disclosure or
+   policy changed, because those were audited claim by claim against the code.
+   --------------------------------------------------------------------------- */
+
+/* The column is the MEASURE plus its padding, not a round number that happens to be
+   bigger than it. At 1000px the container was centred but the prose inside it was capped
+   at --measure and left-aligned, so the text ended 450px short of the container's right
+   edge: the page read as shoved to the left, and every h2 rule was nearly twice the width
+   of the text it ruled off. Sizing the container to the thing it contains makes the rules,
+   the headings and the prose all one width, and centres the assembly for real. */
+main.legal {
+  width: min(var(--shell), calc(var(--measure) + 2 * var(--legal-pad)));
+  max-width: 100%;
+  padding: 26px var(--legal-pad) 40px;
+}
+main.legal > .eyebrow { margin-bottom: 2px; }
+main.legal h1 {
+  font-size: clamp(26px, 2.6vw, 50px);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  margin: 8px 0 0;
+  text-wrap: balance;
+}
+/* The one-line intro under a policy title reads as a lede, not as fine print. */
+main.legal > .doc-meta {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  margin: 14px 0 0;
+  max-width: var(--measure);
+}
+main.legal > .doc-lede {
+  color: var(--muted);
+  font-size: 16.5px;
+  line-height: 1.6;
+  max-width: 58ch;
+  margin: 16px 0 0;
+}
+/* A hairline above every section is the same rule the landing sections use, and
+   it is what turns a wall of policy into something you can scan. */
+main.legal h2 {
+  font-size: clamp(18px, 1.55vw, 30px);
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  color: var(--text);
+  border-top: 1px solid var(--line);
+  margin: 42px 0 0;
+  padding-top: 24px;
+}
+main.legal h2 + p { margin-top: 12px; }
+main.legal p, main.legal li { font-size: 15px; line-height: 1.7; }
+main.legal strong { color: var(--text); }
+main.legal code {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  /* An inline code span is a URL, an env var name or a CSP directive, none of which
+     have spaces to break at. Every other code-ish rule in this file already carries a
+     break rule; this one did not, and was one longer token away from a page that
+     scrolls sideways on a phone. */
+  overflow-wrap: anywhere;
+}
+main.legal pre.diag {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 16px 0 0;
+  max-width: var(--measure);
+}
+main.legal pre.diag code { background: none; border: 0; padding: 0; }
+/* The link row at the foot of a policy page is navigation, so it gets the footer
+   treatment the app's own pages have rather than looking like a stray sentence. */
+main.legal > .doc-foot {
+  border-top: 1px solid var(--line);
+  margin-top: 46px;
+  padding-top: 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+main.legal > .doc-foot a { color: var(--muted); text-decoration: none; }
+main.legal > .doc-foot a:hover { color: var(--accent); text-decoration: underline; }
+
+@media (min-width: 1100px) {
+  main.legal { padding-top: 40px; }
+}
+
+/* A phone reads a legal page in a column 360px wide, and every nested indent comes out
+   of the same budget. The list bullet indent stacked on the container padding and left
+   list items with the shortest measure on the site. */
+@media (max-width: 420px) {
+  main.legal ul { padding-left: 17px; }
+  main.legal p, main.legal li { font-size: 15.5px; line-height: 1.65; }
+}
+
+/* ---------------------------------------------------------------------------
+   HOME
+
+   1080px was right when the alternative was 640, and it is still close: the
+   headline caps at 46px, the ledes cap at 62ch and the card grids are two-up, so
+   past about 1200px extra width only buys longer lines inside the cards. It
+   breathes to 1200 on a genuinely wide screen and stops there. The dead margin at
+   1900px goes from 410px a side to 350px, which is deliberate: this is a reading
+   page with a picture on it, not a dashboard.
+   --------------------------------------------------------------------------- */
+
+/* The receive note is a standing fact about the browser, not an alarm. On a phone it is
+   eight lines of it, which is no way to open a consent gate, so below 900px it sits after
+   the screen instead of before it: same page, same words, out of the way of the headline.
+   `order` on the page's flex column moves it without moving it in the DOM, so the reading
+   order for a screen reader is unchanged on a wide screen where it is genuinely first. */
+@media (max-width: 899px) {
+  #receive-note { font-size: 13px; }
+  /* The triad costs vertical space, and on a phone every pixel above the agreement is a
+     pixel of scrolling before you can act. Tightened, not removed: the structure is what
+     makes the screen legible, the spacing is what makes it long. */
+  .ob-grid { padding-top: 0; }
+  #screen-onboarding .wg-h1 { margin-top: 6px; }
+  #screen-onboarding .lede { font-size: 15px; margin-top: 8px; }
+  .ob-notes-brow { margin: 16px 0 8px; }
+  .ob-agree { margin-top: 14px; }
+  #screen-onboarding .agreement .eyebrow { margin-bottom: 9px; }
+  #screen-onboarding details.disc { margin-bottom: 8px; }
+}
+
+/* The receive note is one sentence of standing fact. It gets one sentence of room: a
+   heading on its own line above the hero would announce a browser limitation as if it
+   were the page's headline. */
+/* The right pad still has to clear the close button, so it is written out rather than
+   inherited: a bare `padding: 10px 14px` here put the last words of the sentence under
+   the dismiss control. */
+#receive-note { font-size: 13px; padding: 10px 50px 10px 14px; }
+#receive-note strong { display: inline; margin-right: 7px; }
+
+
+/* Engines without :has() never widen `main`, so the onboarding rail and the two-up
+   disclosures would be squeezed into a 640px column: a 372px rail beside a 268px column
+   of prose. They keep the phone stack at every width instead, which is narrow but
+   correct, and is the direction the hero and the connected screen already fail in. */
+@supports not selector(:has(*)) {
+  @media (min-width: 1024px) {
+    .ob-grid { display: block; }
+    .ob-agree { position: static; margin-top: 20px; }
+  }
+  @media (min-width: 900px) {
+    #share-shown { display: block; }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The disclosures are the centre of the consent screen now, so their marker is the
+     one piece of motion a person on this screen cannot avoid seeing. */
+  details.disc > summary::after { transition: none; }
+}
+
+/* ---------------------------------------------- the ask, after a gate that worked
+   Geometry deliberately duplicated from .qr-modal on the landing rather than shared.
+   The two documents are separate on purpose (separate CSPs, separate scripts) and the
+   QR lightbox is landing-only markup, so folding them into one set of selectors would
+   couple a change to the gate's end screen to a change on the donation page. Same
+   stylesheet, same tokens, two small blocks. */
+
+.wg-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+/* The UA sheet's [hidden] rule loses to any author rule carrying an explicit display,
+   and the flex above is exactly that. Without this line the modal is on screen from
+   the moment the page loads. */
+.wg-modal[hidden] { display: none; }
+.wg-modal.wg-modal-open { opacity: 1; }
+
+.wg-modal-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(12, 15, 19, 0.66);
+}
+
+.wg-modal-panel {
+  position: relative;
+  width: min(430px, 100%);
+  padding: 18px 20px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  transform: translateY(8px) scale(0.98);
+  transition: transform 0.18s ease;
+}
+.wg-modal-open .wg-modal-panel { transform: none; }
+
+.wg-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.wg-modal-title { margin: 0 0 2px; font-size: 19px; letter-spacing: -0.01em; }
+.wg-modal-close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  margin: -4px -6px 0 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wg-modal-close:hover,
+.wg-modal-close:focus-visible { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+
+.donate-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 12px; }
+.donate-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 13.5px;
+  text-decoration: none;
+}
+.donate-link:hover,
+.donate-link:focus-visible { border-color: var(--accent-dim); color: var(--accent); }
+.donate-link .ico { width: 15px; height: 15px; }
+
+/* Two buttons on one row on a desktop, stacked on a narrow phone, and the primary is
+   first in the DOM so the keyboard reaches it first either way. */
+.net-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0 10px; }
+.net-actions button { flex: 1 1 150px; width: auto; margin-top: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wg-modal, .wg-modal-panel { transition: none; }
+  .wg-modal-panel { transform: none; }
+}

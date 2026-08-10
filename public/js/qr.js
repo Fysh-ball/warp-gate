@@ -75,6 +75,15 @@ function reedSolomon(data, ecLength) {
 
 function buildCodewords(bytes, version) {
   const capacity = dataCodewords(version);
+  // Two codewords go to the mode indicator and the length byte. Overflowing simply
+  // dropped the tail, and this encodes donation addresses: silent data loss there is a
+  // scannable code that pays the wrong person. encodeQr picks the version so this cannot
+  // happen today, but a truncating primitive should not be left lying around.
+  if (bytes.length > capacity - 2) {
+    throw new Error(
+      `payload of ${bytes.length} bytes does not fit QR version ${version} (capacity ${capacity - 2} bytes)`,
+    );
+  }
   const bits = [];
   const push = (value, length) => {
     for (let i = length - 1; i >= 0; i -= 1) bits.push((value >>> i) & 1);
@@ -339,7 +348,20 @@ export function encodeQr(text) {
 /** Render a matrix into a canvas element, with the quiet zone the spec requires. */
 export function drawQr(canvas, qr, { quiet = 4, dark = '#000000', light = '#ffffff' } = {}) {
   const total = qr.size + quiet * 2;
-  const scale = Math.max(1, Math.floor(canvas.width / total));
+  // The scale comes from the size the page authored, not from canvas.width, because this
+  // function then overwrites canvas.width: rendering into the same canvas twice used to
+  // shrink the code a little more each time (320 -> 287 -> 270 -> 246...). The authored
+  // width is stashed on first render so a re-render measures the same basis.
+  const authored = Number(canvas.dataset?.qrBaseWidth) || canvas.width;
+  if (canvas.dataset) canvas.dataset.qrBaseWidth = String(authored);
+  const scale = Math.floor(authored / total);
+  if (!(scale >= 1)) {
+    // A canvas with no width attribute used to clamp to one pixel per module and produce
+    // an unscannable image that looked like a rendering rather than a mistake.
+    throw new Error(
+      `canvas is ${authored || 0}px wide, too small for a ${total}-module QR code (needs at least ${total}px)`,
+    );
+  }
   const ctx = canvas.getContext('2d');
   const pixels = total * scale;
   canvas.width = pixels;

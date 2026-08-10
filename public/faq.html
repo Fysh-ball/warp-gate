@@ -14,25 +14,28 @@
 </header>
 
 <main class="legal">
+<p class="eyebrow">Reference</p>
 <h1>Questions</h1>
 
 <h2>What is Warp Gate?</h2>
-<p>A temporary encrypted bridge between two browsers. One device opens a gate, the other
-joins with the link or QR code, and from then on messages and files pass directly between
-the two devices. When the gate closes, the keys and the room are gone.</p>
+<p>A temporary encrypted bridge between browsers. One device opens a gate, others join
+with the link or QR code (a gate seats up to six devices; two is the common case), and
+from then on messages and files pass directly between the devices. When the gate closes,
+the keys and the room are gone.</p>
 
 <h2>Is there an app to install?</h2>
 <p>No. It is a web page. There is no app, no extension and no account, and there never
 will be.</p>
 
 <h2>Who can read what I send?</h2>
-<p>The two devices in the gate. Everything is encrypted in your browser before it is
-sent, and the server never receives the keys, the messages, the files, or even the file
-names. What the server can see is set out in the <a href="/privacy.html">Privacy
+<p>The devices in the gate, and nobody else. Everything is encrypted in your browser
+before it is sent, and the server never receives the keys, the messages, the files, or
+even the file names. Anyone who holds the gate link is a participant, so who can read
+what you send is decided by who you give the link to. What the server can see is set out in the <a href="/privacy.html">Privacy
 Policy</a>.</p>
 
 <h2>Is this the only official Warp Gate?</h2>
-<p><strong>Yes. <code>https://wg.fysh.site</code> is the only instance we run.</strong>
+<p><strong>Yes. <code>https://warpgate.fysh.site</code> is the only instance we run.</strong>
 The source is public, so anyone may host their own copy, and we think that is a good
 thing. But an instance run by somebody else is not ours: we cannot audit it, vouch for
 it, or know it exists. It inherits none of the trust that this one has earned.</p>
@@ -49,7 +52,7 @@ modified page draws it.</p>
 It is why the honest statement is "trust the operator", not "trust the maths". If you
 need certainty, host it yourself from source you have read. Warp Gate has no
 dependencies and no build step precisely so that this is realistic: the files served are
-the files in the repository, and there are about a dozen of them.</p>
+the files in the repository, and there are about twenty of them.</p>
 
 <h2>Can I run my own?</h2>
 <p>Yes, and it is deliberately easy. It is one Node process with no dependencies, no
@@ -58,7 +61,7 @@ build step and no database:</p>
 cd warp-gate
 node server/index.js        # serves on port 3095</pre>
 <p>Put it behind TLS, point <code>WG_STUN_URL</code> at a STUN server, and that is the
-whole deployment. See <code>deploy/NOTES.md</code> in the repository.</p>
+whole deployment. See <code>deploy/SELF-HOSTING.md</code> in the repository.</p>
 <p>If you modify it and let others use it, the AGPL requires you to offer them your
 source. Set <code>WG_SOURCE_URL</code> to where your copy lives and the page will link to
 it; the server warns at startup if you have not.</p>
@@ -87,9 +90,13 @@ caps concurrent gates at 200, which uses a few megabytes; raise
 <p>In other words a Raspberry Pi will do, which was the design target.</p>
 
 <h2>How many people can be in one gate?</h2>
-<p>Two. A gate locks as soon as a second device joins.</p>
+<p>Up to six devices (the operator can configure the cap; six is the default and what
+the official instance runs). Two is still the common case. Every device that takes a
+seat must first prove to the server that it holds the link secret, and every pair of
+devices in the gate connects directly with its own keys, so a bigger gate is more
+connections, not a shared channel.</p>
 
-<h2>Why does it say the two devices see each other's IP address?</h2>
+<h2>Why does it say the devices see each other's IP address?</h2>
 <p>Because they connect directly to each other, which is what keeps the server out of the
 data path. That is a deliberate trade. Warp Gate is confidential, not anonymous.</p>
 
@@ -98,14 +105,16 @@ data path. That is a deliberate trade. Warp Gate is confidential, not anonymous.
 it is stripped as soon as it has been used, and the code and QR are hidden until you
 choose to show them. So nothing sensitive is sitting on screen during the session.</p>
 <p>It cannot be eliminated entirely, because at some point you have to show or send the
-code for the other device to join. Three things limit the damage: the gate <strong>locks
-as soon as the second device joins</strong>, so an observer only has a window before your
-intended peer arrives; both devices display a verification code you can compare aloud, so
-a substitution is detectable; and a <strong>room password</strong> means reading the code
-is not enough on its own. Use one if people can see your screen.</p>
+code for another device to join. Three things limit the damage: <strong>nobody can
+take a seat without the link secret</strong>, so a glance at your screen that does not
+capture the whole code gains nothing; the devices at each end of a connection display a
+verification code you can compare aloud, so a substitution is detectable; and a <strong>room password</strong>
+means reading the code is not enough on its own. Use one if people can see your
+screen.</p>
 
 <h2>What is the room password for?</h2>
-<p>It is a second factor on top of the link. The link already contains a 128-bit secret
+<p>It is a second factor on top of the link. The link already contains an eight-word code
+worth 103 bits, stretched into a 128-bit secret with 600,000 rounds of PBKDF2,
 and is the main credential; the password helps if the link itself might be seen by
 someone else, for example when it is pasted into a group chat. It is stretched with
 600,000 rounds of PBKDF2 and never leaves your browser. The server only ever learns that
@@ -115,40 +124,56 @@ a gate has one, as a yes or no, so that it knows to ask.</p>
 <p>Open "Connection details" or the technical detail on the failure screen: it says which
 of the specific causes applies rather than guessing. The common ones are a browser
 setting that blocks WebRTC, a network that blocks peer-to-peer traffic, and a strict
-mobile carrier NAT. Putting both devices on the same network almost always works.</p>
+mobile carrier NAT. Putting the devices on the same network almost always works.</p>
 
 <h2>How big a file can I send?</h2>
-<p>On a Chromium desktop browser, as large as you like: it is written straight to disk as
-it arrives. Everywhere else the file is held in memory and capped at 500 MB, and Warp
+<p>Sending has no limit in any browser. Receiving depends on the receiving browser. On a
+Chromium desktop browser a large file is written straight to a location you choose, as
+it arrives, and an interrupted transfer continues into the same file: a dropped
+connection picks up where it left off, and so does a reload. On other browsers, a file
+over 500&nbsp;MB is handed to the browser's own download manager and written straight to
+disk as it arrives, so there is still no size limit, but it goes to your usual downloads
+folder. A dropped connection still carries on by itself; reloading the page is what loses
+the partial file, because the browser owns it and will not hand it back. Only a browser
+that supports neither route holds the file in memory, capped at 500&nbsp;MB, and Warp
 Gate refuses before the transfer starts rather than failing near the end.</p>
 
 <h2>How long does a gate last?</h2>
-<p>The time you pick is an <strong>idle</strong> timeout, not a deadline. While both
-devices are connected the clock keeps being pushed forward, so a long file transfer or a
-long conversation is never cut off part-way through. The countdown only starts running
-once somebody leaves. There is a 24 hour hard limit as a backstop so a pair of forgotten
-tabs cannot hold a gate open indefinitely.</p>
+<p>The time you pick is an <strong>idle</strong> timeout, not a deadline. While anyone is
+still on the gate page the clock keeps being pushed forward, so a long file transfer or
+a long conversation is never cut off part-way through, and a gate that everybody has
+left is reaped within a minute or so. There is a 24 hour cap as a backstop; a gate with
+at least two devices actually attached can keep pushing that cap back, up to an absolute limit
+of three days that nothing can move, and the gate warns everyone in the final fifteen
+minutes before that limit rather than simply vanishing.</p>
 
 <h2>Does it keep any history?</h2>
-<p>Nothing is written to disk, ever, on the server or in your browser. The server holds a
-room in memory only, and a restart destroys every gate.</p>
-<p>One deliberate exception on your own screen: <strong>after a gate is severed, what was
+<p>The server writes nothing to disk, ever: it holds a room in memory only, and a restart
+destroys every gate. Your own browser keeps only the small bookkeeping items listed in
+the <a href="/privacy.html">Privacy Policy</a>: your acceptance of the Terms, the
+session's token and secret for a gate that is currently open, and, during a file
+transfer, a resume record that never contains the file's contents. Received files exist
+only where you save them.</p>
+<p>One deliberate exception on your own screen: <strong>after a gate is burned, what was
 exchanged stays readable in that tab</strong>, so that a dropped connection does not mean
 running the whole thing again just to re-read a password you already received. It is
 never written to storage, never sent anywhere, and it disappears when you close or reload
 the page. There is a "Clear this now" button if you want it gone sooner.</p>
 
 <h2>Do you moderate what people send?</h2>
-<p>We cannot. Everything is encrypted between the two devices, so there is nothing for us
+<p>We cannot. Everything is encrypted between the devices, so there is nothing for us
 to inspect even in principle. Responsibility for what you send rests with you, as set out
 in the <a href="/terms.html">Terms of Use</a> and the
 <a href="/acceptable-use.html">Acceptable Use Policy</a>.</p>
 
 <h2>Is it free?</h2>
-<p>Yes, with no advertising and no tracking. If you want to help with the running costs
-there is a <a href="/#support">support section</a> on the front page.</p>
+<p>Yes. Nothing in a gate is advertised to or tracked: that page is served with a policy
+that permits no other origin at all, so no third-party script can run there. The front page
+is a separate document and may carry a sponsor; the <a href="/privacy.html">Privacy
+Policy</a> says exactly where the line is. If you want to help with the running costs there
+is a <a href="/#support">support section</a> on the front page.</p>
 
-<p class="muted small"><a href="/">Back to Warp Gate</a> &middot; <a href="/faq.html">FAQ</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/acceptable-use.html">Acceptable use</a> &middot; <a href="/privacy.html">Privacy</a></p>
+<p class="doc-foot"><a href="/">Back to Warp Gate</a> &middot; <a href="/faq.html">FAQ</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/acceptable-use.html">Acceptable use</a> &middot; <a href="/privacy.html">Privacy</a></p>
 </main>
 </body>
 </html>

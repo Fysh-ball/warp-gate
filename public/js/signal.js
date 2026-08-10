@@ -14,6 +14,92 @@ export class Signal extends EventTarget {
     this.signalKey = signalKey;
     this.source = null;
     this.closed = false;
+    // This device's own slot id, learned from the server's `hello`. It rides INSIDE the
+    // sealed envelope on every message we send, because the receiver has to know which of
+    // its links a relayed offer belongs to and the server must not be the one to say: the
+    // envelope is handed on unmodified, and adding a field to it would make the server a
+    // participant in a conversation it is supposed to be unable to read.
+    //
+    // Be clear about what `from` is and is not. It is sealed under k_sig, which EVERY
+    // participant in the room holds, so it is unforgeable by the server and by anyone
+    // outside the room, and forgeable by anyone inside it. It is routing, not
+    // authentication. What actually binds a link to a participant is that pair's own ECDH
+    // and the key confirmation over it: a participant who mislabels a message still cannot
+    // produce a confirmation for a session it did not agree, so it gains nothing but a
+    // failed handshake on a link it was never party to.
+    this.selfId = null;
+
+    // Replay control for signalling.
+    //
+    // k_sig is HKDF(S, "wg/v1/signal"), so it depends on the room secret alone and the
+    // AAD is a constant. A captured envelope therefore opens as many times as anyone
+    // cares to relay it. That is denial of service rather than compromise (a replayed
+    // offer carries a stale public key, so key confirmation fails closed), but it lets
+    // anyone who can observe signalling wedge a gate repeatedly, so it is worth closing.
+    //
+    // A strictly increasing per-sender counter is enough, and cheaper than putting a
+    // sequence into the AAD: `seq` rides inside the sealed envelope, so it cannot be
+    // altered by the server or by anyone outside the room, and the receiver simply
+    // refuses anything it has already passed.
+    //
+    // Deliberately NOT reset when the event stream reconnects. EventSource reconnects on
+    // its own, and a counter that restarted would make the receiver reject every message
+    // after a blip.
+    //
+    // The counter alone is not enough, and the first version of this shipped broken: it
+    // was monotonic for the life of the PAGE, but a slot survives a reload. After a
+    // refresh the resuming device restarts at 0 while its peer still remembers the
+    // highest sequence from the previous page, so every message was refused as a replay,
+    // the resume failed, and the fallback cleared the slot AND the room secret. A guard
+    // against a denial of service that itself denies service is not a trade worth making.
+    //
+    // So each page load stamps an epoch, and a message is accepted when it is newer by
+    // (epoch, seq) than anything already seen from that sender. A reloaded peer presents
+    // a HIGHER epoch, so it is accepted from sequence 1. A replayed envelope always
+    // carries an epoch and sequence that have already been seen, so it is still refused.
+    this.epoch = Date.now();
+    this.sendSeq = 0;
+    /** @type {Map<string, {epoch: number, seq: number}>} sender slot id -> newest accepted */
+    this.seenSeq = new Map();
+  }
+
+  /**
+   * Refuse a replayed signalling message.
+   *
+   * Cross-SESSION replay is already impossible and deliberately not handled here: slot
+   * ids are freshly random per gate, and routing is gated on the current roster, so an
+   * envelope captured from an earlier gate names a participant this one does not seat and
+   * is dropped before it reaches a link.
+   *
+   * What this closes is replay WITHIN a live session.
+   */
+  acceptSeq(message) {
+    const from = message?.from;
+    const seq = message?.seq;
+    const epoch = message?.epoch;
+    // A message with no sender, counter or epoch cannot be placed. Older senders do not
+    // exist: both sides ship together, so this is a malformed or forged frame.
+    if (typeof from !== 'string' || !from
+      || !Number.isSafeInteger(seq) || seq < 1
+      || !Number.isSafeInteger(epoch) || epoch < 1) {
+      this.dispatchEvent(new CustomEvent('undecryptable', {
+        detail: 'a signalling message arrived without a usable sender, epoch or sequence number',
+      }));
+      return false;
+    }
+    const last = this.seenSeq.get(from);
+    // Newer by (epoch, seq). A reloaded peer brings a higher epoch and is accepted from
+    // sequence 1; a replay carries a pair that has already been seen and is not.
+    const newer = !last || epoch > last.epoch || (epoch === last.epoch && seq > last.seq);
+    if (!newer) {
+      this.dispatchEvent(new CustomEvent('replay-refused', {
+        detail: `refused a repeated signalling message from ${from} `
+          + `(epoch ${epoch} seq ${seq}, already at epoch ${last.epoch} seq ${last.seq})`,
+      }));
+      return false;
+    }
+    this.seenSeq.set(from, { epoch, seq });
+    return true;
   }
 
   connect() {
@@ -46,6 +132,7 @@ export class Signal extends EventTarget {
       }
       try {
         const message = await openEnvelope(this.signalKey, envelope);
+        if (!this.acceptSeq(message)) return;
         this.dispatchEvent(new CustomEvent('message', { detail: message }));
       } catch (err) {
         // Someone in the room does not hold the room secret, or a proxy mangled the
@@ -66,14 +153,27 @@ export class Signal extends EventTarget {
     return this;
   }
 
-  /** Seal a signalling message and hand it to the server for relay. */
-  async send(message) {
+  /**
+   * Seal a signalling message and hand it to the server for relay to ONE participant.
+   *
+   * `to` is a slot id and it is mandatory. The server refuses a relay with no target
+   * rather than falling back to a broadcast, and this refuses to send one: a pair's ECDH
+   * is only private to that pair because nobody else ever receives it, so an unaddressed
+   * relay is a key exchange handed to the whole room.
+   */
+  async send(message, to) {
     if (this.closed) return false;
-    const envelope = await sealEnvelope(this.signalKey, message);
+    if (typeof to !== 'string' || !to) {
+      throw new Error('a signalling message must be addressed at one participant');
+    }
+    this.sendSeq += 1;
+    const envelope = await sealEnvelope(this.signalKey, {
+      ...message, from: this.selfId, seq: this.sendSeq, epoch: this.epoch,
+    });
     const res = await fetch('/api/relay', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ roomId: this.roomId, token: this.token, envelope }),
+      body: JSON.stringify({ roomId: this.roomId, token: this.token, to, envelope }),
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) {
@@ -107,29 +207,10 @@ export class Signal extends EventTarget {
   }
 }
 
-export async function createRoom(roomId, sessionMinutes, requiresPassword = false) {
-  const res = await fetch('/api/create', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ roomId, sessionMinutes, requiresPassword }),
-    signal: AbortSignal.timeout(8000),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? `create failed: http ${res.status}`);
-  return body;
-}
-
-export async function joinRoom(roomId) {
-  const res = await fetch('/api/join', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ roomId }),
-    signal: AbortSignal.timeout(8000),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? `join failed: http ${res.status}`);
-  return body;
-}
+// createRoom() and joinRoom() used to live here and were never called: session.js builds
+// both requests itself because they carry a join proof derived from the room secret, which
+// these helpers never knew about. They are gone rather than left as two exported functions
+// that would be refused by the server the moment anything used them.
 
 /** Check whether a stored slot is still valid, so a reload can resume rather than fail. */
 export async function checkRoom(roomId, token) {

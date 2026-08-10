@@ -6,6 +6,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pipeline } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { handleApi, sendJson } from './signal.js';
@@ -27,7 +28,7 @@ const TYPES = new Map(Object.entries({
 
 // Strict by design. No external origins at all: a page that can reach a third party
 // is a page that can leak. 'wasm-unsafe-eval' is absent because nothing here uses WASM.
-const CSP = [
+const CSP_DIRECTIVES = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self'",
@@ -36,10 +37,52 @@ const CSP = [
   "img-src 'self' blob:",
   "connect-src 'self'",
   "font-src 'self'",
+  // The service worker that streams a received file into the browser's own download
+  // machinery. Without this it inherits default-src 'none' and is blocked outright.
+  // 'self' only: the worker is served from this origin, and a worker from anywhere
+  // else would be able to see every response the page makes.
+  "worker-src 'self'",
+  // The hidden frame that triggers a streamed download. A frame is the only shape the
+  // browser dispatches to a service worker: a link with the download attribute is
+  // fetched outside it, hits the real server, 404s, and cancels at zero bytes. Same
+  // origin only, so this admits nothing external.
+  "frame-src 'self'",
   "base-uri 'none'",
   "form-action 'none'",
   "frame-ancestors 'none'",
-].join('; ');
+];
+
+const CSP = CSP_DIRECTIVES.join('; ');
+
+// The landing document, and only the landing document, may be widened to reach a
+// sponsor's origins. It is a separate FILE from the gate for exactly this reason:
+// the widening is keyed on the resolved filename, so no request path, redirect or
+// traversal can carry it onto app.html, where a decryption key lives in the heap.
+//
+// With WG_AD_ORIGINS unset this is the same string as CSP, so the default deployment
+// has one policy and nothing to reason about.
+const LANDING_CSP = (() => {
+  const origins = config.adOrigins;
+  if (!origins.length) return CSP;
+  const extra = origins.join(' ');
+  // Widened deliberately narrowly. No connect-src: a sponsor slot that can phone home
+  // with what it saw is the thing this whole split exists to prevent, and a static
+  // creative does not need it. No worker-src, no base-uri, no form-action.
+  return CSP_DIRECTIVES.map((d) => {
+    if (d.startsWith('script-src ') || d.startsWith('img-src ') || d.startsWith('frame-src ')) {
+      return `${d} ${extra}`;
+    }
+    return d;
+  }).join('; ');
+})();
+
+// The gate lives at its own path so that an invite link never lands on the document
+// that may carry someone else's script. Extensionless, because it is a page people
+// see in an address bar and paste into a chat.
+const ROUTES = new Map([
+  ['/app', 'app.html'],
+  ['/app/', 'app.html'],
+]);
 
 function securityHeaders(res) {
   res.setHeader('content-security-policy', CSP);
@@ -55,7 +98,7 @@ function securityHeaders(res) {
 }
 
 function serveStatic(req, res, pathname) {
-  const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  const rel = pathname === '/' ? 'index.html' : (ROUTES.get(pathname) ?? pathname.replace(/^\/+/, ''));
   const target = path.resolve(PUBLIC_DIR, rel);
 
   // Containment check. path.resolve collapses ".." before we look, so this catches
@@ -67,18 +110,35 @@ function serveStatic(req, res, pathname) {
   fs.stat(target, (err, stat) => {
     if (err || !stat.isFile()) return sendJson(res, 404, { error: 'not_found' });
     const type = TYPES.get(path.extname(target).toLowerCase()) ?? 'application/octet-stream';
+    // Keyed on the resolved path, so this can only ever be the landing file itself.
+    // securityHeaders() already set the strict policy; this replaces it for that one
+    // document, and is a no-op string-wise unless WG_AD_ORIGINS is set.
+    if (target === path.join(PUBLIC_DIR, 'index.html')) {
+      res.setHeader('content-security-policy', LANDING_CSP);
+    }
     res.writeHead(200, {
       'content-type': type,
       'content-length': stat.size,
       // The app is small and ephemeral; never let a stale build linger in a cache.
       'cache-control': 'no-store',
     });
+    // A HEAD answer is the headers and nothing else. Opening a stream Node will only
+    // discard is wasted IO and one more descriptor with nothing to close it.
+    if (req.method === 'HEAD') return res.end();
+    // The client can vanish while the stat is in flight. pipeline() throws rather than
+    // reporting when its destination is already gone, so never open the file at all.
+    if (res.destroyed || res.writableEnded) return undefined;
     const stream = fs.createReadStream(target);
-    stream.on('error', (streamErr) => {
-      res.wgStaticError = streamErr.message;
-      res.destroy();
+    // pipeline, not pipe: it tears the read stream down when the destination dies, and it
+    // destroys the response on a read fault. With a bare pipe every aborted GET leaks its
+    // file descriptor for the life of the process.
+    pipeline(stream, res, (pipeErr) => {
+      // An aborted download is the normal case here and says nothing about the server.
+      // Only a genuine read fault is worth a line on stderr.
+      if (pipeErr && pipeErr.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        process.stderr.write(`static read error: ${pipeErr.message}\n`);
+      }
     });
-    stream.pipe(res);
   });
   return undefined;
 }
@@ -89,11 +149,19 @@ const server = http.createServer((req, res) => {
   try {
     url = new URL(req.url, 'http://localhost');
   } catch (err) {
-    res.wgUrlError = err.message;
+    // The only way here is a malformed request target, which the 400 already says in
+    // full. There is nothing in the message a client or an operator could act on.
+    void err;
     return sendJson(res, 400, { error: 'bad_request' });
   }
 
   if (url.pathname.startsWith('/api/')) {
+    // SSE streams are long lived by definition, so the request timeout has to be lifted
+    // for them. Only for them: every other route must stay bounded.
+    if (url.pathname === '/api/events') {
+      req.setTimeout(0);
+      res.setTimeout(0);
+    }
     return handleApi(req, res, url).catch((err) => {
       // Never leak an internal error to the client, but never swallow it either.
       process.stderr.write(`api error ${url.pathname}: ${err.message}\n`);
@@ -109,8 +177,13 @@ const server = http.createServer((req, res) => {
 
 // No access logging anywhere: that is a design requirement, not an oversight.
 server.headersTimeout = 20_000;
-server.requestTimeout = 0; // SSE streams are long lived by definition.
+// Bounded for every route. headersTimeout does not cover this: a slowloris sends complete
+// headers and then dribbles the body forever. /api/events lifts it per request instead.
+server.requestTimeout = 30_000;
 server.keepAliveTimeout = 72_000;
+// A pipelined flood answered on one socket is unmetered work. Well past what a browser
+// will ever put on a single connection, and it only asks the client to reconnect.
+server.maxRequestsPerSocket = 200;
 
 const timers = [
   setInterval(() => { sweepRooms(); sweepLimits(); }, config.sweepIntervalMs),
@@ -148,6 +221,10 @@ function shutdown(signal) {
   for (const sock of stunSockets) {
     try { sock.close(); } catch (err) { void err; }
   }
+  // server.close() waits for every open connection, so an idle keep-alive socket alone
+  // would hold the process until the force-exit timer. The rooms are already gone.
+  server.closeIdleConnections();
+  server.closeAllConnections();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
 }

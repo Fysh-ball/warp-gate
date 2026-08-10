@@ -14,14 +14,35 @@
 </header>
 
 <main class="legal">
+<p class="eyebrow">Legal</p>
 <h1>Privacy Policy</h1>
-<p class="muted small">Last updated: 8 August 2026</p>
+<p class="doc-meta">Last updated: 9 August 2026</p>
 
 <h2>The short version</h2>
-<p>We have no accounts, no database, no analytics, no advertising, no tracking cookies and
-no access logs. We cannot read your messages or files, and we do not keep them. What
-unavoidably exists is network metadata, held briefly in memory and by the network provider
-in front of the Service.</p>
+<p>We have no accounts, no database, no analytics, no tracking cookies and no access logs.
+We cannot read your messages or files, and we do not keep them. What unavoidably exists is
+network metadata, held briefly in memory and by the network provider in front of the
+Service.</p>
+
+<h2>Two pages, two policies</h2>
+<p>The front page and the gate are separate documents, served with separate
+Content-Security-Policy headers, and this distinction is the one thing in this policy worth
+reading twice.</p>
+<ul>
+  <li><strong>The gate</strong> (<code>/app</code>, and every page reached from it) is served
+      with <code>default-src 'none'</code>. It may load scripts, images, styles and
+      connections from this origin and from nowhere else. That is enforced by your browser,
+      not promised by us: a third-party script cannot run there even if we wanted it to.
+      Everything below about what we do not collect applies to this document absolutely.</li>
+  <li><strong>The front page</strong> may carry a sponsor slot. If it does, that slot is
+      declared in that page's policy alone and can never load on the gate. A third-party
+      sponsor could set its own cookies or identifiers on that page and would be subject to
+      its own privacy policy, not this one. <strong>At the time of writing no sponsor slot is
+      enabled and the front page loads nothing from any other origin.</strong></li>
+</ul>
+<p>Nothing about a gate, including its link, its code, its secret or the fact that you opened
+one, is available to anything on the front page: the secret lives in a URL fragment, which is
+never sent to a server, and the two documents share no script, no storage key and no memory.</p>
 
 <h2>What we do not collect</h2>
 <ul>
@@ -30,7 +51,8 @@ in front of the Service.</p>
       encrypted on your device before transmission and the keys never reach us.</li>
   <li>No history of who connected to whom, or of any past session.</li>
   <li>No analytics, telemetry, fingerprinting, advertising identifiers or third-party
-      trackers. The Service loads no third-party scripts, fonts or images.</li>
+      trackers of our own, on any page. The gate loads no third-party scripts, fonts or
+      images at all; see "Two pages, two policies" above for the front page.</li>
   <li>No web server access logs.</li>
 </ul>
 
@@ -38,14 +60,18 @@ in front of the Service.</p>
 <p>For the lifetime of a session only, and only in memory, the server holds:</p>
 <ul>
   <li>a random room identifier, derived from your secret in a way that does not reveal it;</li>
-  <li>two random session tokens, one per participant;</li>
-  <li>an expiry time;</li>
-  <li>the two live connections, so that encrypted handshake messages can be passed
-      between them.</li>
+  <li>a second one-way value derived from your secret, kept as a hash, used only to check
+      that a joining device actually holds the link;</li>
+  <li>a random session token for each participant;</li>
+  <li>a yes-or-no flag recording whether a room password was set, so a joining device can
+      be prompted. The password itself never reaches us;</li>
+  <li>expiry times;</li>
+  <li>the participants' live connections, so that encrypted handshake messages can be
+      passed between them.</li>
 </ul>
 <p>The handshake messages themselves are relayed as opaque ciphertext. The server cannot
 read them, which means it cannot see the network addresses they contain.</p>
-<p>This state is destroyed when the gate expires, when either participant severs it, or
+<p>This state is destroyed when the gate expires, when any participant burns it, or
 when the server restarts. None of it is written to disk.</p>
 
 <h2>Abuse prevention</h2>
@@ -54,7 +80,9 @@ client. The counter is keyed by a value derived from your IP address using a sec
 is generated fresh each time the server starts and is never written down. The counters
 live in memory, expire within minutes, and cannot be linked back to an IP address without
 that secret, which ceases to exist when the process restarts. We do not store IP
-addresses.</p>
+addresses. One counter lasts longer than minutes: a count of how many gates a client
+currently holds open, which necessarily lasts as long as those gates do and is keyed the
+same unlinkable way.</p>
 
 <h2>Network providers who can see metadata</h2>
 <p>We cannot make the network invisible, and we will not pretend otherwise.</p>
@@ -68,9 +96,9 @@ addresses.</p>
       deliberately use Cloudflare's STUN server, because Cloudflare already sees your
       address from the connection above, so this adds no party that was not already
       involved.</li>
-  <li><strong>The other device</strong> learns your network address, unavoidably, because
-      your devices connect directly to each other. This is described on the first screen
-      of the Service.</li>
+  <li><strong>The other devices in your gate</strong> learn your network address,
+      unavoidably, because the devices connect directly to each other. This is described
+      on the first screen of the Service.</li>
   <li><strong>Your own network operators</strong>, such as your ISP or employer, can see
       that you connected to this Service, as they can for any website.</li>
 </ul>
@@ -82,15 +110,36 @@ addresses.</p>
       and date. This exists so you are not asked on every visit.</li>
   <li><code>sessionStorage</code>: your session token <em>and the room secret</em> for a
       gate that is currently open, so that reloading the page does not destroy the
-      session. Both are scoped to that tab, removed the moment the gate ends, and
-      discarded when the tab closes. The secret is held here rather than in the address
-      bar so that it is not readable by anyone who can see your screen. Note that some
-      browsers write sessionStorage to disk for crash recovery, so treat this as a
-      short-lived convenience rather than a vault.</li>
+      session; and, while you are sending a file, a note of what is being sent (its name,
+      size, type and a fingerprint of its first bytes) so that a reload can offer to
+      continue rather than start over. All of it is scoped to that tab, removed the
+      moment the gate ends, and discarded when the tab closes. The secret is held here
+      rather than in the address bar so that it is not readable by anyone who can see
+      your screen. Note that some browsers write sessionStorage to disk for crash
+      recovery, so treat this as a short-lived convenience rather than a vault.</li>
+  <li><code>IndexedDB</code>: only for a file transfer that is in progress, and only on
+      the receiving device. It keeps a description of the transfer (the file's name,
+      size, type and a fingerprint of its first bytes), a count of how many bytes have
+      arrived, and, if you chose a save location, the handle your browser gave the page
+      for that file, so that a dropped connection or a reloaded page can carry on from
+      where it stopped instead of starting a large transfer again. <strong>The contents
+      of the file are never written here.</strong> The bytes go straight into the file
+      you chose, on your own disk. The entry is deleted when the transfer finishes, when
+      the gate ends, and when you cancel; if you close the tab mid-transfer and never
+      return to that gate, the entry lingers until you clear this site's data.</li>
+  <li><strong>A service worker</strong>, registered only when a file is too large to hold
+      in memory. It is a small script this site installs in your browser so that a
+      received file can be handed to your browser's own download manager and written
+      straight to disk, instead of being held in the page. <strong>It never sees a key
+      and never decrypts anything</strong>: the page decrypts and passes it finished
+      bytes. Unlike the storage above it is not removed when the gate ends, because a
+      service worker belongs to the site rather than to a session. You can remove it at
+      any time by clearing site data for this site in your browser's settings.</li>
 </ul>
-<p>Both can be cleared at any time through your browser's settings. Messages and received
-files are held in the page's memory only and are gone when the page closes.</p>
-<p>After a gate is severed, what was exchanged remains visible in that tab so that a
+<p>All of these can be cleared at any time through your browser's settings. Messages, and
+received files that are being held in memory rather than saved to a location you chose,
+exist only in the page and are gone when it closes.</p>
+<p>After a gate is burned, what was exchanged remains visible in that tab so that a
 dropped connection does not force you to start over. This is the same data that was
 already in the page; it is not written to storage and not transmitted anywhere, and it is
 discarded when the tab is closed or reloaded. A "Clear this now" button removes it
@@ -104,7 +153,7 @@ export, and a deletion request would find nothing to delete.</p>
 <h2>Legal requests</h2>
 <p>If we receive a valid legal demand, we can only produce what we hold, which for past
 sessions is nothing at all. We cannot decrypt, recover or reconstruct the contents of any
-session, because the keys exist only on the two devices involved and are destroyed with
+session, because the keys exist only on the devices involved and are destroyed with
 the session.</p>
 
 <h2>Children</h2>
@@ -115,11 +164,11 @@ age at which they can form a binding contract in their jurisdiction.</p>
 <p>Any change to this policy will be published on this page with an updated date.</p>
 
 <h2>Contact</h2>
-<p>Privacy questions can be sent to <span class="fillme">[CONTACT EMAIL]</span>. The
-operator is <span class="fillme">[OPERATOR LEGAL NAME AND ADDRESS, if required in your
-jurisdiction]</span>.</p>
+<p>Privacy questions, and requests about this policy, can be sent to
+<a href="mailto:warpgate@fysh.site">warpgate@fysh.site</a>. This address is monitored by the operator
+of the Service and is the correct route for every enquiry, including legal ones.</p>
 
-<p class="muted small"><a href="/">Back to Warp Gate</a> &middot; <a href="/faq.html">FAQ</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/acceptable-use.html">Acceptable use</a> &middot; <a href="/privacy.html">Privacy</a></p>
+<p class="doc-foot"><a href="/">Back to Warp Gate</a> &middot; <a href="/faq.html">FAQ</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/acceptable-use.html">Acceptable use</a> &middot; <a href="/privacy.html">Privacy</a></p>
 </main>
 </body>
 </html>

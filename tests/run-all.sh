@@ -6,7 +6,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
-suites=(crypto qr signalling browser)
+# public-e2e is deliberately absent: it drives a live deployment over the real network
+# and is run by hand against a URL, not as part of a local run.
+suites=(crypto qr signalling http download browser mesh)
 failed=()
 
 for suite in "${suites[@]}"; do

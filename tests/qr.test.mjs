@@ -102,7 +102,7 @@ function roundTrip(name, text) {
 {
   // Prove the decode check can fail. A matrix of noise must NOT decode; if this
   // "passes", the whole suite proves nothing.
-  const qr = encodeQr('https://wg.fysh.site/#WARP-TEST');
+  const qr = encodeQr('https://warpgate.fysh.site/#WARP-TEST');
   for (let i = 0; i < qr.modules.length; i += 3) qr.modules[i] ^= 1;
   const file = path.join(TMP, 'corrupt.png');
   fs.writeFileSync(file, renderPng(qr));
@@ -113,11 +113,24 @@ function roundTrip(name, text) {
 
 // ---------------------------------------------------------------- real payloads
 {
-  const url = 'https://wg.fysh.site/#WARP-3K7M-9QX2-B4TF-8NPW-VJ5H-RD2S-Y7';
+  // The WORST case, not an average one, and it is close to the ceiling: eight seven-letter
+  // words is the longest code the wordlist can produce, and qr.js stops at version 6, which
+  // holds 106 payload bytes. This URL is 99. That 7-byte headroom is the reason words.js
+  // caps its entries at seven letters.
+  const url = 'https://warpgate.fysh.site/app#WARP-BALANCE-BEEHIVE-BISCUIT-BICYCLE-BAGPIPE-BALCONY-BANQUET-BAPTISM';
   const { qr, decoded } = roundTrip('warpgate-link', url);
   check('a real Warp Gate link encodes and decodes byte-for-byte',
     decoded === url, typeof decoded === 'string' ? decoded : JSON.stringify(decoded));
-  check('a Warp Gate link fits in a low version', qr.version <= 5, `version ${qr.version}`);
+  // Was `<= 5` against a 59-byte base32 link. The longest word code needs version 6, which
+  // is the last version qr.js implements, so this is now a check on the actual ceiling
+  // rather than on comfortable headroom. Stated as bytes as well as version, because
+  // "version 6" alone does not say how close 99 is to 106.
+  check('the longest possible Warp Gate link still fits the highest version qr.js supports',
+    qr.version <= 6, `version ${qr.version}, ${url.length} bytes of a 106-byte capacity`);
+  check('and a longer link than the wordlist can produce is refused rather than silently truncated',
+    (() => {
+      try { roundTrip('too-long', `${url}-OVERFLOW`); return false; } catch (err) { return /capacity|too long|refus/i.test(err.message); }
+    })(), 'a payload past version 6 must throw');
   check('module matrix is square and the documented size',
     qr.modules.length === qr.size * qr.size && qr.size === 17 + 4 * qr.version, `size ${qr.size} v${qr.version}`);
 }

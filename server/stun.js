@@ -50,8 +50,13 @@ function xorMappedAddress(address, port, txid) {
 
 /** Expand an IPv6 literal to 16 bytes. Returns null if it is not parseable. */
 function expandV6(ip) {
-  const [head, tail] = ip.split('%')[0].split('::');
-  const parse = (part) => (part ? part.split(':').filter(Boolean) : []);
+  // Reject before parsing rather than after. parseInt is not a validator: it read
+  // "1zz" as 1, and splitting on "::" silently dropped the third half of "1::2::3",
+  // so malformed literals expanded to a plausible-looking address instead of null.
+  const parts = ip.split('%')[0].split('::');
+  if (parts.length > 2) return null;
+  const [head, tail] = parts;
+  const parse = (part) => (part ? part.split(':') : []);
   const left = parse(head);
   const right = tail === undefined ? [] : parse(tail);
   if (tail === undefined && left.length !== 8) return null;
@@ -61,9 +66,8 @@ function expandV6(ip) {
   if (groups.length !== 8) return null;
   const out = Buffer.alloc(16);
   for (let i = 0; i < 8; i += 1) {
-    const n = Number.parseInt(groups[i], 16);
-    if (!Number.isFinite(n) || n < 0 || n > 0xffff) return null;
-    out.writeUInt16BE(n, i * 2);
+    if (!/^[0-9a-f]{1,4}$/i.test(groups[i])) return null;
+    out.writeUInt16BE(Number.parseInt(groups[i], 16), i * 2);
   }
   return out;
 }
@@ -91,14 +95,20 @@ function handle(sock, msg, rinfo) {
   const declared = msg.readUInt16BE(2);
   if (20 + declared !== msg.length) return;
 
-  // A Binding response is roughly 2x the request, so amplification potential is low,
-  // but rate limit per source anyway.
+  // A UDP source address is forgeable, so the per-source limit below is not a bound on
+  // anything: every spoofed source gets a fresh 20/s budget and its own retained bucket
+  // entry. The global ceiling is checked first, and is the only one an attacker cannot
+  // rotate around. Amplification is not the concern here (a response is ~1.6x a
+  // request); the bucket growth behind the untrustworthy key is.
+  if (!allow('stun-all', 'global', config.limits.stunPerSecondGlobal, 1000)) return;
   if (!allow('stun', keyFor(rinfo.address), config.limits.stunPerSecondPerIp, 1000)) return;
 
   const response = buildResponse(msg.subarray(8, 20), rinfo.address, rinfo.port);
   if (!response) return;
   sock.send(response, rinfo.port, rinfo.address, (err) => {
-    if (err) sock.wgLastError = err.message;
+    // Surfaced, like the bind and socket errors below. No address: that would be a
+    // request log, which this process deliberately does not keep.
+    if (err) process.stderr.write(`stun send failed: ${err.message}\n`);
   });
 }
 

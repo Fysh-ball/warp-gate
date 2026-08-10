@@ -25,9 +25,9 @@ services:
       # re-add the 3479/udp publish below to go back to self-hosting.
       - WG_STUN_ENABLED=${WG_STUN_ENABLED:-0}
       # Cloudflare already terminates TLS for this hostname and therefore already sees
-      # both peers' addresses from the signalling connections. Using its STUN server
+      # every participant's address from the signalling connections. Using its STUN
       # adds no new party to the threat model, needs no port forward, and keeps the
-      # home IP out of public DNS. Port 53/udp is an documented alternate that gets
+      # home IP out of public DNS. Port 53/udp is a documented alternate that gets
       # through networks which block 3478.
       - WG_STUN_URL=${WG_STUN_URL:-stun:stun.cloudflare.com:3478}
       # Traffic arrives through cloudflared (an existing connector tunnel, host networking) as of
@@ -38,8 +38,14 @@ services:
       # TLS terminates at Cloudflare, so the response is served over HTTPS.
       - WG_HSTS=${WG_HSTS:-1}
       # AGPL-3.0 section 13: network users must be offered the corresponding source.
-      # Point this at the public repository for this deployment.
-      - WG_SOURCE_URL=${WG_SOURCE_URL:-}
+      #
+      # The default below is set, so the offer IS made: /api/config serves it and the
+      # boot warning no longer fires. The repository at that URL is public (verified
+      # 2026-08-09: it resolves, published as a single squashed commit), so the offer
+      # is real. If you deploy a MODIFIED copy, point WG_SOURCE_URL at your version:
+      # a URL that 404s is arguably worse than an empty one, because it silences the
+      # boot warning while still giving a user no way to obtain the source.
+      - WG_SOURCE_URL=${WG_SOURCE_URL:-https://github.com/Fysh-ball/warp-gate}
     volumes:
       - ./app:/app:ro
     ports:

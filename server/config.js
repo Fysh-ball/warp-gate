@@ -18,13 +18,29 @@ const list = (v) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 // deployment must opt in explicitly rather than inherit one silently.
 const stunUrls = list(env.WG_STUN_URL);
 
+// Origins the LANDING document alone is allowed to reach, for a sponsor or ad slot.
+// Empty by default, and empty means the landing gets byte-identical headers to the
+// gate: opting in is an explicit act by an operator, never an inherited default.
+//
+// This is the entire reason index.html and app.html are separate documents. A gate
+// holds a decryption key in the same heap as every script the page loaded, so no
+// value of this variable may ever apply to app.html. server/index.js enforces that
+// by matching the resolved filename, not the request path.
+const adOrigins = list(env.WG_AD_ORIGINS);
+
 export const config = {
+  adOrigins,
+
   httpHost: env.WG_HTTP_HOST || '0.0.0.0',
   httpPort: int(env.WG_HTTP_PORT, 3095),
 
   // In-process RFC 5389 binding responder. Port 3478 is unavailable on the target
   // host (a dead docker publish owned by another service), hence 3479.
-  stunEnabled: env.WG_STUN_ENABLED !== '0',
+  //
+  // Opt-in. Defaulting this on gave anyone who ran the repo without the shipped compose
+  // file a UDP service they never asked for. The shipped compose sets 0, which still
+  // means off.
+  stunEnabled: env.WG_STUN_ENABLED === '1',
   stunHost: env.WG_STUN_HOST || '0.0.0.0',
   stunPort: int(env.WG_STUN_PORT, 3479),
 
@@ -51,14 +67,46 @@ export const config = {
 
   limits: {
     maxRooms: int(env.WG_MAX_ROOMS, 200),
+    // How many participants one gate seats. Every pair runs its own peer connection, its
+    // own ECDH and its own frame counters, so the connection count is O(N^2): six is
+    // fifteen links, twenty would be a hundred and ninety. The cap is what makes a full
+    // mesh the right shape here, so raising it is not a free knob.
+    maxParticipants: int(env.WG_MAX_PARTICIPANTS, 6),
     maxRelayBytes: int(env.WG_MAX_RELAY_BYTES, 64 * 1024),
     maxBodyBytes: int(env.WG_MAX_BODY_BYTES, 96 * 1024),
+    // Only /api/relay carries an envelope. Everything else posts a room id and a token,
+    // so it gets a cap that an unauthenticated caller cannot use to force a large parse.
+    maxSmallBodyBytes: int(env.WG_MAX_SMALL_BODY_BYTES, 2 * 1024),
     createPerWindow: int(env.WG_CREATE_PER_WINDOW, 10),
     joinPerWindow: int(env.WG_JOIN_PER_WINDOW, 30),
     windowMs: int(env.WG_RATE_WINDOW_MS, 5 * 60 * 1000),
     relayPerMinutePerRoom: int(env.WG_RELAY_PER_MIN, 200),
     streamsPerKey: int(env.WG_STREAMS_PER_KEY, 4),
     stunPerSecondPerIp: int(env.WG_STUN_PER_SEC, 20),
+    // The per-source STUN key is a UDP source address and therefore forgeable, so a
+    // global ceiling is the only limit an attacker cannot rotate around.
+    stunPerSecondGlobal: int(env.WG_STUN_PER_SEC_GLOBAL, 2000),
+
+    // Window shared by every API limiter below. Shorter than windowMs because these
+    // guard cheap reads, where a long window would strand an ordinary client.
+    apiWindowMs: int(env.WG_API_WINDOW_MS, 60 * 1000),
+    // Backstop across all routes. Generous: it exists to stop automation, not clients.
+    apiPerWindow: int(env.WG_API_PER_WINDOW, 600),
+    // The unauthenticated GETs. Nothing legitimate fetches these in a loop: the page
+    // reads /api/config once and /api/room only on resume.
+    publicGetPerWindow: int(env.WG_PUBLIC_GET_PER_WINDOW, 30),
+    // Charged only when a request is refused. A client that keeps being refused is
+    // probing (the 404/403 split on /api/room is a room-existence oracle); a working
+    // client never touches this budget, so it can be far tighter than the others.
+    rejectPerWindow: int(env.WG_REJECT_PER_WINDOW, 30),
+    // Per rate-limit bucket. Bucket entries are per-boot memory that an unauthenticated
+    // caller grows one key at a time, and they live for a whole window regardless of the
+    // sweeper. Measured at 116 B/entry: this cap times the number of buckets has to stay
+    // small next to the 128 MiB container.
+    maxBucketEntries: int(env.WG_MAX_BUCKET_ENTRIES, 10_000),
+    // Entries examined per sweep call. A full pass over large maps blocks the event
+    // loop (measured: 578 ms at 800k entries), so a pass is spread over several calls.
+    sweepSlice: int(env.WG_SWEEP_SLICE, 2_000),
   },
 
   sweepIntervalMs: int(env.WG_SWEEP_MS, 10_000),
@@ -72,6 +120,13 @@ export const config = {
   // from the proxy's address, so all users share one rate-limit bucket and any single
   // client can lock out everyone else. Behind cloudflared this must be on.
   trustProxy: env.WG_TRUST_PROXY === '1',
+
+  // Which peer addresses may set those headers. Trusting the header without checking
+  // who sent it means whoever can reach the port owns the rate-limit key space: a
+  // rotating CF-Connecting-IP gets a fresh budget on every request. Loopback is always
+  // trusted (cloudflared reaches this process at 127.0.0.1); anything else has to be
+  // named here. Comma separated, e.g. "10.0.0.4,10.0.0.5".
+  trustedProxies: list(env.WG_TRUSTED_PROXIES),
 
   // Send HSTS. Only enable where TLS actually terminates in front of this process.
   hsts: env.WG_HSTS === '1',

@@ -3,6 +3,7 @@
 // deployed behaviour is wrong, not just an internal function.
 
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,8 +55,31 @@ for (const signal of ['SIGINT', 'SIGTERM', 'uncaughtException', 'unhandledReject
   });
 }
 
-/** Start a server process and wait until it reports listening. */
+// The environment variable is WG_HTTP_PORT, not WG_PORT. Getting it wrong does not
+// fail: the server silently binds its default 3095, the test measures a port nobody is
+// serving, and every count comes back zero, which reads exactly like a pass. Reject the
+// wrong spelling at the door rather than letting it produce a false clean result.
+const PORT_ALIASES = ['WG_PORT', 'WG_HTTPPORT', 'PORT', 'WG_HTTP_PORT_NUMBER'];
+const HOST_ALIASES = ['WG_HOST', 'WG_HTTPHOST', 'HOST'];
+
+/** Start a server process, wait until it reports listening, then prove it answers. */
 export function startServer(env = {}) {
+  // Case-insensitively, because the guard previously compared exact names and a
+  // lowercase `port` sailed through: it became a meaningless env var, the server bound
+  // the default 3095, the page under test never loaded, and the failure looked like a
+  // broken feature rather than a mis-called helper.
+  const aliases = new Set([...PORT_ALIASES, ...HOST_ALIASES].map((a) => a.toLowerCase()));
+  for (const given of Object.keys(env)) {
+    if (aliases.has(given.toLowerCase())) {
+      throw new Error(`startServer was given ${given}; the server reads WG_HTTP_PORT and WG_HTTP_HOST. `
+        + 'The wrong name binds the default 3095 and every measurement returns zero, which looks like a pass.');
+    }
+  }
+  const wantPort = env.WG_HTTP_PORT === undefined ? null : Number(env.WG_HTTP_PORT);
+  if (env.WG_HTTP_PORT !== undefined && !Number.isInteger(wantPort)) {
+    throw new Error(`WG_HTTP_PORT must be an integer, got ${JSON.stringify(env.WG_HTTP_PORT)}`);
+  }
+
   const child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -67,22 +91,33 @@ export function startServer(env = {}) {
   child.stdout.on('data', (d) => { out += d.toString(); });
   child.stderr.on('data', (d) => { err += d.toString(); });
 
-  return new Promise((resolve, reject) => {
+  const handle = {
+    child,
+    port: wantPort,
+    stdout: () => out,
+    stderr: () => err,
+    stop: () => new Promise((done) => {
+      child.once('exit', done);
+      child.kill('SIGTERM');
+      setTimeout(() => { child.kill('SIGKILL'); done(); }, 2500).unref();
+    }),
+  };
+
+  const listening = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`server did not start: ${out}${err}`)), 8000);
     const tick = setInterval(() => {
-      if (out.includes('warp-gate http')) {
+      const banner = /warp-gate http (\S+):(\d+)/.exec(out);
+      if (banner) {
         clearTimeout(timer);
         clearInterval(tick);
-        resolve({
-          child,
-          stdout: () => out,
-          stderr: () => err,
-          stop: () => new Promise((done) => {
-            child.once('exit', done);
-            child.kill('SIGTERM');
-            setTimeout(() => { child.kill('SIGKILL'); done(); }, 2500).unref();
-          }),
-        });
+        // The process prints the port it actually bound. If that is not the port the
+        // test asked for, every later measurement is against the wrong process.
+        if (wantPort !== null && Number(banner[2]) !== wantPort) {
+          reject(new Error(`server bound ${banner[1]}:${banner[2]} but the test asked for ${wantPort}. `
+            + 'Measuring the wrong port returns zeros that read as a pass.'));
+          return;
+        }
+        resolve(handle);
       }
       if (child.exitCode !== null) {
         clearTimeout(timer);
@@ -92,6 +127,55 @@ export function startServer(env = {}) {
     }, 25);
     tick.unref?.();
   });
+
+  // Liveness gate. Nothing may be measured against a server that did not answer: an
+  // unanswered port produces empty results, and empty results are indistinguishable
+  // from a clean run.
+  return listening.then(async (srv) => {
+    if (wantPort === null) return srv;
+    const deadline = Date.now() + 5000;
+    let last = 'never answered';
+    for (;;) {
+      try {
+        const health = await request(wantPort, 'GET', '/api/health');
+        if (health.json?.ok === true) return srv;
+        last = `http ${health.status} ${health.text}`;
+      } catch (probeErr) {
+        last = probeErr.message;
+      }
+      if (Date.now() > deadline) {
+        await srv.stop();
+        throw new Error(`server on ${wantPort} never reported {"ok":true} from /api/health (${last}); aborting `
+          + 'rather than measuring against a server that is not there');
+      }
+      await new Promise((r) => { setTimeout(r, 50).unref?.(); });
+    }
+  });
+}
+
+/**
+ * A join proof pair.
+ *
+ * The creator registers H = SHA-256(J) and the joiner presents J. In the browser both
+ * come from the room secret; a test only needs a matching pair, so this generates one
+ * directly rather than duplicating the HKDF the app already has its own tests for.
+ */
+/**
+ * Are these two slot tokens both present and genuinely different?
+ *
+ * Exported rather than inlined so the assertion in the test and the proof that the
+ * assertion can fail run the same code, instead of two similar-looking copies.
+ */
+export function distinctTokens(a, b) {
+  if (typeof a !== 'string' || a.length === 0) return false;
+  if (typeof b !== 'string' || b.length === 0) return false;
+  return a !== b;
+}
+
+export function makeJoinProof() {
+  const proof = crypto.randomBytes(16).toString('base64url');
+  const hash = crypto.createHash('sha256').update(Buffer.from(proof, 'base64url')).digest('base64url');
+  return { proof, hash };
 }
 
 export function request(port, method, pathname, body, headers = {}) {
@@ -121,7 +205,7 @@ export function request(port, method, pathname, body, headers = {}) {
 }
 
 /** Minimal SSE client. Collects events and lets a test await a specific one. */
-export function openStream(port, roomId, token) {
+export function openStream(port, roomId, token, { readyTimeoutMs = 8000 } = {}) {
   const events = [];
   const waiters = [];
   let buffer = '';
@@ -140,6 +224,18 @@ export function openStream(port, roomId, token) {
   };
 
   const ready = new Promise((resolve, reject) => {
+    // A server that accepts the connection and then says nothing used to hang the whole
+    // suite: there was no deadline anywhere on this path, so one wedged process meant an
+    // indefinite stall with no output rather than a failure.
+    const deadline = setTimeout(() => {
+      try { req?.destroy(); } catch (destroyErr) { void destroyErr; }
+      reject(new Error(`SSE stream to room ${roomId} did not open within ${readyTimeoutMs}ms`));
+    }, readyTimeoutMs);
+    deadline.unref?.();
+    const settle = (fn) => (value) => { clearTimeout(deadline); fn(value); };
+    resolve = settle(resolve);
+    reject = settle(reject);
+
     req = http.get(
       { host: '127.0.0.1', port, path: `/api/events?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}` },
       (response) => {
@@ -192,6 +288,29 @@ export function openStream(port, roomId, token) {
           if (i !== -1) waiters.splice(i, 1);
           reject(new Error(`timed out waiting for SSE event "${event}" after ${ms}ms`));
         }, ms).unref?.();
+      });
+    },
+    /**
+     * Wait out a window and report whether the event arrived during it.
+     *
+     * Reading `events` immediately after the request that might leak proves nothing: the
+     * leaked frame is still in flight, so the list is empty either way and the assertion
+     * prints OK against a server that does leak. This holds the window open instead, and
+     * settles early the moment the event does show up so a leak is reported fast.
+     */
+    arrivedWithin(event, ms) {
+      if (events.some((e) => e.event === event)) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        const entry = { event, resolve: () => { clearTimeout(timer); resolve(true); } };
+        waiters.push(entry);
+        // Deliberately NOT unref'd. An unref'd timer lets the process exit while this
+        // window is still open, which would report "did not arrive" without ever having
+        // waited: the same green output whether the check ran or not.
+        const timer = setTimeout(() => {
+          const i = waiters.indexOf(entry);
+          if (i !== -1) waiters.splice(i, 1);
+          resolve(false);
+        }, ms);
       });
     },
     close() {
