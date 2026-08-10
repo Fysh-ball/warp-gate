@@ -86,10 +86,94 @@
   /* The legal pages size their column to the measure plus this, so it is a token rather
      than a literal in three places: change it and the column follows. */
   --legal-pad: 18px;
+  /* The measure of a POLICY page, which is a different job from the measure of a note
+     inside the app. A policy is read start to finish on whatever screen you happen to
+     have; an in-app disclosure is glanced at beside a control. They were the same token,
+     so widening the reading column for a desktop would have widened every disclosure on
+     the connected screen with it. Below the desktop breakpoint this IS --measure, so a
+     phone sees the shared number and nothing here moves. */
+  --measure-legal: var(--measure);
+  /* The table-of-contents rail beside a policy, and the space between it and the prose.
+     Both are 0 below the breakpoint, where the rail is display:none. Keeping them as
+     zero-valued tokens rather than omitting them means the column-width arithmetic is
+     ONE expression at every width instead of two that have to be kept in step: the
+     narrow case is the wide case with two terms that vanish. */
+  --legal-rail: 0px;
+  --legal-gap: 0px;
+  /* The masthead is sticky at top:0, so anything that has to clear it needs its height:
+     a scroll anchor that would otherwise land underneath it, and the top of the sticky
+     rail. Measured at 1900x1000 it is 45.39px including its bottom border; 46 is that
+     rounded up, because being a fraction of a pixel generous costs nothing and being a
+     fraction short puts a heading under the bar. */
+  --bar-h: 46px;
+
+  /* ---- motion ----------------------------------------------------------------------
+     Before these existed the file carried six transition declarations between them
+     holding five different durations (0.15s twice, 0.18s three times, 0.62s once) and
+     two different curves. That was never a scale. It was six independent decisions taken
+     at six different times, and none of them could be revisited without first finding
+     the other five. These four durations are the scale, and the numbers are Material 3's
+     published motion tokens rather than taste, copied from material-web
+     tokens/versions/v0_192/_md-sys-motion.scss, so "why 250ms" has an answer.
+
+       micro   a press, a hover colour, a chevron. An acknowledgement, not a journey:
+               longer than this and the feedback arrives after the finger has left.
+       small   something small arriving or leaving: a message, a scrim, a banner.
+       medium  something with size arriving: a modal panel, a section scrolled into view.
+       large   a whole screen changing.
+
+     --reveal-rise and --press-scale are the ONLY two values the reduced-motion branch
+     changes. Setting them to 0px and 1 collapses every translate and every scale in the
+     file at once while leaving every fade running, which is what reduced actually means:
+     MDN's wording is removed, reduced OR REPLACED, and Apple's HIG names the replacement
+     directly, "replacing transitions across axes with fades". Killing the fade as well
+     would remove the only remaining signal that anything happened, which is a loss for
+     the same people the query exists to help. */
+  --motion-micro: 100ms;    /* md.sys.motion.duration.short2  */
+  --motion-small: 150ms;    /* md.sys.motion.duration.short3  */
+  --motion-medium: 250ms;   /* md.sys.motion.duration.medium1 */
+  --motion-large: 300ms;    /* md.sys.motion.duration.medium2 */
+  --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1);   /* emphasized-decelerate */
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);    /* emphasized-accelerate */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);     /* standard */
+  --reveal-rise: 8px;
+  --press-scale: 0.985;
 }
 
 @media (min-width: 700px) {
   :root { --shell: min(2160px, 90vw); }
+
+  /* The landing is the one document that does not want the application's shell, and it
+     is the only one whose content is PROSE all the way down rather than controls. The
+     shell above is sized so that grids of controls can stretch; a paragraph cannot, so
+     on the landing every extra pixel of shell goes to the rules and the section borders
+     and none of it goes to the words.
+
+     Measured at 1920x1080 before this rule: `main` was 1728px, `.lp-section` was 1696px
+     and its border-top ran to x=1801, `.lp-h2` was the same 1696px, and the text inside
+     them stopped at 636px (.lp-lede, capped at 62ch) and 1011px (.lp-hero-head). Every
+     heading rule was roughly three times the length of the sentence under it, which is
+     what made the page read as pinned to the left edge: the rules were centred, the
+     words were not, and the eye follows the longest line.
+
+     1320px is chosen by measurement, not by taste. The hero is a two column grid above
+     900px (1.12fr / 0.88fr), and at 1440x900 it resolves to 676px of copy beside a 531px
+     gate preview, which is the width the hero was drawn at and reads correctly. A 1320px
+     shell reproduces that pair at 1920 (measured after: 678 / 533), so the wide screen
+     gets the hero it was designed for rather than a stretched one. Anything much below
+     1240 starts squeezing the preview column; anything above ~1400 puts the dead rule
+     back.
+
+     `min(1320px, 90vw)` rather than a flat 1320px so this only ever REMOVES width that
+     was doing nothing: 90vw is the smaller term below a 1467px viewport, so 1440, 1366
+     and every phone render byte-identically to before and only screens wide enough to
+     have the problem see the change.
+
+     No @supports fallback. An engine without :has() keeps the application shell here,
+     which is exactly what every engine renders today, so the fallback is the current
+     page rather than a broken one. `.lp-hero` is a direct child of <main id="main"> in
+     index.html and exists in no other document, so this cannot reach the gate. */
+  body:has(main > .lp-hero) { --shell: min(1320px, 90vw); }
 }
 /* A phone has no width to spend on a gutter that is not text. Below this the legal
    column keeps every pixel it can for the prose, which at 360px is the difference
@@ -97,8 +181,22 @@
 @media (max-width: 420px) {
   :root { --legal-pad: 13px; }
 }
+/* The desktop breakpoint for a policy page, and the only place any of this changes.
+   Nothing below 1100px reads a different value for any of these four tokens.
+
+   72ch rather than the shared 68ch, and 16px prose rather than 15px (see THE LEGAL
+   PAGES): a `ch` is a character of the element's OWN font, so the two together take the
+   rendered column from 583px to 659px on the same screen. The character count barely
+   moves, which is deliberate. Line length is what makes prose readable and 68 characters
+   was already at the comfortable limit; what a big screen should buy is bigger type and
+   somewhere to put the navigation, not more words per line. */
 @media (min-width: 1100px) {
-  :root { --legal-pad: 26px; }
+  :root {
+    --legal-pad: 26px;
+    --measure-legal: 72ch;
+    --legal-rail: 260px;
+    --legal-gap: 56px;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -160,8 +258,11 @@ html, body {
   color: var(--muted);
   text-decoration: none;
   /* The colour moves on hover, the box does not: a bar that reflows under the cursor
-     is worse than one that does nothing. */
-  transition: color 0.15s ease, background 0.15s ease;
+     is worse than one that does nothing. That sentence settled it for this element and
+     it settles it for the landing's cards too, which get colour and nothing else.
+     `background`, not `background-color`, would animate the shorthand including the
+     image slot; the longhand is the one the compositor can take. */
+  transition: color var(--motion-micro) linear, background-color var(--motion-micro) linear;
 }
 .bar-ico .ico { width: 19px; height: 19px; vertical-align: 0; }
 .bar-ico:hover, .bar-ico:focus-visible { color: var(--accent); background: var(--panel-2); }
@@ -253,12 +354,26 @@ button {
   border: 1px solid transparent;
   cursor: pointer;
   width: 100%;
+  /* transform and colour only. Nothing here may touch a layout property: these buttons
+     sit in flex rows and grids, and a control that resizes itself on press moves its
+     neighbours. */
+  transition: transform var(--motion-micro) var(--ease-standard),
+              background-color var(--motion-micro) linear,
+              border-color var(--motion-micro) linear,
+              color var(--motion-micro) linear;
 }
 button.primary { background: var(--accent); color: var(--on-accent); }
 button.secondary { background: var(--panel-2); color: var(--text); border-color: var(--line); }
 button.danger { background: transparent; color: var(--danger); border-color: var(--line-danger); margin-top: 20px; }
 button.link { background: none; border: none; color: var(--accent); padding: 0; width: auto; text-decoration: underline; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 1.5% down, which is enough to read as a press and small enough that it cannot be
+   mistaken for the control moving. :not(:disabled) because a disabled button that
+   depresses is telling the user it took the click. */
+button:active:not(:disabled) { transform: scale(var(--press-scale)); }
+/* .link is a run of underlined inline text inside a paragraph. Scaling that is a wobble,
+   not a press, and it drags the words either side of it out of alignment. */
+button.link:active { transform: none; }
 
 .row { display: flex; gap: 10px; margin-bottom: 10px; }
 .row button { flex: 1; }
@@ -487,13 +602,80 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
    [ .page | .log ], `.page` is the scroll container, and the log is the bottom row. The
    scrollable area is therefore the viewport minus the log, and the two cannot intersect
    at any scroll offset. `position: fixed` is kept as the default so that engines without
-   :has(), and the legal pages which have no `.page`, still get a visible log. */
-.log {
-  position: fixed;
-  left: 0; right: 0; bottom: 0;
-  padding: 8px 14px;
+   :has(), and the legal pages which have no `.page`, still get a visible log.
+
+   2026-08-10: the row became a DOCK. A layout row that could not be closed still spent
+   four lines of every screen on a running commentary nobody had asked to read, and it
+   outlived what it described: after Burn, the gate is gone and the strip was still
+   reciting the reconnect attempts of a session that no longer exists. So the resting state
+   is ONE line, the most recent one, and the history is behind a control. The dock is hidden
+   outright until there is something to say, and severing empties it.
+
+   The geometry below is unchanged in the part that mattered: it is still a layout row, not
+   an overlay, so it still cannot paint over a control at any scroll offset. What changed is
+   how much of the window the resting state costs, from `--log-max` (26vh) to one line. */
+.log-dock {
   background: var(--scrim);
   border-top: 1px solid var(--line);
+  /* Kept from the row it replaces, so an engine without :has() and the legal pages, which
+     have no `.page`, still get a readable dock rather than one lost in the flow. */
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  /* Above the sticky bar, below the drop veil. */
+  z-index: 40;
+}
+.log-dock[hidden] { display: none; }
+
+/* The resting state: the latest line and, when it repeated, how many times.
+   A button rather than a bare row because it IS the control that opens the history, and
+   the whole line is the hit target: a 12px chevron on a phone is not one. */
+.log-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  /* Out of the global `button` rule, which is width:100% with a bottom margin and a card's
+     padding. This is a status line, not a control card. */
+  margin: 0;
+  padding: 7px 14px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  cursor: pointer;
+}
+.log-toggle:hover { color: var(--text); }
+/* The one line must not wrap: a two-line "one line" makes the page height jump on every
+   message, which is what a dock exists to stop. */
+.log-latest {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.log-more { flex: 0 0 auto; opacity: 0.7; }
+/* The chevron, drawn rather than typed: a glyph would inherit the monospace metrics and
+   sit off the baseline of the text beside it. Rotates to point up when the history is
+   open, and the transition is the shared token so reduced-motion already covers it. */
+.log-toggle::after {
+  content: '';
+  flex: 0 0 auto;
+  width: 7px; height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transform-origin: 60% 60%;
+  transition: transform var(--motion-fast, 0.15s) ease;
+}
+.log-dock[data-open] .log-toggle::after { transform: rotate(135deg); }
+
+.log {
+  padding: 0 14px 8px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
@@ -501,9 +683,11 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
   max-height: var(--log-max);
   overflow-y: auto;
   overscroll-behavior: contain;
-  /* Above the sticky bar, below the drop veil. */
-  z-index: 40;
 }
+/* display:none, not height:0. The history must be out of the LAYOUT when closed, because
+   the check that nothing clickable sits under the dock measures the dock's rectangle: a
+   collapsed-but-present panel would still claim 26vh of it. */
+.log-dock:not([data-open]) .log { display: none; }
 .log:empty { display: none; }
 
 @supports selector(:has(*)) {
@@ -546,16 +730,22 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
      sizes. `order` moves it below the screen without moving it in the DOM, so the
      reading order for assistive tech is unchanged. */
   body:has(> .page) > .page > #receive-note { order: 1; }
-  body:has(> .page) > .log {
+  /* The dock, not the history inside it: #log is a child now, and leaving this selector on
+     .log would have taken the panel out of the dock's flow and put it back on top of the
+     page as an overlay, which is the exact bug the row was built to fix. */
+  body:has(> .page) > .log-dock {
     position: static;
     flex: 0 0 auto;
   }
 }
 
-/* Engines without :has() keep the overlay, so they keep the reservation that goes with
-   it: better a strip of dead space at the foot than a buried Sever button. */
+/* Engines without :has() keep the fixed dock, so they keep a reservation. It is one line
+   now rather than --log-max, because the resting height of the dock is one line: reserving
+   26vh for a strip that is 30px tall was a band of dead space at the foot of every screen.
+   The expanded history can still overlap there, and that is the accepted trade on an engine
+   with no :has(): it happens only while the reader is holding it open. */
 @supports not selector(:has(*)) {
-  .foot { padding-bottom: calc(var(--log-max) + 16px); }
+  .foot { padding-bottom: 46px; }
 }
 .log div { margin: 2px 0; }
 .log .bad { color: var(--danger); }
@@ -596,7 +786,9 @@ details.disc > summary::after {
   border-right: 2px solid var(--muted);
   border-bottom: 2px solid var(--muted);
   transform: rotate(45deg);
-  transition: transform 0.15s ease;
+  /* 100ms, down from 150ms. A chevron acknowledging a click is a micro-interaction, not
+     travel, and micro is the tier for that. */
+  transition: transform var(--motion-micro) var(--ease-standard);
 }
 details.disc[open] > summary::after { transform: rotate(-135deg); top: 22px; }
 details.disc > summary:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -2px; }
@@ -657,14 +849,20 @@ pre.diag {
 
 .brand a { color: inherit; text-decoration: none; }
 
-main.legal { max-width: 720px; margin: 0 auto; padding: 24px 18px 80px; }
-main.legal h1 { font-size: 24px; margin-bottom: 4px; }
-main.legal h2 { font-size: 16px; margin: 26px 0 8px; color: var(--text); }
-main.legal p, main.legal li { color: var(--muted); font-size: 14.5px; line-height: 1.65; }
+/* Centring, the ink colours, and the list indent. NOT the width, the padding or the type
+   scale: those live in THE LEGAL PAGES near the foot of this file, and this rule used to
+   restate them as `max-width: 720px` plus a literal padding and two literal heading
+   sizes. Every one of those declarations lost to the later block and none of them had
+   been the live value for some time, which is exactly the trap you would expect: the
+   page was reported as "a 720px phone column on a desktop" from reading THIS line, when
+   the number actually deciding the column was `--measure + 2 * --legal-pad` 1400 lines
+   further down. A dead declaration that looks authoritative is worse than no
+   declaration, so the dead ones are gone and the live ones are all that is left. */
+main.legal { margin: 0 auto; }
+main.legal p, main.legal li { color: var(--muted); }
 main.legal ul { padding-left: 20px; }
 main.legal li { margin-bottom: 6px; }
 main.legal a { color: var(--accent); }
-main.legal strong { color: var(--text); }
 
 .fillme {
   background: var(--warn-wash-strong);
@@ -748,8 +946,16 @@ main.legal strong { color: var(--text); }
   background: linear-gradient(90deg, transparent, var(--accent), transparent);
   background-size: 220% 100%;
   opacity: 0.55;
-  animation: sweep 9s linear infinite;
 }
+/* The sweep is LANDING ONLY, and .lp-bar is the class that says so. It used to run on
+   `.bar`, which is the same masthead in both documents, so a 9 second loop ran forever
+   in a sticky bar at the top of the gate: permanent motion in peripheral vision while
+   somebody reads the SAS words off the screen below and compares them out loud with
+   another human. Peripheral looping motion during a security-critical reading task is
+   the worst pairing on this site, and "did that just change?" is a question the SAS
+   comparison cannot afford to raise about anything on the page.
+   On the landing it stays, and it is reachable: #motion-toggle stops it. */
+.lp-bar::after { animation: sweep 9s linear infinite; }
 @keyframes sweep {
   0% { background-position: 120% 0; }
   100% { background-position: -120% 0; }
@@ -764,13 +970,17 @@ main.legal strong { color: var(--text); }
 .bridge .node { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
 .bridge .screen-glow { fill: var(--accent); opacity: 0.22; }
 .bridge .wire { stroke: var(--line); stroke-width: 2; }
+/* The dashes are static now. They used to flow along the wire on a 2.6s infinite loop,
+   which is WCAG SC 2.2.2 (Pause, Stop, Hide, level A) with no mechanism to stop it: the
+   pause control is #motion-toggle and it is landing markup, while .bridge is gate markup,
+   so there is no state in which a gated flow could both animate and be controllable. A
+   dashed line already reads as a path with something travelling it; the loop was the
+   part that could not be turned off. */
 .bridge .flow {
   stroke: var(--accent);
   stroke-width: 2;
   stroke-dasharray: 10 16;
-  animation: flow 2.6s linear infinite;
 }
-@keyframes flow { to { stroke-dashoffset: -52; } }
 .bridge .lock rect { fill: var(--bg); stroke: var(--accent); stroke-width: 1.6; }
 .bridge .lock path { stroke: var(--accent); stroke-width: 1.6; }
 .bridge-cap { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
@@ -803,6 +1013,106 @@ main.legal strong { color: var(--text); }
 
 @media (max-width: 560px) {
   .steps { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ---------------------------------------------- the gate on a big screen
+
+   Everything below is scoped to the gate document by `#gate-controls`, `#extras` and
+   `main:has(> .screen)`, none of which exist in index.html. The landing shares the
+   `.lp-action` skin (its hero has a pair of them too) and must not be reached by any of
+   it, which is why the padding rule below is written as `#gate-controls .lp-action` and
+   not as `.lp-action`.
+
+   Measured at 1920x1080 before this block, on the home screen:
+     .bar            h=45  at y=0
+     main            y=45  h=380      (the whole shell, 1728px wide)
+     #gate-controls  y=117 h=304, two .lp-action cards 841px wide each
+     #extras         y=516 h=115, four .step cards 418px wide each
+     .foot           y=1016
+   so the content finished at y=631 and 385px of a 1080px viewport was one empty band
+   above the footer, while the cards themselves were twice the width of the forms inside
+   them. The burned screen was the same shape with a bigger band: content ended at y=506
+   and the gap to the footer was 510px.
+
+   Two separate faults, fixed separately below: the content is too WIDE for what it
+   contains, and the free height is all spent in one place instead of between the blocks.
+   --------------------------------------------------------------------------------- */
+
+/* Declared here rather than in the token block at the top because exactly two rules read
+   it and both are in this section: a token nobody else can reach is easier to reason
+   about next to its users.
+
+   980px, from the prose inside the cards rather than from the window. #gate-controls is
+   two equal columns, so 980 makes each card 476px wide, and after the card's own inset
+   the body copy ("Paste the link, or type the eight words shown on the other device...")
+   gets about 430px, which at 13.5px is roughly 62 characters: the same measure .lp-lede
+   is capped to at 62ch and the same order as --measure. The same 980 gives the four step
+   cards 233px each, which is two comfortable lines of their 12px caption instead of one
+   line of text in a 418px box. Below 980px of available width both rules are inert, so
+   no phone and no tablet sees this number at all. */
+:root { --gate-col: 980px; }
+
+#gate-controls,
+#extras > .steps {
+  max-width: var(--gate-col);
+  /* main and #extras are already centred (see `main, .extras, .banner, .foot`), so a cap
+     is all that is needed to centre these two inside them. Left/right only: .steps sets
+     its own bottom margin and this must not take it away. */
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* The free height, distributed instead of dumped.
+
+   `.page` is a flex column and `.foot` carries `margin-top: auto` (see the status log
+   section), which is correct for a SHORT screen and is what puts the footer on the
+   bottom edge. What it cannot do is share: one auto margin takes ALL the free space, so
+   on a tall window every spare pixel landed in a single band above the footer and the
+   content was crushed into a strip under the header.
+
+   Three auto margins in the same column split the free space three ways: above the
+   content, between the content and the steps, and above the footer. That both moves the
+   content off the top edge and widens the gap between the two blocks, which is the same
+   complaint said twice. Equal thirds put the content block above centre rather than in
+   the middle of the window, which is where optical centring wants it.
+
+   This stays a no-op everywhere it should be. On a document taller than the viewport
+   there is no free space to divide, so it cannot push the footer off the end of long
+   content, exactly as the single auto margin could not. When #extras is hidden it is
+   display:none and does not participate, so those screens split in half instead.
+
+   Gated on BOTH axes on purpose. min-width 1200px keeps it away from a tablet, and
+   min-height 800px keeps it away from 1366x768, where the measured gap above the footer
+   was already only 64px on the home screen: there is nothing to distribute there and
+   opening it up would only cost the page its fold. A phone fails both terms. */
+@media (min-width: 1200px) and (min-height: 800px) {
+  @supports selector(:has(*)) {
+    body:has(> .page) > .page > main:has(> .screen),
+    body:has(> .page) > .page > #extras { margin-top: auto; }
+    /* #screen-connected is the documented exception. There `main` is the thing that
+       grows (it is flex: 1 1 auto, and .foot's margin-top is already forced back to 0
+       for the same reason), so an auto margin above it would be arguing with the flex
+       that is supposed to give the transcript the window. Written as an override rather
+       than as a :not() on the selector above so that the reason can sit next to it. */
+    body:has(> .page) > .page > main:has(> #screen-connected:not([hidden])) { margin-top: 0; }
+  }
+
+  /* Spend the width the same way, and OUTSIDE the @supports above: none of this needs
+     :has(), and an engine without it should still get the spacing even though it cannot
+     get the height distribution.
+
+     These are the phone numbers the gate has always used (14px between the cards, 8px
+     between the steps, 11px/10px inside a step) being served to a 1920px screen, where
+     they read as hairlines rather than as separations. Each is doubled, which keeps the
+     existing rhythm rather than inventing a second one. */
+  #gate-controls { gap: 28px; }
+  #extras > .steps { gap: 16px; }
+  /* The inset is taken from the card's own heading, which is clamp(17px, 1.15vw, 22px)
+     and therefore 22px here, rounded up to the 24 the rest of this file steps in: a
+     panel whose inset matches its title reads as a panel, where the shared clamp's
+     14-to-22 was drawn for a card inside the landing hero at 1440. */
+  #gate-controls .lp-action { padding: 24px; }
+  #extras .step { padding: 16px 15px; gap: 4px; }
 }
 
 /* ---------------------------------------------- icons */
@@ -925,7 +1235,9 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
   justify-content: center;
   padding: 20px;
   opacity: 0;
-  transition: opacity 0.18s ease;
+  /* linear, not ease: this is a flat dark layer covering the whole viewport, and there is
+     no shape in it for a curve to describe. */
+  transition: opacity var(--motion-small) linear;
 }
 /* The base rule sets display:flex, which beats the hidden attribute's UA style. Without
    this the overlay is "hidden" and still painted over the whole page. */
@@ -942,7 +1254,10 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
 
 .qr-modal-panel {
   position: relative;
-  width: min(360px, 100%);
+  /* Half again as wide as it was. A donation QR is read by a phone camera held at arm's
+     length across a room, and at 260px the modules were small enough that a phone had to
+     be brought right up to the screen. The min() keeps it inside a narrow viewport. */
+  width: min(540px, 100%);
   max-height: 100%;
   overflow-y: auto;
   background: var(--panel);
@@ -951,7 +1266,11 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
   padding: 16px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
   transform: translateY(8px) scale(0.98);
-  transition: transform 0.18s cubic-bezier(0.19, 1, 0.22, 1);
+  /* Was 0.18s cubic-bezier(0.19, 1, 0.22, 1). That curve is expo-out: at 180ms it is
+     about 98% finished inside the first 60ms, so the easing was invisible and the panel
+     read as a snap rather than as an arrival. The curve is not wrong, the pairing was:
+     it earns its keep over 620ms on the flipper and nowhere else on this site. */
+  transition: transform var(--motion-medium) var(--ease-enter);
 }
 .qr-modal.qr-open .qr-modal-panel { transform: none; }
 
@@ -982,7 +1301,7 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
 }
 /* pixelated, not smooth: a scaled QR with interpolated edges is measurably harder for
    a phone camera to lock onto. */
-.qr-modal-paper canvas { width: 100%; max-width: 260px; height: auto; image-rendering: pixelated; }
+.qr-modal-paper canvas { width: 100%; max-width: 390px; height: auto; image-rendering: pixelated; }
 
 .qr-modal-addr {
   display: block;
@@ -998,11 +1317,16 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .qr-modal, .qr-modal-panel { transition: none; }
+  /* The PANEL loses its travel: no translate, no scale, no transition to run them over.
+     The SCRIM keeps its 150ms fade, which is a change from the `transition: none` this
+     block used to carry for both. A full-viewport dark layer that appears between two
+     frames is harsher than the 150ms it takes to arrive, and an opacity ramp is not a
+     vestibular trigger: nothing in it moves across the visual field. */
+  .qr-modal-panel { transition: none; transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bar::after, .bridge .flow { animation: none; }
+  .lp-bar::after { animation: none; }
 }
 
 /* The light palette. Every token the dark one defines is restated here, including the
@@ -1279,18 +1603,54 @@ body:has(#screen-connected:not([hidden])) .foot {
    headline does not jump on every flip. */
 .lp-flipper {
   display: inline-block;
+  /* Stated, not left to `perspective`. A non-none perspective does make this a containing
+     block for the absolutely positioned box, but that is a side effect of a 3D property,
+     and the layout should not quietly break if the tumble is ever swapped for a fade. */
+  position: relative;
   perspective: 800px;
   vertical-align: baseline;
   /* No panel and no border. The box is sized to the LONGEST word so the headline does
      not jump, which meant a visible frame sat empty to the right of every short word.
-     overflow stays: it is what clips the face rotating out, not decoration. */
-  overflow: hidden;
+     The clip stays: it is what hides the face rotating out, not decoration.
+
+     clip-path, NOT overflow: hidden. An inline-block whose overflow is not visible has
+     its baseline forced to the bottom margin edge, so the whole flipper sat a descender
+     too high and the rotating word rode above the "For" beside it. clip-path clips the
+     same rectangle and leaves the baseline alone. */
+  clip-path: inset(0);
+}
+/* The strut, and the only thing in normal flow in here.
+   Every face is absolutely positioned, and an inline-block with no in-flow line box also
+   falls back to its bottom margin edge for a baseline. A zero-width space carrying the
+   faces' own font size and the box's line height (set by landing.js) puts a real line box
+   in there, so the flipper's baseline IS the word's baseline. */
+.lp-flipper::before {
+  content: "\200B";
+  display: inline-block;
+  width: 0;
+  font-size: clamp(19px, 1.9vw, 38px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 .lp-flip-box {
-  position: relative;
+  /* Out of flow, so it does not get pushed onto a second line by the strut above. */
+  position: absolute;
+  left: 0;
+  top: 0;
   display: block;
   transform-style: preserve-3d;
+  /* EXEMPT from the motion tokens, deliberately, and the only exemption in the file.
+     This is a 90 degree tumble of a large hero word: the one expressive gesture on the
+     site, and the one place where an expo-out curve is describing something real, a
+     physical object with mass overshooting into its stop. 620ms is long enough for that
+     curve to be legible, which is exactly what --motion-medium at 250ms would not be.
+     Every other easeOutExpo on the site has been retired for that reason.
+     Perpetual, so it is answerable to SC 2.2.2: #motion-toggle stops it. */
   transition: transform 0.62s cubic-bezier(0.19, 1, 0.22, 1);
+  /* The ONLY will-change in this stylesheet. One element, one layer, held for the life of
+     the page because it really does transform every 2.4 seconds. MDN: "It should not be
+     used to anticipate performance problems." Nothing else here gets one, and in
+     particular not .lp-section (5+ per page) or .msg (up to MAX_MESSAGES). */
   will-change: transform;
 }
 /* One line of text centred by its own line-height. Flex centring inside a box
@@ -1562,9 +1922,15 @@ body:has(#screen-connected:not([hidden])) .foot {
 
 
 @media (prefers-reduced-motion: reduce) {
-  /* The 3D tumble degrades to a crossfade; landing.js swaps the word at the
-     bottom of the fade rather than rotating the box. */
-  .lp-flip-box { transition: opacity 0.3s ease; }
+  /* The tumble used to degrade to a 300ms crossfade, which still changed the word every
+     2.4 seconds forever: a reduced-motion user got a perpetual loop with the amplitude
+     turned down, not a stop. One word, pinned, no timer. landing.js cancels the interval
+     for the same reason and #lp-preview has always done exactly this. */
+  .lp-flip-box { transition: none; }
+  /* The hero bar reaches its final scaleX in one frame rather than growing into it.
+     A bar filling up IS motion, and it is the only translate/scale on this page that is
+     not covered by --reveal-rise or --press-scale. */
+  .lp-preview-bar > i { transition: none; }
 }
 
 /* The three light-mode patches that used to live here are gone: --warn, --ok and
@@ -1650,7 +2016,23 @@ body:has(#screen-connected:not([hidden])) .foot {
   margin: 7px 0 12px;
   overflow: hidden;
 }
-.lp-preview-bar > i { display: block; height: 100%; width: 62%; background: var(--accent); }
+/* Scaled, not sized. This used to be `width: 62%` while landing.js took the width back to
+   100% and drove the bar by transform: scaleX, so the stylesheet and the script disagreed
+   about which property owned the fill and the script's first act was to undo this rule.
+   One mechanism now: the CSS states the same frame the markup describes, and the script
+   moves the number it was already moving. A width animation relayouts everything under
+   the bar on every tick; a scaleX is a composite. */
+.lp-preview-bar > i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  transform: scaleX(0.62);
+  /* linear, because a progress bar is reporting a rate. An eased bar claims the transfer
+     sped up and slowed down when only the easing did. */
+  transition: transform var(--motion-medium) linear;
+  background: var(--accent);
+}
 
 /* ---- the conversation inside the preview ----------------------------------------
 
@@ -1829,9 +2211,11 @@ body:has(#screen-connected:not([hidden])) .foot {
 /* Prose never runs wider than a comfortable measure, however wide the screen. */
 .disc-body p,
 .disc-body ul,
-.banner .muted,
+.banner .muted { max-width: var(--measure); }
+/* A policy page caps at its own measure. Below 1100px --measure-legal IS --measure, so
+   this is the same rule it has always been everywhere except a desktop. */
 main.legal p,
-main.legal li { max-width: var(--measure); }
+main.legal li { max-width: var(--measure-legal); }
 
 /* Data, everywhere it appears. */
 .badge,
@@ -1856,6 +2240,12 @@ pre.diag,
 .file-status,
 .lp-preview-row,
 .secret-value { font-variant-numeric: tabular-nums; }
+/* A transfer status that is a warning. This used to be written as an inline
+   line.style.color on every rowStatus() call, which on a data channel firing many times a
+   second is one style invalidation per chunk, on a row inside a scrolling container. The
+   colour is the same token; only the mechanism changed. `.warn` on its own is styled
+   inside .log and nowhere else, so this needs its own selector rather than inheriting one. */
+.file-status.warn { color: var(--warn); }
 /* The session timer counts down in place; a proportional font makes it jitter. */
 .ttl { font-family: var(--font-mono); }
 progress { accent-color: var(--accent); }
@@ -2084,11 +2474,27 @@ progress { accent-color: var(--accent); }
    of the text it ruled off. Sizing the container to the thing it contains makes the rules,
    the headings and the prose all one width, and centres the assembly for real. */
 main.legal {
-  width: min(var(--shell), calc(var(--measure) + 2 * var(--legal-pad)));
+  width: min(var(--shell), calc(var(--measure-legal) + 2 * var(--legal-pad)));
   max-width: 100%;
   padding: 26px var(--legal-pad) 40px;
 }
-main.legal > .eyebrow { margin-bottom: 2px; }
+/* With a table of contents the container has to hold the rail and the gap as well, or
+   the rail is carved out of the reading column and the prose comes out NARROWER on the
+   wider screen. Written as one expression whose extra terms are 0 below the breakpoint,
+   so there is no second width to keep in step with the first.
+
+   `.has-toc` is set by legal.js, and only after it has actually built the nav. That is
+   the whole no-JavaScript story: without the script the class never lands, the container
+   stays the width of the prose plus its padding, and the page is the same centred
+   document it has always been rather than a column shoved to the left of a 316px hole
+   where a rail was supposed to be. */
+main.legal.has-toc {
+  width: min(var(--shell), calc(var(--measure-legal) + var(--legal-rail) + var(--legal-gap)
+             + 2 * var(--legal-pad)));
+}
+/* These are `main.legal .x` rather than `main.legal > .x` because the document is wrapped
+   in .legal-body now, so that the prose and the rail can be two grid items. */
+main.legal .eyebrow { margin-bottom: 2px; }
 main.legal h1 {
   font-size: clamp(26px, 2.6vw, 50px);
   line-height: 1.08;
@@ -2098,15 +2504,15 @@ main.legal h1 {
   text-wrap: balance;
 }
 /* The one-line intro under a policy title reads as a lede, not as fine print. */
-main.legal > .doc-meta {
+main.legal .doc-meta {
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 12px;
   letter-spacing: 0.04em;
   margin: 14px 0 0;
-  max-width: var(--measure);
+  max-width: var(--measure-legal);
 }
-main.legal > .doc-lede {
+main.legal .doc-lede {
   color: var(--muted);
   font-size: 16.5px;
   line-height: 1.6;
@@ -2124,6 +2530,10 @@ main.legal h2 {
   border-top: 1px solid var(--line);
   margin: 42px 0 0;
   padding-top: 24px;
+  /* Every h2 carries an id now, so a fragment link is a real way to arrive at one. The
+     masthead is sticky at top:0, and without this the heading you asked for lands
+     underneath it and the page looks like it jumped to the wrong place. */
+  scroll-margin-top: calc(var(--bar-h) + 16px);
 }
 main.legal h2 + p { margin-top: 12px; }
 main.legal p, main.legal li { font-size: 15px; line-height: 1.7; }
@@ -2147,12 +2557,12 @@ main.legal pre.diag {
   border-radius: var(--radius);
   padding: 14px 16px;
   margin: 16px 0 0;
-  max-width: var(--measure);
+  max-width: var(--measure-legal);
 }
 main.legal pre.diag code { background: none; border: 0; padding: 0; }
 /* The link row at the foot of a policy page is navigation, so it gets the footer
    treatment the app's own pages have rather than looking like a stray sentence. */
-main.legal > .doc-foot {
+main.legal .doc-foot {
   border-top: 1px solid var(--line);
   margin-top: 46px;
   padding-top: 18px;
@@ -2161,11 +2571,105 @@ main.legal > .doc-foot {
   letter-spacing: 0.04em;
   color: var(--muted);
 }
-main.legal > .doc-foot a { color: var(--muted); text-decoration: none; }
-main.legal > .doc-foot a:hover { color: var(--accent); text-decoration: underline; }
+main.legal .doc-foot a { color: var(--muted); text-decoration: none; }
+main.legal .doc-foot a:hover { color: var(--accent); text-decoration: underline; }
+
+/* ---------------------------------------------------------------------------
+   THE TABLE OF CONTENTS RAIL
+
+   The rail is display:none by default and only ever turned on inside the desktop
+   media query below. Written that way round on purpose: the colours and the type
+   are declared unconditionally, so both palettes and the contrast sweep see them,
+   and exactly one property decides whether it is on screen. A rail that was styled
+   only inside a media query would be a block of rules nothing checks at the width
+   the checks actually run at.
+   --------------------------------------------------------------------------- */
+.legal-toc { display: none; }
+.legal-toc-title {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.legal-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* The rule down the left is the spine the current-section marker slides along. It is
+     --line, the token for an edge that is meant to be seen, not --hairline. */
+  border-left: 1px solid var(--line);
+}
+.legal-toc-link {
+  display: block;
+  /* -1px so the 2px marker sits ON the spine rather than beside it, covering the 1px
+     rule exactly when a section is current. */
+  margin-left: -1px;
+  padding: 6px 0 6px 13px;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+  text-decoration: none;
+  transition: color var(--motion-micro) linear, border-color var(--motion-micro) linear;
+}
+.legal-toc-link:hover,
+.legal-toc-link:focus-visible { color: var(--text); border-left-color: var(--line); }
+/* The section you are actually reading. --accent-text rather than --accent because this
+   is 13px: the light palette's amber is 3.99:1 on a panel and short of AA at label
+   sizes, which is the whole reason --accent-text exists. The 2px spine marker is
+   decoration and may stay the full --accent in both themes. */
+.legal-toc-link[aria-current] {
+  color: var(--accent-text);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
 
 @media (min-width: 1100px) {
   main.legal { padding-top: 40px; }
+  /* Two columns, and the rail is the first grid item because it is also the first thing
+     in the DOM: a table of contents you can only reach after tabbing through the whole
+     policy is a table of contents for nobody. */
+  main.legal.has-toc {
+    display: grid;
+    grid-template-columns: var(--legal-rail) minmax(0, 1fr);
+    column-gap: var(--legal-gap);
+    /* start, not stretch. A stretched grid item is exactly as tall as its grid area and
+       therefore has nowhere to travel, which is the usual way a sticky rail ends up not
+       sticking. Content-height item, full-height area: it sticks. */
+    align-items: start;
+  }
+  .legal-toc {
+    display: block;
+    position: sticky;
+    top: calc(var(--bar-h) + 22px);
+    /* The FAQ has eighteen sections. Without a ceiling the rail is taller than the
+       window, its foot is unreachable, and sticky pins the top of something you cannot
+       see the end of. It scrolls inside itself instead, and the overscroll rule keeps
+       that scroll from handing off to the page at the ends. */
+    max-height: calc(100vh - var(--bar-h) - 44px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  /* The prose column. min-width:0 on the grid track above is what lets a long unbroken
+     token in a code span shrink the column rather than push the grid wider than its
+     container. */
+  main.legal.has-toc > .legal-body { min-width: 0; }
+  /* Bigger type is most of what a desktop should buy a page of prose. 16px with a slacker
+     line height, and the eyebrow drops back to being an 11.5px label: `main.legal p` is
+     (0,1,2) and beats `.eyebrow` at (0,1,0), so the label that opens every policy has
+     been rendering at the prose size. Corrected here rather than in the shared rule
+     because below 1100px nothing about these pages is allowed to move. */
+  main.legal p, main.legal li { font-size: 16px; line-height: 1.72; }
+  main.legal .eyebrow { font-size: 11.5px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The only thing on these pages that moves under its own steam. The marker still moves
+     between sections, because that is the layout following the reading position rather
+     than an animation, but it arrives instead of easing. */
+  .legal-toc-link { transition: none; }
 }
 
 /* A phone reads a legal page in a column 360px wide, and every nested indent comes out
@@ -2252,7 +2756,10 @@ main.legal > .doc-foot a:hover { color: var(--accent); text-decoration: underlin
   justify-content: center;
   padding: 20px;
   opacity: 0;
-  transition: opacity 0.18s ease;
+  /* Same retune as .qr-modal, and the duplication between the two blocks stays for the
+     reason the heading above gives. app.js reads this number out of --motion-small rather
+     than holding its own copy, so the JS timeout and the fade cannot drift apart. */
+  transition: opacity var(--motion-small) linear;
 }
 /* The UA sheet's [hidden] rule loses to any author rule carrying an explicit display,
    and the flex above is exactly that. Without this line the modal is on screen from
@@ -2275,7 +2782,7 @@ main.legal > .doc-foot a:hover { color: var(--accent); text-decoration: underlin
   border-radius: var(--radius);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
   transform: translateY(8px) scale(0.98);
-  transition: transform 0.18s ease;
+  transition: transform var(--motion-medium) var(--ease-enter);
 }
 .wg-modal-open .wg-modal-panel { transform: none; }
 
@@ -2324,6 +2831,226 @@ main.legal > .doc-foot a:hover { color: var(--accent); text-decoration: underlin
 .net-actions button { flex: 1 1 150px; width: auto; margin-top: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .wg-modal, .wg-modal-panel { transition: none; }
-  .wg-modal-panel { transform: none; }
+  /* Panel loses the travel, scrim keeps the fade. See the .qr-modal-panel block for why
+     the scrim is the one thing in a modal that should still arrive over time. */
+  .wg-modal-panel { transition: none; transform: none; }
+}
+
+/* ---------------------------------------------- the camera scanner
+ *
+ * Lives in the join column on the home screen. The preview is not decoration: a scanner
+ * with no preview is a camera the user cannot aim, and it is the only honest signal that
+ * the camera is currently on. That is why the panel is sized to be clearly visible rather
+ * than tucked into a corner.
+ *
+ * The panel and the button are mutually exclusive, and app.js flips both together, so the
+ * layout never has to reserve room for two things at once. */
+
+.scan-panel {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.scan-video {
+  display: block;
+  width: 100%;
+  /* Not 16/9: a phone held upright gives a portrait stream, and a landscape box would
+     letterbox it down to a strip too small to aim with. 4/3 is the compromise that keeps
+     both orientations usable, and object-fit: cover fills whichever one arrives. */
+  aspect-ratio: 4 / 3;
+  max-height: 46vh;
+  object-fit: cover;
+  background: #000;
+  border-radius: var(--radius-sm);
+  /* The picture is a mirror of what the camera sees, NOT flipped. A front camera preview
+     is usually mirrored so people can aim at themselves; here the subject is a QR code on
+     another screen, and a mirrored code is one a person cannot check by eye. */
+  transform: none;
+}
+
+.scan-panel p { margin: 8px 0; }
+.scan-panel button { margin-top: 4px; }
+
+/* ---------------------------------------------- the suggestion box
+ *
+ * The last section on the landing, and deliberately the plainest thing on the page. It is
+ * asking for a favour, so it gets no accent border, no card, no illustration: a textarea,
+ * a button, and a sentence saying what happens to what you type. */
+
+.lp-suggest-form {
+  margin-top: 20px;
+  max-width: 62ch;
+}
+
+.lp-suggest-form textarea {
+  width: 100%;
+  /* The gate's composer documents an 8.5-second layout stall from a single unbroken
+     64 KiB token. This box caps at 600 characters, so it cannot reach that, but the same
+     wrapping rules apply for the same reason: somebody will paste a URL in here. */
+  overflow-wrap: anywhere;
+  resize: vertical;
+  min-height: 92px;
+  padding: 10px 12px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.lp-suggest-form textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent-dim);
+}
+
+.lp-suggest-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* The button sizes to its text on a wide screen and fills the row on a phone, where a
+   half-width button next to an empty counter reads as unfinished. */
+.lp-suggest-row button { width: auto; margin-top: 0; flex: 0 0 auto; }
+
+@media (max-width: 520px) {
+  .lp-suggest-row { flex-direction: column-reverse; align-items: stretch; }
+  .lp-suggest-row button { width: 100%; }
+  /* Below the button once it is full width, so the eye lands on the action, not on the
+     count of characters remaining. */
+  .lp-suggest-row .small { text-align: center; }
+}
+
+/* role="status" with aria-live, so this is announced. It must therefore never be empty
+   for layout reasons: it collapses when it has nothing to say. */
+#suggest-said:empty { display: none; }
+
+/* ================================================================= motion
+ *
+ * Everything that MOVES, in one place, so the set is countable. Two properties only:
+ * transform and opacity, both of which the compositor can run without asking the main
+ * thread for a layout. Colour appears on hover and press of small controls, and one
+ * filter in the reduced-motion branch. Nothing below touches height, width, top, left,
+ * margin, padding, flex-basis, box-shadow or a blur.
+ *
+ * `animation`, not `transition`, for anything that APPEARS. An element leaving
+ * display:none restarts its CSS animations by itself, whereas a transition needs a
+ * previous computed value to move away from: that is why revealModal() in app.js does
+ * `void modal.offsetHeight`, a deliberate forced synchronous layout inside a click
+ * handler. It is correct there and documented there, and it is not copied here. A
+ * @keyframes needs no flush at all.
+ *
+ * Deliberately NOT used: `interpolate-size`/`calc-size()` (Chrome only, not Baseline),
+ * `animation-timeline: view()` (Firefox does not ship it, so a third of visitors would
+ * silently get nothing), and `@starting-style` (usable, but threading a discrete display
+ * transition past the load-bearing `[hidden] { display: none !important }` above is not
+ * worth it for two modals that already work). */
+
+@keyframes wg-rise    { from { opacity: 0; transform: translateY(var(--reveal-rise)); } to { opacity: 1; transform: none; } }
+@keyframes wg-rise-sm { from { opacity: 0; transform: translateY(calc(var(--reveal-rise) / 2)); } to { opacity: 1; transform: none; } }
+@keyframes wg-leave   { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(calc(var(--reveal-rise) / -2)); } }
+@keyframes wg-dim     { from { opacity: 1; } to { opacity: 0.6; } }
+
+/* The scroll reveal on the landing, and the whole of its failure model.
+ *
+ * The opacity:0 start state is scoped to `html.js-reveal`, a class ONLY landing.js adds
+ * and only AFTER the IntersectionObserver exists. A dead script, a module the CSP
+ * refused, a parse error, or a browser without IntersectionObserver therefore leaves
+ * every section painted. The failure mode of the reveal is "no reveal", never "no
+ * content", and that ordering is the entire reason the class exists rather than the
+ * rule simply being written on .u-reveal. */
+html.js-reveal .u-reveal { opacity: 0; }
+html.js-reveal .u-reveal.is-in { animation: wg-rise var(--motion-medium) var(--ease-enter) both; }
+
+/* A whole screen changing, on the gate. Enter only: the outgoing screen is hidden in the
+   SAME frame. Fading one out and then the next in costs 450ms before the user sees the
+   screen they asked for, which does not read as polish, it reads as latency. */
+.screen[data-enter] { animation: wg-rise-sm var(--motion-large) var(--ease-enter) both; }
+
+/* 4px of rise, half the landing's 8px, and smaller on purpose: #messages auto-scrolls on
+   every append, so the arrival has to be distinguishable from that scroll rather than
+   compete with it. The general rule is that larger elements travel shorter relative
+   distances, or the move reads as a slam. */
+.msg.is-new { animation: wg-rise-sm var(--motion-small) var(--ease-enter) both; }
+.roster .who-chip.is-new { animation: wg-rise-sm var(--motion-small) var(--ease-enter) both; }
+/* Leaving is not an entrance played backwards. A participant going away is a fade to the
+   .away opacity this lands on, and nothing moves. */
+.roster .who-chip.is-dimming { animation: wg-dim var(--motion-small) var(--ease-standard) both; }
+
+/* Keyed off a class the toggle listener sets, NOT off [open]. The onboarding screen ships
+   its disclosures OPEN, so an [open] selector would animate all five of them every time
+   show('onboarding') runs fitDisclosures(). Open only; closing is instant, because a
+   panel the user has decided to be rid of should be gone. */
+details.disc.is-opening > .disc-body { animation: wg-rise-sm var(--motion-small) var(--ease-enter) both; }
+
+/* Dismissing a banner. Opacity and a 4px lift, and explicitly NOT a height collapse:
+   these banners sit above a screen that may be running a live transfer, and relayouting
+   the page under it is a real cost paid for a decoration. */
+.banner.is-leaving { animation: wg-leave var(--motion-small) var(--ease-exit) both; }
+
+/* Hover on the landing's cards: colour and border only, no lift, no translate. .bar-ico's
+   comment settled this years ago ("a bar that reflows under the cursor is worse than one
+   that does nothing") and it applies with more force to a grid of nine cards. */
+.lp-card,
+.lp-slot,
+.donate-link,
+a.support-card {
+  transition: color var(--motion-micro) linear, border-color var(--motion-micro) linear;
+}
+
+/* The hero's two calls to action are anchors, not buttons, so the press feedback on
+   `button` above does not reach them. */
+.lp-action > a.primary,
+.lp-action > a.secondary {
+  transition: transform var(--motion-micro) var(--ease-standard),
+              border-color var(--motion-micro) linear;
+}
+.lp-action > a.primary:active,
+.lp-action > a.secondary:active { transform: scale(var(--press-scale)); }
+
+/* The SC 2.2.2 control. Quiet: it is a standing preference, not an action anybody came
+   here to take. --accent-text rather than --accent because this is 13px, and the light
+   palette's amber is under AA at label sizes, which is why that token exists. */
+#motion-toggle {
+  font-size: 13px;
+  color: var(--accent-text);
+  margin-top: 10px;
+}
+
+/* Motion paused. One attribute on <html>, covering every perpetual loop the landing has:
+   the tumbling hero word and the header sweep. The two setInterval loops in landing.js
+   read the same attribute, because a CSS rule cannot stop a timer from re-writing a
+   transform every 2.4 seconds. */
+html[data-motion="off"] .lp-flip-box { transition: none; }
+html[data-motion="off"] .lp-bar::after { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Two tokens, and they collapse every translate and every scale in the file at once.
+     Every fade keeps running. This is the whole reduced-motion policy: WebKit's own
+     guidance is to "only remove the animations you know to be vestibular triggers...
+     removing it prematurely only succeeds in making your site unnecessarily boring", and
+     an opacity ramp moves nothing across the visual field.
+
+     There is deliberately NO `* { animation: none }` here, and there must never be. It
+     would take the section reveal's animation while leaving `html.js-reveal .u-reveal`
+     at opacity 0, and the content would be permanently invisible to exactly the people
+     this query is for. The reveal, the screen change and the message arrival all keep
+     their fades; .msg is the most valuable of the three, because it is the only cue that
+     a message landed and the list scrolls out from under it. */
+  :root {
+    --reveal-rise: 0px;
+    --press-scale: 1;
+  }
+  /* --press-scale: 1 leaves the press with nothing to say, so it says it in luminance
+     instead. Apple's HIG calls this substitution out by name. */
+  button:active:not(:disabled) { filter: brightness(0.92); }
 }

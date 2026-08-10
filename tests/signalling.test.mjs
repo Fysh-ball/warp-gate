@@ -3,6 +3,8 @@
 
 import crypto from 'node:crypto';
 import dgram from 'node:dgram';
+import http from 'node:http';
+import net from 'node:net';
 import {
   check, summary, startServer, request, openStream, delay, makeJoinProof, distinctTokens,
 } from './lib/harness.mjs';
@@ -198,8 +200,14 @@ async function relaysAfter(stream, seenAlready, ms) {
   const got = await streamA.wait('relay');
   check('relayed envelope arrives byte-for-byte unmodified',
     got.data?.n === envelope.n && got.data?.c === envelope.c, JSON.stringify(got.data));
-  check('server did not add fields to the envelope',
-    Object.keys(got.data).sort().join(',') === 'c,n', JSON.stringify(got.data));
+  // The server adds EXACTLY ONE field, and it is the authenticated-sender stamp. Asserted
+  // as the exact key set rather than "sfrom is present", so anything else the server ever
+  // starts attaching to a relay breaks this: the envelope is the one thing on this route
+  // it is supposed to be unable to touch.
+  check('the server adds the sender stamp and nothing else to the envelope',
+    Object.keys(got.data).sort().join(',') === 'c,n,sfrom', JSON.stringify(got.data));
+  check('and the stamp is the slot the token authorised, not anything else about the caller',
+    got.data?.sfrom === slotB, `${got.data?.sfrom} vs sender ${slotB}`);
 
   const backwards = await request(PORT, 'POST', '/api/relay', { roomId: ROOM, token: tokenA, to: slotB, envelope: { n: 'a', c: 'b' } });
   check('relay works in the other direction too', backwards.status === 200, backwards.text);
@@ -1101,6 +1109,418 @@ async function relaysAfter(stream, seenAlready, ms) {
   listening.acceptSeq({ from: 'peerone', epoch: E1, seq: 5 });
   listening.acceptSeq({ from: 'peerone', epoch: E1, seq: 5 });
   check('a refused replay is reported rather than dropped in silence', refusals === 1, `${refusals} events`);
+}
+
+// ---------------------------------------------------------------------------
+// A reader that stops reading.
+//
+// Everything in the three blocks below needs the same thing: an SSE stream whose client
+// has accepted the connection and then stopped draining it. Node cannot set a zero TCP
+// window directly, but it does not need to: a socket that is never read from fills its
+// own receive buffer, then the server's send buffer, and after that every relayed byte is
+// queued in the server process's own heap, which is exactly the resource under test.
+//
+// A NOTE ON WHAT CAN BE OBSERVED FROM HERE, because it is the whole reason these tests
+// are shaped the way they are. A socket that is not being read cannot see its own
+// closure: measured, the server destroyed a stream at about 3 MB and the paused client
+// showed nothing at all after a further 21 MB. So every assertion below is made on
+// something the SERVER reports over a second connection, never on the stalled socket.
+function stalledStream(port, roomId, token) {
+  const sock = net.connect(port, '127.0.0.1');
+  const opened = new Promise((resolve, reject) => {
+    // Not unref'd. A timer that lets the process exit while this is pending would report
+    // an outcome without having waited for one.
+    const timer = setTimeout(() => { sock.destroy(); reject(new Error('stalled stream never got headers')); }, 8000);
+    sock.on('connect', () => {
+      sock.write(`GET /api/events?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}`
+        + ' HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
+    });
+    sock.once('data', (d) => {
+      clearTimeout(timer);
+      const head = d.toString('latin1');
+      // From here on nothing is ever read again.
+      sock.pause();
+      resolve(head);
+    });
+    sock.on('error', (err) => { clearTimeout(timer); reject(err); });
+  });
+  return {
+    opened,
+    close: () => { try { sock.destroy(); } catch (err) { void err; } },
+  };
+}
+
+/**
+ * Relay maxRelayBytes envelopes at a stalled seat until the server stops delivering them.
+ *
+ * `delivered` is the observable: sendTo() reports false the moment the stream it was
+ * addressed at is gone, and it is reported back over the POST's own connection, which is
+ * a healthy one. Returns the count sent and the index at which delivery stopped, so the
+ * number itself is part of the evidence rather than a hidden threshold.
+ *
+ * Measured on this machine: the kernel absorbs about 2.7 MB before any of it shows up as
+ * server-side backlog at all, so a bound of a few hundred KB trips at around relay 50 of
+ * 60 KB. Anything that never trips runs the full count.
+ */
+async function pumpRelays(port, roomId, senderToken, targetSlot, max) {
+  const c = 'y'.repeat(60_000); // under the 64 KiB relay cap, with room for framing
+  let sent = 0;
+  let stoppedAt = -1;
+  for (let i = 0; i < max; i += 1) {
+    const r = await request(port, 'POST', '/api/relay', {
+      roomId, token: senderToken, to: targetSlot, envelope: { n: 'nonce', c },
+    });
+    if (r.status !== 200) break;
+    sent += 1;
+    if (r.json?.delivered === false && stoppedAt === -1) stoppedAt = i;
+  }
+  return { sent, stoppedAt, dropped: stoppedAt !== -1 };
+}
+
+/** Can this key open another SSE stream right now? The per-key gauge, read over HTTP. */
+function streamAccepted(port, roomId, token) {
+  return new Promise((resolve) => {
+    const req = http.get({
+      host: '127.0.0.1', port, path: `/api/events?room=${roomId}&token=${encodeURIComponent(token)}`,
+    }, (res) => { res.resume(); req.destroy(); resolve(res.statusCode); });
+    req.on('error', () => resolve(0));
+    req.setTimeout(6000, () => { req.destroy(); resolve(0); });
+  });
+}
+
+/** Create a gate and seat a second participant. Returns both sides. */
+async function twoSeats(port, roomId) {
+  const pr = makeJoinProof();
+  const a = await request(port, 'POST', '/api/create', { roomId, sessionMinutes: 10, joinProofHash: pr.hash });
+  const b = await request(port, 'POST', '/api/join', { roomId, joinProof: pr.proof });
+  return { a: a.json, b: b.json, ok: a.status === 200 && b.status === 200 };
+}
+
+// -------------------------------------------- the SSE backlog is bounded in AGGREGATE
+{
+  // The per-stream cap was 1 MiB and nothing bounded the sum. At WG_MAX_ROOMS 200 and
+  // WG_MAX_PARTICIPANTS 6 that is 1,200 possible streams and about 1.2 GB of allowance
+  // against a 128 MB container. The attack is two seats: open both streams, stall one,
+  // and POST 64 KiB envelopes at the stalled seat.
+  const P = PORT + 20;
+  const ROOM = 'BACK0001';
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
+    WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
+    WG_RELAY_PER_MIN: '100000', WG_API_PER_WINDOW: '100000',
+    // The per-stream cap is put far out of reach on purpose, so what trips below can only
+    // be the aggregate. Without this the test would pass on a server that has no
+    // aggregate bound at all, which is the state it exists to detect.
+    WG_MAX_STREAM_BACKLOG_BYTES: '100000000',
+    WG_MAX_TOTAL_BACKLOG_BYTES: '400000',
+    WG_HEARTBEAT_MS: '600000',
+  });
+
+  const seats = await twoSeats(P, ROOM);
+  check('CONTROL: two seats for the aggregate-backlog probe', seats.ok, JSON.stringify(seats));
+
+  const stalled = stalledStream(P, ROOM, seats.b.token);
+  const head = await stalled.opened;
+  check('CONTROL: the stalled reader really did open a stream',
+    /^HTTP\/1\.1 200/.test(head) && /text\/event-stream/.test(head), JSON.stringify(head.slice(0, 80)));
+
+  const pumped = await pumpRelays(P, ROOM, seats.a.token, seats.b.slotId, 400);
+  check('a stream whose reader has stopped draining is dropped once the process-wide backlog is spent',
+    pumped.dropped, `all ${pumped.sent} relays of 60 KB were still delivered, so nothing bounded the sum`);
+  // The per-stream cap is 100 MB on this server, so the bound that fired can only be the
+  // aggregate. Reported as a number rather than asserted against a threshold: what is
+  // being claimed is that a bound exists, and the figure is how far it let things go.
+  process.stdout.write(`     (measured: aggregate bound of 400 KB fired at relay ${pumped.stoppedAt} of 60 KB, `
+    + `about ${Math.round(((pumped.stoppedAt + 1) * 60_000) / 1024 / 1024 * 10) / 10} MB relayed)\n`);
+
+  // The seat is freed as well as the socket, or the per-key gauge would leak an entry
+  // every time this fired.
+  await delay(300);
+  check('and its entry in the per-key stream gauge goes back',
+    await streamAccepted(P, ROOM, seats.b.token) === 200,
+    'the dropped stream did not release its slot in the gauge');
+
+  stalled.close();
+  await srv.stop();
+}
+
+{
+  // THE CONTROL, and it is the whole evidence that the block above measures the aggregate
+  // rather than the kernel or the per-stream cap. Same room, same stalled reader, same
+  // number of relays, and the ONLY difference is that the aggregate ceiling is out of
+  // reach. Against the pre-fix server, which had no aggregate bound, this is what the
+  // block above also did.
+  const P = PORT + 21;
+  const ROOM = 'BACK0002';
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
+    WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
+    WG_RELAY_PER_MIN: '100000', WG_API_PER_WINDOW: '100000',
+    WG_MAX_STREAM_BACKLOG_BYTES: '100000000',
+    WG_MAX_TOTAL_BACKLOG_BYTES: '100000000',
+    WG_HEARTBEAT_MS: '600000',
+  });
+
+  const seats = await twoSeats(P, ROOM);
+  const stalled = stalledStream(P, ROOM, seats.b.token);
+  await stalled.opened;
+  const pumped = await pumpRelays(P, ROOM, seats.a.token, seats.b.slotId, 400);
+  check('CONTROL: with both ceilings out of reach the same stream survives the same load',
+    !pumped.dropped && pumped.sent === 400,
+    `dropped at ${pumped.stoppedAt} after ${pumped.sent} relay(s)`);
+  process.stdout.write('     (that arm is the pre-fix server expressed as configuration: '
+    + `${Math.round((pumped.sent * 60_000) / 1024 / 1024)} MB of unread relay held in one process)\n`);
+
+  stalled.close();
+  await srv.stop();
+}
+
+{
+  // The per-stream cap still does its own job, and it is configurable now rather than a
+  // hard-coded 1 MiB that was sixteen times the relay cap for no stated reason.
+  const P = PORT + 22;
+  const ROOM = 'BACK0003';
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
+    WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
+    WG_RELAY_PER_MIN: '100000', WG_API_PER_WINDOW: '100000',
+    WG_MAX_STREAM_BACKLOG_BYTES: '150000',
+    WG_MAX_TOTAL_BACKLOG_BYTES: '100000000',
+    WG_HEARTBEAT_MS: '600000',
+  });
+
+  const seats = await twoSeats(P, ROOM);
+  const stalled = stalledStream(P, ROOM, seats.b.token);
+  await stalled.opened;
+  const pumped = await pumpRelays(P, ROOM, seats.a.token, seats.b.slotId, 400);
+  check('a single stream past its own cap is still dropped, with the aggregate out of reach',
+    pumped.dropped, `all ${pumped.sent} relays were still delivered`);
+
+  stalled.close();
+  await srv.stop();
+}
+
+// -------------------------------------- a destroyed room does not leave its socket pinned
+// destroyRoom wrote `closed`, called res.end() and nulled slot.res. end() only queues a
+// FIN behind whatever the peer has not read, so a stalled reader held the socket, and
+// its entry in the per-key stream counter, until TCP gave up: a peer sending window
+// probes defers that indefinitely. After slot.res is null nothing writes to it again,
+// so the backlog guard cannot fire on it and the heartbeat skips it.
+//
+// What is observed is the PER-KEY STREAM GAUGE, not the socket, because a socket that is
+// not being read cannot see its own closure. The gauge is the resource the finding names
+// alongside the socket: streamClose only runs on the response's `close`, so a response
+// that was ended but never actually closed holds its entry indefinitely. With
+// WG_STREAMS_PER_KEY at 1 that entry is directly readable over HTTP: a second stream is
+// either accepted or refused 429, and the whole difference is whether the first one let go.
+{
+  const env = {
+    WG_STUN_ENABLED: '0', WG_STREAMS_PER_KEY: '1',
+    WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
+    WG_RELAY_PER_MIN: '100000', WG_API_PER_WINDOW: '100000',
+    // Both backlog bounds out of reach: what is under test is the teardown, and a stream
+    // the backlog guard had already dropped would release the gauge for the wrong reason.
+    WG_MAX_STREAM_BACKLOG_BYTES: '100000000',
+    WG_MAX_TOTAL_BACKLOG_BYTES: '100000000',
+    WG_HEARTBEAT_MS: '600000',
+  };
+
+  // One arm per linger setting. Identical in every other respect, so the linger is the
+  // only thing that can account for a difference between them.
+  const arm = async (port, room, spare, lingerMs) => {
+    const srv = await startServer({ ...env, WG_HTTP_PORT: String(port), WG_DESTROY_LINGER_MS: String(lingerMs) });
+    const seats = await twoSeats(port, room);
+    const stalled = stalledStream(port, room, seats.b.token);
+    await stalled.opened;
+    // Fill the buffers first. Without this the FIN from end() is delivered, the socket
+    // closes on its own, and the gauge is released whether or not the fix exists.
+    const pumped = await pumpRelays(port, room, seats.a.token, seats.b.slotId, 400);
+    // A second room for the probe, created while the gauge is still held.
+    const spareSeats = await twoSeats(port, spare);
+    const bye = await request(port, 'POST', '/api/bye', { roomId: room, token: seats.a.token });
+    await delay(Math.min(lingerMs, 1200) + 900);
+    const probe = await streamAccepted(port, spare, spareSeats.a.token);
+    const out = { seats, pumped, spareSeats, bye, probe };
+    stalled.close();
+    await srv.stop();
+    return out;
+  };
+
+  const short = await arm(PORT + 23, 'PNND0001', 'PNND0003', 300);
+  check('CONTROL: the short-linger arm seated, flooded and destroyed a room',
+    short.seats.ok && short.spareSeats.ok && short.pumped.sent === 400
+    && !short.pumped.dropped && short.bye.status === 200,
+    `seated=${short.seats.ok} flooded=${short.pumped.sent} droppedAt=${short.pumped.stoppedAt} bye=${short.bye.status}`);
+  check('a destroyed room lets go of its stalled stream rather than waiting for TCP',
+    short.probe === 200, `a later stream on the same key got ${short.probe}`);
+
+  // THE CONTROL, and it is the whole evidence. Identical, except the linger is longer than
+  // the window above waits in: this IS the pre-fix server, expressed as configuration. If
+  // the gauge were released here too, the assertion above would print OK against a server
+  // that never let go, which is exactly the state it exists to detect.
+  const long = await arm(PORT + 24, 'PNND0002', 'PNND0004', 600_000);
+  check('CONTROL: the long-linger arm seated, flooded and destroyed a room too',
+    long.seats.ok && long.spareSeats.ok && long.pumped.sent === 400
+    && !long.pumped.dropped && long.bye.status === 200,
+    `seated=${long.seats.ok} flooded=${long.pumped.sent} droppedAt=${long.pumped.stoppedAt} bye=${long.bye.status}`);
+  check('CONTROL: with the linger long the stream is still pinned, so the release above was the linger',
+    long.probe === 429, `a later stream on the same key got ${long.probe}, expected 429`);
+}
+
+// ------------------------------------ the relay stamps the sender the token authorised
+{
+  // Sender identity otherwise rides only inside the sealed envelope, where the sender
+  // wrote it. That envelope is sealed under k_sig, which every participant holds, so it
+  // is forgeable by anyone in the room: one seat could seal a `pk` as another peer and
+  // the victim would pin it forever, or seal a `sever` and end the victim's gate. This
+  // server authorised the POST with a per-seat token, so it knows who really sent it.
+  const P = PORT + 25;
+  const ROOM = 'STMP0001';
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
+    WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
+  });
+
+  const pr = makeJoinProof();
+  const a = await request(P, 'POST', '/api/create', { roomId: ROOM, sessionMinutes: 10, joinProofHash: pr.hash });
+  const b = await request(P, 'POST', '/api/join', { roomId: ROOM, joinProof: pr.proof });
+  const c = await request(P, 'POST', '/api/join', { roomId: ROOM, joinProof: pr.proof });
+  check('CONTROL: three seats for the impersonation probe',
+    a.status === 200 && b.status === 200 && c.status === 200, `${a.status}/${b.status}/${c.status}`);
+
+  const sc = openStream(P, ROOM, c.json.token);
+  await sc.ready;
+  await sc.wait('hello');
+
+  // A seals an envelope that CLAIMS to be from B, and addresses it at C. The claim is a
+  // plaintext decoy here because the server cannot see inside a real one, which is
+  // precisely why the stamp has to come from the token instead.
+  const seen = relaysAt(sc).length;
+  const forged = await request(P, 'POST', '/api/relay', {
+    roomId: ROOM, token: a.json.token, to: c.json.slotId,
+    envelope: { n: 'NONCE', c: 'CIPHERTEXT', from: b.json.slotId, sfrom: b.json.slotId },
+  });
+  check('the forged relay is accepted, because the server cannot read what it carries',
+    forged.status === 200, `${forged.status} ${forged.text}`);
+
+  const got = (await relaysAfter(sc, seen, 4000))[0];
+  check('CONTROL: the relay arrived, so the stamp assertions below are not vacuous',
+    got !== undefined, JSON.stringify(relaysAt(sc).map((e) => e.data)));
+  check('the stamp names the seat whose token authorised the POST',
+    got?.data?.sfrom === a.json.slotId, `sfrom ${got?.data?.sfrom}, real sender ${a.json.slotId}`);
+  // THE ASSERTION THAT MAKES IT WORTH ANYTHING. The sender put a competing sfrom in the
+  // envelope, and the stamp did not follow it.
+  check('and it does NOT follow a claim the sender put in the envelope',
+    got?.data?.sfrom !== b.json.slotId, `sfrom ${got?.data?.sfrom} followed the claim of ${b.json.slotId}`);
+  check('the sender\'s own claim is still carried through untouched, for the client to compare against',
+    got?.data?.from === b.json.slotId, JSON.stringify(got?.data));
+
+  // Byte-for-byte passthrough, on content chosen to break anything that reparses: the
+  // moment this process can alter an envelope it is a participant in a conversation it is
+  // supposed to be unable to read.
+  const awkward = {
+    n: 'AAAA-_09',
+    c: `{"looks":"like json"} \\ " é 中 ${'z'.repeat(500)}`,
+  };
+  const seenB = relaysAt(sc).length;
+  await request(P, 'POST', '/api/relay', {
+    roomId: ROOM, token: b.json.token, to: c.json.slotId, envelope: awkward,
+  });
+  const through = (await relaysAfter(sc, seenB, 4000))[0];
+  check('an envelope that looks like JSON and carries quotes and astral text survives byte for byte',
+    through?.data?.n === awkward.n && through?.data?.c === awkward.c,
+    JSON.stringify(through?.data));
+  check('and the stamp on it is the second sender, not the first',
+    through?.data?.sfrom === b.json.slotId, `${through?.data?.sfrom} vs ${b.json.slotId}`);
+
+  sc.close();
+  await srv.stop();
+}
+
+// ------------------------- an ignored forwarding header is reported, once, and never per request
+{
+  // WG_TRUST_PROXY=1 with a proxy whose address is not on the trusted list is a silent
+  // failure: the header is correctly ignored, every client is keyed by the proxy's
+  // address instead, they all share one rate-limit bucket, and any single client can lock
+  // out everyone else. Nothing in a response or a log distinguished that from a
+  // deployment with no proxy at all. The shipped compose file is bridge-networked and
+  // does not set WG_TRUSTED_PROXIES, which is the case this exists for; that topology is
+  // UNVERIFIED here, which is why the server counts rather than asserts.
+  //
+  // 127.0.0.2 is a loopback address that is NOT 127.0.0.1, so it stands in for a hop the
+  // server has no reason to trust while still being reachable from this test.
+  const HOP = '127.0.0.2';
+  const fromHop = (port, headers) => new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1', port, localAddress: HOP, method: 'GET', path: '/api/config', headers,
+    }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject);
+    req.setTimeout(6000, () => req.destroy(new Error('request timeout')));
+    req.end();
+  });
+  const WARN = /WG_TRUST_PROXY=1 but a forwarding header arrived from a hop that is/;
+
+  const P = PORT + 26;
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_TRUST_PROXY: '1',
+    WG_PUBLIC_GET_PER_WINDOW: '500', WG_API_PER_WINDOW: '500',
+  });
+  const status = await fromHop(P, { 'cf-connecting-ip': '203.0.113.7' });
+  check('CONTROL: the request from an untrusted hop was actually served',
+    status === 200, `status ${status}`);
+  await delay(150);
+  check('an ignored forwarding header is reported to the operator',
+    WARN.test(srv.stderr()), JSON.stringify(srv.stderr().slice(-400)));
+
+  // Never per request. This server keeps no request log by design, and a flood must not
+  // be able to turn this into one.
+  for (let i = 0; i < 8; i += 1) await fromHop(P, { 'x-forwarded-for': `198.51.100.${i}` });
+  await delay(150);
+  const times = (srv.stderr().match(new RegExp(WARN.source, 'g')) ?? []).length;
+  check('and reported exactly once however many arrive', times === 1, `${times} occurrence(s) after 9 requests`);
+
+  // It names no address and quotes no header value: the address of the hop is the very
+  // thing this process is built not to write down.
+  const line = srv.stderr();
+  check('the warning carries neither an address nor the header value',
+    !/203\.0\.113\.7/.test(line) && !/198\.51\.100\./.test(line) && !/127\.0\.0\.2/.test(line),
+    JSON.stringify(line.slice(-400)));
+  await srv.stop();
+
+  // CONTROL 1: the hop IS trusted, so the header is honoured and there is nothing to say.
+  const named = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_TRUST_PROXY: '1',
+    WG_TRUSTED_PROXIES: HOP, WG_PUBLIC_GET_PER_WINDOW: '500', WG_API_PER_WINDOW: '500',
+  });
+  await fromHop(P, { 'cf-connecting-ip': '203.0.113.7' });
+  await delay(150);
+  check('CONTROL: naming the hop in WG_TRUSTED_PROXIES silences it, so this is not a constant warning',
+    !WARN.test(named.stderr()), JSON.stringify(named.stderr().slice(-400)));
+  await named.stop();
+
+  // CONTROL 2: no forwarding header at all from the same untrusted hop. Ordinary direct
+  // traffic must not trip it, or an operator learns to ignore the line.
+  const quiet = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_TRUST_PROXY: '1',
+    WG_PUBLIC_GET_PER_WINDOW: '500', WG_API_PER_WINDOW: '500',
+  });
+  await fromHop(P, {});
+  await delay(150);
+  check('CONTROL: an ordinary request with no forwarding header says nothing',
+    !WARN.test(quiet.stderr()), JSON.stringify(quiet.stderr().slice(-400)));
+  await quiet.stop();
+
+  // CONTROL 3: the setting is off. Ignoring a forwarding header is then the configured
+  // behaviour rather than a misconfiguration, and there is nothing to report.
+  const off = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_TRUST_PROXY: '0',
+    WG_PUBLIC_GET_PER_WINDOW: '500', WG_API_PER_WINDOW: '500',
+  });
+  await fromHop(P, { 'cf-connecting-ip': '203.0.113.7' });
+  await delay(150);
+  check('CONTROL: with WG_TRUST_PROXY off there is nothing to warn about',
+    !WARN.test(off.stderr()), JSON.stringify(off.stderr().slice(-400)));
+  await off.stop();
 }
 
 ok = summary('signalling');

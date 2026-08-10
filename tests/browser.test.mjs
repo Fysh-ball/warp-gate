@@ -341,16 +341,22 @@ const GEOMETRY = `
   }
   function geometry(primarySel) {
     const main = document.querySelector('main');
+    // The DOCK, not the history panel inside it. #log is display:none while the dock is
+    // closed, so measuring it would report zero height for a dock that is plainly on
+    // screen, and the overlap check below would then have no rectangle to test against
+    // and pass by measuring nothing. What occupies the window is the dock.
     const log = document.getElementById('log');
+    const dock = document.getElementById('log-dock');
     const scroller = document.querySelector('.page') || document.scrollingElement;
-    const logShown = log && log.textContent.trim() !== '' && log.getBoundingClientRect().height > 0;
-    const logRect = logShown ? r(log) : null;
+    const logShown = Boolean(dock) && !dock.hidden && log.textContent.trim() !== ''
+      && dock.getBoundingClientRect().height > 0;
+    const logRect = logShown ? r(dock) : null;
     const prim = primarySel ? document.querySelector(primarySel) : null;
     const fold = logRect ? logRect.top : window.innerHeight;
     const hits = [];
     if (logRect) {
       for (const el of document.querySelectorAll('a, button, input, select, textarea, summary, [tabindex]')) {
-        if (el.closest('#log')) continue;
+        if (el.closest('#log-dock')) continue;
         const cs = getComputedStyle(el);
         if (cs.visibility === 'hidden' || cs.display === 'none') continue;
         const b = visibleRect(el);
@@ -426,17 +432,39 @@ const showScreen = (id) => `
   return true;
 `;
 
-/** Fill the status log with real log lines, the way app.js's log() does. */
-const fillLog = `
+/** Fill the status log with real log lines, the way app.js's log() does, and return the
+ *  height of the DOCK.
+ *
+ *  app.js appends to #log and then unhides the dock with the newest line showing in its
+ *  closed row, so a helper that only appended to #log would leave the dock hidden and
+ *  measure a panel the stylesheet holds at display:none until it is opened. That reads as
+ *  a log with no height, which is indistinguishable from no log at all.
+ *
+ *  `open` drives the disclosure the way the toggle does, so both resting states can be
+ *  measured: closed is one line, open adds the history above it. */
+const fillLog = (open = false) => `
   const box = document.getElementById('log');
   box.textContent = '';
-  for (const line of ['gathering addresses', 'connected directly, candidate type host',
-                      'the other device accepted the file', 'transfer complete']) {
+  const lines = ['gathering addresses', 'connected directly, candidate type host',
+                 'the other device accepted the file', 'transfer complete'];
+  for (const line of lines) {
     const div = document.createElement('div');
     div.textContent = line;
     box.appendChild(div);
   }
-  return box.getBoundingClientRect().height;
+  const dock = document.getElementById('log-dock');
+  const toggle = document.getElementById('log-toggle');
+  dock.hidden = false;
+  document.getElementById('log-latest').textContent = lines[lines.length - 1];
+  document.getElementById('log-more').textContent = '';
+  if (${open ? 'true' : 'false'}) {
+    dock.setAttribute('data-open', '');
+    toggle.setAttribute('aria-expanded', 'true');
+  } else {
+    dock.removeAttribute('data-open');
+    toggle.setAttribute('aria-expanded', 'false');
+  }
+  return dock.getBoundingClientRect().height;
 `;
 
 {
@@ -536,21 +564,36 @@ const fillLog = `
   // there. It is a layout row now.
   const overlaps = [];
   for (const id of SCREENS) {
-    await wide.eval(showScreen(id));
-    const h = await wide.eval(fillLog);
-    const g = JSON.parse(await wide.eval(GEOMETRY + 'return JSON.stringify(geometry(null));'));
-    // Bottom of the scroll range as well as the top: a fixed panel is only harmless at
-    // one of them, and a check that samples one scroll position would miss the other.
-    await wide.eval("const p = document.querySelector('.page') || document.scrollingElement; p.scrollTop = p.scrollHeight; return true;");
-    const g2 = JSON.parse(await wide.eval(GEOMETRY + 'return JSON.stringify(geometry(null));'));
-    await wide.eval("const p = document.querySelector('.page') || document.scrollingElement; p.scrollTop = 0; return true;");
-    overlaps.push({ id, h, shown: g.logShown, hits: g.logHits.concat(g2.logHits) });
+    // Both states of the dock. Closed is what a reader sees by default; open is the taller
+    // one and the only one that could reach a control, so a check that only ever measured
+    // the resting state would be measuring the easy case.
+    for (const open of [false, true]) {
+      await wide.eval(showScreen(id));
+      const h = await wide.eval(fillLog(open));
+      const g = JSON.parse(await wide.eval(GEOMETRY + 'return JSON.stringify(geometry(null));'));
+      // Bottom of the scroll range as well as the top: a fixed panel is only harmless at
+      // one of them, and a check that samples one scroll position would miss the other.
+      await wide.eval("const p = document.querySelector('.page') || document.scrollingElement; p.scrollTop = p.scrollHeight; return true;");
+      const g2 = JSON.parse(await wide.eval(GEOMETRY + 'return JSON.stringify(geometry(null));'));
+      await wide.eval("const p = document.querySelector('.page') || document.scrollingElement; p.scrollTop = 0; return true;");
+      overlaps.push({ id, open, h, shown: g.logShown, hits: g.logHits.concat(g2.logHits) });
+    }
   }
   check('a non-empty status log is actually on screen, so the test below is measuring something',
-    overlaps.every((o) => o.shown && o.h > 10), JSON.stringify(overlaps.map((o) => [o.id, o.h])));
+    overlaps.every((o) => o.shown && o.h > 10),
+    JSON.stringify(overlaps.map((o) => [o.id, o.open, o.h])));
+  // Without this, `open` could stop reaching the stylesheet, every open pass would silently
+  // measure the closed dock, and the overlap check above would still report green.
+  check('opening the dock actually shows the history, so the open pass is a different state',
+    SCREENS.every((id) => {
+      const shut = overlaps.find((o) => o.id === id && !o.open);
+      const wide2 = overlaps.find((o) => o.id === id && o.open);
+      return wide2.h > shut.h + 20;
+    }),
+    JSON.stringify(overlaps.map((o) => [o.id, o.open, o.h])));
   check('and it covers no button, link or field on any screen, at the top or bottom of the page',
     overlaps.every((o) => o.hits.length === 0),
-    JSON.stringify(overlaps.filter((o) => o.hits.length).map((o) => [o.id, o.hits])));
+    JSON.stringify(overlaps.filter((o) => o.hits.length).map((o) => [o.id, o.open, o.hits])));
 
   // The capability sentence is still told, and told somewhere that is not the log.
   await wide.eval(showScreen('screen-onboarding'));
@@ -637,11 +680,11 @@ const fillLog = `
   // they collapse there. Every title is still on the page: nothing is hidden, only closed.
   check('the disclosures collapse on a phone, and every one of them is still listed',
     phoneDisc.open === 0 && phoneDisc.total === 5 && phoneDisc.titles === true, JSON.stringify(phoneDisc));
-  const phoneLog = await phone.eval(fillLog);
+  const phoneLog = await phone.eval(fillLog(true));
   const phoneGeom = JSON.parse(await phone.eval(GEOMETRY + 'return JSON.stringify(geometry(null));'));
   check('the status log covers nothing on a phone either',
     phoneLog > 10 && phoneGeom.logShown && phoneGeom.logHits.length === 0,
-    JSON.stringify(phoneGeom.logHits));
+    JSON.stringify({ h: phoneLog, shown: phoneGeom.logShown, hits: phoneGeom.logHits }));
   phone.close();
 
   // ---------------------------------------------------------------- contrast, both themes
@@ -659,7 +702,7 @@ const fillLog = `
     let counted = 0;
     for (const id of SCREENS) {
       await t.eval(showScreen(id));
-      await t.eval(fillLog);
+      await t.eval(fillLog(true));
       const out = JSON.parse(await t.eval(COLOUR_FNS + `return JSON.stringify(auditContrast(document.body));`));
       counted += out.counted;
       for (const b of out.bad) findings.push({ screen: id, ...b });
@@ -814,15 +857,19 @@ const fillLog = `
         // How much window is left under the LAST row of the gate column. This is the
         // "empty space beneath" the thread used to leave when it capped at a fixed 46vh.
         //
-        // Measured from the connection-details disclosure when it is present, not from
-        // the composer: the details moved out of the side rail and under the composer, so
-        // measuring at the composer counts a real row of the page as dead window and
-        // reports 162px of content as 162px of nothing.
+        // Measured from whichever row actually sits lowest, not from the composer: rows
+        // have moved under it twice now (the connection details out of the side rail,
+        // then the games panel under those), and each time measuring at the composer
+        // counted a real row of the page as dead window and reported content as nothing.
+        // Asking for the lowest bottom edge is the version that does not need editing the
+        // next time a row is added.
         underComposer: (shown(msgs) && shown(form))
           ? Math.round(fold - (() => {
-            const last = document.getElementById('conn-disc');
-            const el = shown(last) ? last : form;
-            return el.getBoundingClientRect().bottom;
+            const rows = ['conn-disc', 'games-disc']
+              .map((id) => document.getElementById(id))
+              .filter((el) => shown(el))
+              .concat([form]);
+            return Math.max(...rows.map((el) => el.getBoundingClientRect().bottom));
           })()) : null,
       });
     }
@@ -883,9 +930,20 @@ const fillLog = `
     `${sweep.length} rows`);
 
   // THE criterion, in the owner's own terms. 8% of 1920 is 153.6px a side.
-  const at1920 = sweep.filter((r) => r.w === 1920);
+  //
+  // The landing is exempt, and the exemption is a different rule rather than a hole: it is
+  // a PROSE page, and the app screens are control surfaces. A control column that stops
+  // growing wastes the display it was given; a line of body copy that never stops growing
+  // is simply unreadable, so the landing caps at min(1320px, 90vw) on purpose (see the
+  // `body:has(main > .lp-hero)` block in style.css, which records the measurements the
+  // 1320 came from). Its own checks are below: it must still grow until it reaches that
+  // cap, and it must actually stop there. Dropping it from this row without replacing the
+  // obligation would have left the widest page on the site measured by nothing.
+  const controls = (r) => r.screen !== 'landing';
+  const at1920 = sweep.filter((r) => r.w === 1920 && controls(r));
   check('at 1920x1080 the dead margin is no more than 8% of the window on either side',
-    at1920.every((r) => r.deadL <= 0.08 * r.win && r.deadR <= 0.08 * r.win),
+    at1920.length === 3
+    && at1920.every((r) => r.deadL <= 0.08 * r.win && r.deadR <= 0.08 * r.win),
     at1920.map(row).join(' | '));
 
   // The same criterion at the top of the range. The shell ceiling was 1680px first, which
@@ -894,19 +952,46 @@ const fillLog = `
   // scrollbar belongs to the window but not to the scrollport, so on a screen that
   // scrolls it reads as up to ~17px of extra margin on the right that no layout change
   // can remove; allow for it on that side rather than pretend the layout is asymmetric.
-  const at2560 = sweep.filter((r) => r.w === 2560);
+  const at2560 = sweep.filter((r) => r.w === 2560 && controls(r));
   check('and at 2560x1440 too, so the ceiling cannot stand the column in the middle of a big display',
-    at2560.length === 4
+    at2560.length === 3
     && at2560.every((r) => r.deadL <= 0.08 * r.win && r.deadR - 17 <= 0.08 * r.win),
     at2560.map(row).join(' | '));
 
+  // The landing's own bargain, both halves of it. A cap is only defensible if it is a cap
+  // on a column that was growing, and only useful if it actually holds: assert the width
+  // it reaches and assert that a display 640px wider does not stretch it further.
+  {
+    const land1920 = at('landing', 1920);
+    const land2560 = at('landing', 2560);
+    const land1440 = at('landing', 1440);
+    check('the landing stops growing at its reading measure rather than stretching across a big display',
+      land1920.mainW === land2560.mainW && land1920.mainW >= 1240 && land1920.mainW <= 1400,
+      `1440 ${land1440.mainW}, 1920 ${land1920.mainW}, 2560 ${land2560.mainW}`);
+    // The margin the cap leaves must at least be even, which is the part of the 8% rule
+    // that still applies to prose: a capped column parked off to one side is the original
+    // complaint, and a cap cannot excuse it.
+    check('and the margin the cap leaves is centred, not pushed to one side',
+      [land1920, land2560].every((r) => Math.abs(r.deadL - r.deadR) <= 20),
+      [land1920, land2560].map(row).join(' | '));
+  }
+
   // "Scales with the viewport" is not a width, it is a DERIVATIVE. A fixed 1280px column
   // passes any single-width margin test on some window; it cannot pass this one.
-  for (const screen of ['landing', 'screen-onboarding', 'screen-home', 'screen-connected']) {
+  for (const screen of ['screen-onboarding', 'screen-home', 'screen-connected']) {
     const ladder = [768, 1024, 1280, 1440, 1600, 1920].map((w) => at(screen, w).mainW);
     check(`${screen.replace('screen-', '')} grows with the window rather than sitting at a fixed width`,
       ladder.every((v, i) => i === 0 || v > ladder[i - 1]),
       `768..1920 -> ${ladder.join(', ')}`);
+  }
+  // The landing's ladder stops where its cap starts. 90vw is the binding term below a
+  // 1467px viewport, so every width up to 1440 must still grow: the cap is allowed to stop
+  // the column, it is not allowed to be a fixed width wearing a min().
+  {
+    const ladder = [768, 1024, 1280, 1440].map((w) => at('landing', w).mainW);
+    check('landing grows with the window up to the width its reading measure caps it at',
+      ladder.every((v, i) => i === 0 || v > ladder[i - 1]),
+      `768..1440 -> ${ladder.join(', ')}`);
   }
 
   // Nothing may scroll sideways, and nothing may paint outside the window, at any width.
@@ -1556,16 +1641,19 @@ const fillLog = `
   await connTab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
   const midLogHits = [];
   for (const id of SCREENS) {
-    await connTab.eval(showScreen(id));
-    const h = await connTab.eval(fillLog);
-    const g = JSON.parse(await connTab.eval(GEOMETRY + 'return JSON.stringify(geometry(null));'));
-    midLogHits.push({ id, h, shown: g.logShown, hits: g.logHits });
+    for (const open of [false, true]) {
+      await connTab.eval(showScreen(id));
+      const h = await connTab.eval(fillLog(open));
+      const g = JSON.parse(await connTab.eval(GEOMETRY + 'return JSON.stringify(geometry(null));'));
+      midLogHits.push({ id, open, h, shown: g.logShown, hits: g.logHits });
+    }
   }
   check('the status log is on screen at 1280x800 too, so the check below measures something',
-    midLogHits.every((o) => o.shown && o.h > 10), JSON.stringify(midLogHits.map((o) => [o.id, o.h])));
+    midLogHits.every((o) => o.shown && o.h > 10),
+    JSON.stringify(midLogHits.map((o) => [o.id, o.open, o.h])));
   check('and it covers nothing interactive on any screen at 1280x800',
     midLogHits.every((o) => o.hits.length === 0),
-    JSON.stringify(midLogHits.filter((o) => o.hits.length).map((o) => [o.id, o.hits])));
+    JSON.stringify(midLogHits.filter((o) => o.hits.length).map((o) => [o.id, o.open, o.hits])));
   connTab.close();
 
   // Several tabs above accepted the terms to reach the home screen, and every tab shares
@@ -1711,6 +1799,14 @@ try {
   check('the revealed code is WARP plus eight capitalised words',
     /^WARP(-[A-Z]{4,7}){8}$/.test(code), code);
   const link = `${APP}#${code}`;
+
+  // qr.js is fetched on first reveal rather than at load (see tests/size.test.mjs), so the
+  // canvas is empty for one network round trip after the press. Waiting on the flag the
+  // page sets when the draw lands, not on a sleep: an empty canvas is fully transparent and
+  // samples as every pixel dark, so the bitmap below cannot tell "not drawn yet" from
+  // "drawn", and a naive sample was passing this check for the wrong reason.
+  await a.waitFor("document.getElementById('qr').dataset.drawn === '1'",
+    { timeout: 15000, label: 'the QR code finished drawing' });
 
   const qrDrawn = await a.eval(`
     const c = document.getElementById('qr');
@@ -2222,6 +2318,135 @@ try {
   await z.eval("document.getElementById('webrtc-recheck').click(); return true;");
   await z.waitFor("((document.getElementById('webrtc-warning') || {}).hidden) === true",
     { timeout: 20000, label: 'banner clears after Re-check once WebRTC works' });
+
+  // ------------------------------------------- the camera scan button, and its absence
+  //
+  // The scanner itself needs a camera, which this headless browser does not have and
+  // which a test must never pretend to have: a faked getUserMedia would prove that the
+  // fake works. What IS testable is the contract around it, and that is where the bugs
+  // would be: the button is offered only when the browser could actually open a camera,
+  // the 57 KB behind it is not fetched until it is pressed, and the panel is not on
+  // screen until then.
+  {
+    const s = await guardedTab(APP, { width: 1280, height: 900 });
+    await s.eval(agreeInPage);
+    await s.send('Page.reload', {});
+    await s.waitFor("!document.getElementById('screen-home').hidden",
+      { timeout: 30000, label: 'home for the scan checks' });
+
+    const shape = JSON.parse(await s.eval(`
+      const btn = document.getElementById('scan-btn');
+      const panel = document.getElementById('scan-panel');
+      return JSON.stringify({
+        supported: typeof navigator?.mediaDevices?.getUserMedia === 'function',
+        buttonExists: !!btn,
+        buttonShown: !!btn && !btn.hidden,
+        panelShown: !!panel && !panel.hidden,
+        // The decoder must not be on the wire before the button is pressed. Asked of the
+        // browser's own resource timing rather than of the source, so this is what was
+        // FETCHED and not what was written.
+        fetched: performance.getEntriesByType('resource')
+          .map((e) => e.name).filter((n) => /qrscan|qrdecode/.test(n)).length,
+      });
+    `));
+
+    check('the scan button exists in the join column', shape.buttonExists, JSON.stringify(shape));
+    // Both directions of one rule, so neither a permanently-hidden nor a
+    // permanently-shown button can pass. Which branch runs depends on the browser under
+    // test, and the detail says which one it took.
+    check('and it is shown exactly when this browser could open a camera',
+      shape.buttonShown === shape.supported,
+      `supported=${shape.supported} shown=${shape.buttonShown}`);
+    check('the camera panel is not on screen before the button is pressed',
+      shape.panelShown === false, JSON.stringify(shape));
+    check('and neither the scanner nor the QR decoder has been fetched',
+      shape.fetched === 0, `${shape.fetched} matching resource(s)`);
+
+    // CONTROL: resource timing is really populated, so "0 matching" means "not fetched"
+    // rather than "the browser told us nothing". Without this the check above passes on
+    // a page that loaded no scripts at all.
+    const anyJs = await s.eval(`
+      return String(performance.getEntriesByType('resource')
+        .filter((e) => e.name.endsWith('.js')).length);
+    `);
+    check('CONTROL: resource timing lists the scripts that WERE fetched',
+      Number(anyJs) > 3, `${anyJs} .js resources`);
+
+    // The gate's CSP has no media-src, so <video> inherits default-src 'none'. A
+    // MediaStream assigned through srcObject is not a URL fetch and should therefore be
+    // outside CSP entirely, but "should" is an argument and this is a check: a stream
+    // made from a canvas is the same kind of object getUserMedia returns, so if the
+    // policy did block srcObject this is where it would show, without needing a camera.
+    const srcObject = await s.eval(`
+      const c = document.createElement('canvas');
+      c.width = 8; c.height = 8;
+      c.getContext('2d').fillRect(0, 0, 8, 8);
+      const v = document.getElementById('scan-video');
+      try {
+        v.srcObject = c.captureStream(1);
+        await v.play();
+        const ok = v.videoWidth > 0;
+        for (const t of v.srcObject.getTracks()) t.stop();
+        v.srcObject = null;
+        return ok ? 'played' : 'no frames';
+      } catch (err) {
+        return 'threw: ' + err.name + ' ' + err.message;
+      }
+    `);
+    check('a MediaStream plays in the scan video, so the policy does not block srcObject',
+      srcObject === 'played', srcObject);
+
+    check('the scan page raised no uncaught errors', s.pageErrors.length === 0,
+      s.pageErrors.join(' | '));
+    s.close();
+  }
+
+  // ------------------------------------------- the games are not fetched to open a gate
+  //
+  // The same question as above, asked of the other lazy cluster, and asked in the
+  // browser because the size suite can only see the source.
+  //
+  // Run on tab A, which is CONNECTED. That is not incidental: the drawer only loads the
+  // games once a gate exists, so asking this on the home screen would report "not
+  // fetched" for both halves and the control below could never fire.
+  {
+    const gamesFetched = () => a.eval(`
+      return String(performance.getEntriesByType('resource')
+        .map((e) => e.name).filter((n) => /gameplay|gameui|games\\//.test(n)).length);
+    `);
+
+    check('a gate that ran a whole session never fetched the games',
+      Number(await gamesFetched()) === 0, `${await gamesFetched()} resource(s)`);
+
+    // The other half. A split that never loads the games is not a split, it is a
+    // deletion, and the check above cannot tell the difference. Clicked rather than
+    // toggled by property, so this is the path a person takes.
+    await a.eval("document.querySelector('#games-disc > summary').click(); return true;");
+    const arrived = await a.waitFor(
+      "performance.getEntriesByType('resource').some((e) => /gameplay\\.js/.test(e.name))",
+      { timeout: 15000, label: 'gameplay.js arrives when the drawer opens' },
+    ).then(() => true, () => false);
+    check('CONTROL: opening the drawer does fetch them, so the split is a split',
+      arrived, 'gameplay.js never appeared in resource timing');
+
+    // The board stylesheet is lazy for the same reason and by a different mechanism (a
+    // link element injected by gameui.js), so it needs its own assertion.
+    const cssArrived = await a.waitFor(
+      "performance.getEntriesByType('resource').some((e) => /games\\.css/.test(e.name))",
+      { timeout: 15000, label: 'games.css arrives with the first board' },
+    ).then(() => true, () => false);
+    check('and the board stylesheet comes with them', cssArrived,
+      'games.css never appeared in resource timing');
+
+    // It has to actually apply, not merely arrive: a stylesheet blocked by the CSP would
+    // still show up in resource timing.
+    const styled = await a.eval(`
+      const area = document.getElementById('game-area');
+      return getComputedStyle(area).getPropertyValue('--g-rose').trim();
+    `);
+    check('and the pastel palette is in effect on the board area',
+      styled.length > 0, `--g-rose resolved to ${JSON.stringify(styled)}`);
+  }
 
   // ------------------------------------------------------------ page errors
   check('tab A raised no uncaught page errors', a.pageErrors.length === 0, a.pageErrors.join(' | '));

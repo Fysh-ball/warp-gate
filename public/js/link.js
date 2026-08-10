@@ -12,19 +12,48 @@
 // to teardown, and it is the ONLY place that touches a Channel.
 
 import {
-  generateKeyPair, deriveSession, Channel,
+  generateKeyPair, deriveSession, Channel, commitPublicKey,
   b64u, TYPE, equalCt, decodeJson, decodeText, encodeText, typeName,
 } from './crypto.js';
 import { Peer } from './peer.js';
 import {
   CHUNK_BYTES, readChunkRanges, createSink, canAccept, formatBytes,
-  fingerprintFile, compareFingerprints, saveResume, loadResume, clearResume,
+  fingerprintFile, compareFingerprints, saveResume, listResume, clearResume, clearRoomResume,
 } from './transfer.js';
-import {
-  CHUNK_INDEX_BYTES, ChunkLedger, RESUME_REFUSED, buildResumeRequest, chunkCount,
-  chunksOnDisk, createIndexedSink, frameChunk, judgeResumeResponse, mintResumeToken,
-  planResumeResponse, unframeChunk,
-} from './resume.js';
+// The frame layout and the chunk arithmetic: needed at module evaluation time and once per
+// chunk in the send loop, so static.
+import { CHUNK_INDEX_BYTES, chunkCount, frameChunk, unframeChunk } from './chunkwire.js';
+
+/**
+ * The resume NEGOTIATION half of chunk-level resume, fetched the first time a transfer
+ * needs it.
+ *
+ * 22 KB of ledger, indexed sink, token and control-message handling that nothing can reach
+ * until a file has been offered in one direction or the other. Keeping it off the static
+ * graph is what took the gate back under its byte budget after this session's work; see the
+ * header of chunkwire.js for why the split falls where it does.
+ *
+ * Every consumer below takes the loaded namespace as an explicit argument rather than
+ * reading a module-level cache. That is deliberate: adoptSink() runs immediately after a
+ * check that `this.incoming` is still the transfer it was called for, and putting an await
+ * between the two would open a window, however small, in which a dropped connection could
+ * swap the transfer under it. Passing the namespace in keeps every one of those consumers
+ * synchronous and makes it impossible to call one before the module is there.
+ */
+let resumeMod = null;
+function loadResume() {
+  // Not `await import()` in an async function: returning the same promise means N
+  // concurrent transfers share one fetch instead of racing to assign the cache.
+  if (!resumeMod) {
+    resumeMod = import('./resume.js').catch((err) => {
+      // Cleared so a transient failure is retried by the next transfer rather than
+      // poisoning resume for the rest of the session.
+      resumeMod = null;
+      throw new Error(`could not load the resume machinery: ${err.message}`);
+    });
+  }
+  return resumeMod;
+}
 
 export const STATE = {
   IDLE: 'idle',
@@ -44,6 +73,62 @@ export const STATE = {
 };
 
 const CONFIRM_TIMEOUT_MS = 8000;
+// How long the responder waits for the initiator to REVEAL the public key it committed to.
+//
+// The commitment splits what used to be one message into two, and every added wait is a
+// new way to deadlock: a peer that sends {t:'pkc'} and then nothing at all would otherwise
+// leave this side holding a key pair, a commitment and no route out, because none of the
+// existing timers watch that window. The watchdog does not cover it either: it reports an
+// unreachable PEER, and a peer that is demonstrably talking to us is not that.
+//
+// Same size as CONFIRM_TIMEOUT_MS on purpose. It is the same kind of wait (a specific
+// message from a peer that has already proved it can reach us) and the same kind of
+// answer (say what did not arrive, and stop), so two different numbers would only be two
+// different things to explain.
+const REVEAL_TIMEOUT_MS = CONFIRM_TIMEOUT_MS;
+
+// How many times a handshake timeout may be forgiven for having elapsed while this page
+// was not running. Three, so a user who taps through two or three apps mid-handshake is
+// not punished for it, and a peer that is genuinely absent still fails in bounded time
+// rather than never.
+const BACKGROUND_GRACE_MAX = 3;
+
+// ------------------------------------------------- was this page even awake to hear it?
+//
+// A handshake timeout is evidence of one specific thing: the other device did not answer
+// WITHIN the window. That inference is only sound if this page was running for the
+// window. It was not, on the case that made this necessary: a phone freezes the tab
+// behind the OS file picker or behind a tap into another app, every pending setTimeout
+// lands in a heap the moment it thaws, and the two auth timers below then declared
+// AUTH_FAILED, which unlike every other failure path here does NOT call holdOpen or
+// scheduleRestart. The link was left terminal with only a log line, and the gate never
+// came back.
+//
+// So the deadlines are still deadlines, but they are only counted against a page that was
+// present to observe them. `document.visibilityState` is the only signal available for
+// this: the Page Lifecycle `freeze` event is Chromium-only and is not delivered at all in
+// the case that matters most, an iOS tab suspended behind the picker.
+//
+// Guarded on `document` because this module is also loaded by the node test suites, where
+// there is no document and nothing is ever backgrounded.
+let lastVisibleAt = Date.now();
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') lastVisibleAt = Date.now();
+  });
+}
+
+/**
+ * Was this page out of the foreground at any point in the last `ms` milliseconds?
+ *
+ * Hidden right now counts, and so does having become visible only moments ago: a timer
+ * that fires immediately on thaw is exactly the one whose window this page slept through.
+ */
+function sleptThrough(ms) {
+  if (typeof document === 'undefined') return false;
+  if (document.visibilityState !== 'visible') return true;
+  return Date.now() - lastVisibleAt < ms;
+}
 
 // Anything at or below this is accepted without asking. Pasting an image should feel
 // like sending a message, not like agreeing to a download. Larger transfers still ask,
@@ -53,6 +138,11 @@ const AUTO_ACCEPT_BYTES = 10 * 1024 * 1024;
 // buffer exists because chunks can arrive while the save dialog is open; it is bounded
 // because those bytes are in this page's memory and nothing has agreed to take them yet.
 const EARLY_LIMIT_BYTES = 4 * 1024 * 1024;
+// The largest game message this side will look at. A chess move serialises to a few dozen
+// bytes and the longest thing a game sends is a starting position, so this is generous by
+// two orders of magnitude and still small enough that a peer cannot use the game channel
+// as a way to make this page allocate.
+const GAME_MESSAGE_LIMIT = 4096;
 const MAX_AUTH_FAILURES = 3;
 // Reconnect backoff while a transfer is paused. The owner's rule is that one side still
 // being present keeps the gate waiting, so there is no attempt ceiling: only a cap on how
@@ -86,6 +176,23 @@ const FRAME_OVERHEAD_BYTES = 10 + 16 + CHUNK_INDEX_BYTES;
 // Frames held while the key schedule is still running. Small: the only thing that can
 // legitimately arrive in that window is the peer's key confirmation.
 const MAX_EARLY_FRAMES = 16;
+// How many chunks may be held while the accept dialog is open, counted as ENTRIES rather
+// than as bytes.
+//
+// EARLY_LIMIT_BYTES on its own was not a bound at all. A chunk frame's plaintext was
+// allowed to be exactly the four index bytes and no body, so its payload counted zero
+// against the byte limit while still costing about 100 bytes of heap for the {index, bytes}
+// entry and the array slot: earlyBytes stayed at 0 for ever and the array grew until the
+// tab died, at 30 bytes per frame on the wire, while a save dialog sat on screen. Zero
+// length is now refused in unframeChunk, which closes the free case, and this closes the
+// cheap one: a one-byte body would otherwise still buy four million entries inside 4 MiB.
+//
+// 1024 is generous rather than tight. A sender running ahead at the 16 KiB chunk floor
+// fills EARLY_LIMIT_BYTES with 256 entries and at a negotiated 256 KiB with 16, so no
+// legitimate transfer comes near this, and 1024 entries is about 100 KiB of bookkeeping.
+// resume.js's MAX_AHEAD_CHUNKS is the same idea for the post-accept buffer and caps both
+// count and bytes for exactly this reason.
+const MAX_EARLY_CHUNKS = 1024;
 
 /**
  * Address every relay this link sends at exactly one peer.
@@ -151,6 +258,18 @@ export class Link extends EventTarget {
     this.peer = null;
     this.keyPair = null;
     this.peerPublicRaw = null;
+    // Commit-then-reveal state. See crypto.js commitPublicKey for the attack.
+    //
+    //   initiator: {t:'pkc', h}  ->
+    //                            <-  {t:'pk', pk: pk_B}       responder
+    //   initiator: {t:'pk', pk: pk_A} ->                      checked against h
+    //
+    // peerCommitment is what the RESPONDER holds between those two messages: the digest it
+    // must check the reveal against. pkSent latches our own reveal so neither side can be
+    // made to send its public key twice under one commitment.
+    this.peerCommitment = null;
+    this.pkSent = false;
+    this.revealTimer = null;
     this.sessionKeys = null;
     this.confirmedByPeer = false;
     this.confirmSent = false;
@@ -181,6 +300,11 @@ export class Link extends EventTarget {
     this.iceRestartDone = false;
     this.lastRenegotiationAt = 0;
     this.watchdog = null;
+    // How many times each handshake deadline has been forgiven for elapsing while this
+    // page was in the background. Bounded by BACKGROUND_GRACE_MAX so a peer that is truly
+    // absent still fails, just not because the user changed apps. See sleptThrough().
+    this.revealGrace = 0;
+    this.confirmGrace = 0;
     // Has this link ever actually been up? Everything about how a stall is reported hangs
     // on this one bit.
     this.everConnected = false;
@@ -241,6 +365,7 @@ export class Link extends EventTarget {
     this.lastRenegotiationAt = Date.now();
     this.clearWatchdog();
     if (this.confirmTimer) { clearTimeout(this.confirmTimer); this.confirmTimer = null; }
+    this.clearRevealTimer();
     try { this.peer?.close(); } catch (err) { void err; }
     this.peer = null;
     // ------------------------------------------------------------------------------
@@ -266,6 +391,13 @@ export class Link extends EventTarget {
     // ------------------------------------------------------------------------------
     this.keyPair = null;
     this.peerPublicRaw = null;
+    // The commitment belonged to the key pair that just died. Carrying it into the fresh
+    // handshake would check the NEW reveal against the OLD digest and abort every
+    // renegotiation as an attack; dropping it without dropping pkSent would let the fresh
+    // pk go out with nothing committed to it, which is the whole hole back again. They go
+    // together, like the key pair and the session keys above.
+    this.peerCommitment = null;
+    this.pkSent = false;
     this.sessionKeys = null;
     this.channel = null;
     this.confirmSent = false;
@@ -462,6 +594,45 @@ export class Link extends EventTarget {
   }
 
   /**
+   * The page is back in front of the user. Retry NOW, not at the back of the backoff.
+   *
+   * THE BUG THIS EXISTS FOR. On a phone, tapping Attach opens the OS file picker and the
+   * browser freezes the tab behind it. Both mobile engines reclaim an
+   * `RTCPeerConnection` from a frozen tab, so by the time the picker returns the link is
+   * down and scheduleRestart() has been through several rounds: 2s, 4s, 8s, 16s, 30s. The
+   * `change` event from the picker, meanwhile, fires the instant the user taps Done. It
+   * therefore arrived at a link that was still up to thirty seconds away from its next
+   * attempt, requireConnected() threw, and the send failed for what looked to the user
+   * like no reason at all: they had picked the files and the gate said it was not
+   * connected.
+   *
+   * The backoff itself is right. What was wrong was applying it to a tab that had just
+   * been given back the foreground, which is the strongest possible signal that the
+   * network situation has changed. So: cancel the pending timer, put the backoff back to
+   * zero, and go. If this attempt fails, scheduleRestart takes over again from the
+   * beginning, which is what should happen after a genuine change of circumstances.
+   *
+   * Idempotent and cheap: a connected link returns immediately, so wiring this to every
+   * visibilitychange costs nothing on the overwhelmingly common path.
+   */
+  wake(reason) {
+    if (this.severed) return false;
+    if (this.state === STATE.CONNECTED && this.peer?.channel?.readyState === 'open') return false;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    this.restartAttempt = 0;
+    this.emit('warning', `${reason}: trying the connection again now.`);
+    this.restartConnection().catch((err) => {
+      if (targetIsGone(err)) { this.session.onLinkTargetGone(this); return; }
+      this.emit('warning', `could not reconnect: ${err.message}`);
+      this.scheduleRestart('the reconnect attempt failed');
+    });
+    return true;
+  }
+
+  /**
    * Get the data path back, cheapest option first.
    *
    * Tier one is an ICE restart, which re-runs connectivity checks over the SAME DTLS and
@@ -562,7 +733,8 @@ export class Link extends EventTarget {
       await this.failInbound(inbound, 'this transfer was never accepted here, so it cannot be continued');
       return;
     }
-    await this.control(buildResumeRequest({
+    const R = await loadResume();
+    await this.control(R.buildResumeRequest({
       id: inbound.meta.id,
       token: inbound.token,
       indexed: inbound.sink,
@@ -633,11 +805,17 @@ export class Link extends EventTarget {
         this.needsRestart = false;
         await this.signal.send({ t: 'restart' });
       }
-      await this.signal.send({ t: 'pk', pk: b64u.encode(this.keyPair.publicRaw) });
-
-      // The peer's public key can arrive before generateKeyPair() above resolves. In that
-      // case onSignalMessage stored it and returned without deriving, because we had no
-      // key of our own yet. Deriving here covers that ordering; deriveKeys is idempotent.
+      // COMMIT-THEN-REVEAL. The initiator publishes only a digest of its public key here;
+      // the key itself does not go out until the responder's key has arrived. The
+      // responder sends nothing at all until it holds that digest. crypto.js
+      // commitPublicKey has the attack this ordering exists to stop.
+      if (this.initiator) {
+        await this.signal.send({ t: 'pkc', h: b64u.encode(await commitPublicKey(this.keyPair.publicRaw)) });
+      }
+      // Whichever half of the exchange this side is now owed may already have arrived:
+      // onSignalMessage stored it and returned without acting, because we had no key pair
+      // of our own yet. Both of these are idempotent and cover that ordering.
+      await this.maybeSendPublicKey();
       await this.deriveKeys();
 
       if (this.initiator) {
@@ -715,12 +893,172 @@ export class Link extends EventTarget {
     }));
   }
 
+  // ------------------------------------------------- commit, then reveal
+
+  clearRevealTimer() {
+    if (this.revealTimer) { clearTimeout(this.revealTimer); this.revealTimer = null; }
+  }
+
+  /**
+   * Start the clock on the initiator's reveal. Responder only.
+   *
+   * The initiator is never waiting on a second message from the responder, so it has
+   * nothing to time here; the existing watchdog already covers "the peer said nothing at
+   * all", which is the only wait the initiator has.
+   */
+  armRevealTimer() {
+    this.clearRevealTimer();
+    if (this.peerPublicRaw || this.severed) return;
+    this.revealTimer = setTimeout(() => {
+      this.revealTimer = null;
+      if (this.peerPublicRaw || this.severed || this.sessionKeys) return;
+      // This page was asleep for some of that window, so nothing has been proved about
+      // the other device. Serve the sentence again rather than convicting on it.
+      if (sleptThrough(REVEAL_TIMEOUT_MS) && this.revealGrace < BACKGROUND_GRACE_MAX) {
+        this.revealGrace += 1;
+        this.emit('warning', 'this page was in the background while waiting for the key: waiting again.');
+        this.armRevealTimer();
+        return;
+      }
+      this.setState(STATE.AUTH_FAILED, 'the other device committed to a key and never revealed it');
+      this.emit('auth-failed',
+        'The other device promised a key and never sent it, so this gate could not be verified. '
+        + 'Nothing was exchanged.');
+    }, REVEAL_TIMEOUT_MS);
+  }
+
+  /**
+   * Send our own public key, once, and only when it is this side's turn.
+   *
+   * Idempotent and order-independent, because the two inputs it waits on (our key pair,
+   * and whichever half of the peer's exchange we are owed) can land in either order:
+   * generateKeyPair() takes two awaits and a relayed message can arrive inside that window.
+   */
+  async maybeSendPublicKey() {
+    if (this.pkSent || this.severed || !this.keyPair) return;
+    // The initiator reveals only once the responder's key is in hand; the responder speaks
+    // only once the initiator's commitment is in hand. Neither may go first, and that is
+    // the whole security property: see crypto.js commitPublicKey.
+    if (this.initiator ? !this.peerPublicRaw : !this.peerCommitment) return;
+    this.pkSent = true;
+    try {
+      await this.signal.send({ t: 'pk', pk: b64u.encode(this.keyPair.publicRaw) });
+    } catch (err) {
+      // Nothing was revealed, so this must stay retryable: latching pkSent on a failed
+      // relay would wedge the handshake with a key neither side ever received.
+      this.pkSent = false;
+      throw err;
+    }
+    if (!this.initiator) this.armRevealTimer();
+  }
+
+  /**
+   * Stop the key exchange because something about it was not honest, and say what.
+   *
+   * Severs, exactly as a key confirmation mismatch does. A commitment that does not open
+   * is not a fault to retry around: it is the signature of somebody sitting between the
+   * two devices, and continuing would hand them a session.
+   */
+  async failKeyExchange(detail, human) {
+    this.clearRevealTimer();
+    this.setState(STATE.AUTH_FAILED, detail);
+    this.emit('auth-failed', human);
+    await this.session.sever();
+  }
+
   /** A decrypted signalling message addressed to this link. */
   async onSignalMessage(message) {
     if (!message || typeof message.t !== 'string') return;
+    if (message.t === 'pkc') {
+      // Only the responder is ever owed a commitment. An initiator that receives one is
+      // either talking to a build that disagrees about who offers, or to something trying
+      // to invert the roles so that IT is the side allowed to see a key before binding
+      // itself to one. Neither is a message to act on.
+      if (this.initiator) {
+        this.emit('warning', 'ignored a key commitment from the device that is meant to be answering');
+        return;
+      }
+      // First commitment wins, for the same reason the first public key used to: a second
+      // one is either a replay or an attempt to re-aim a handshake already under way.
+      if (this.peerCommitment) return;
+      let digest = null;
+      try {
+        if (typeof message.h !== 'string') throw new Error('no commitment value was sent');
+        digest = b64u.decode(message.h);
+      } catch (err) {
+        await this.failKeyExchange(
+          `malformed key commitment: ${err.message}`,
+          `The other device sent a key commitment this device could not read (${err.message}). `
+          + 'The gate was not opened.',
+        );
+        return;
+      }
+      // SHA-256 is 32 bytes. A commitment of any other length cannot be the digest it
+      // claims to be, and accepting one would mean comparing against something that can
+      // never match, which reads as a timeout rather than as the refusal it is.
+      if (digest.length !== 32) {
+        await this.failKeyExchange(
+          `key commitment was ${digest.length} bytes, not 32`,
+          'The other device sent a key commitment of the wrong size. The gate was not opened.',
+        );
+        return;
+      }
+      this.peerCommitment = digest;
+      await this.maybeSendPublicKey();
+      return;
+    }
     if (message.t === 'pk') {
       if (this.peerPublicRaw) return;
-      this.peerPublicRaw = b64u.decode(message.pk);
+      let offered = null;
+      try {
+        if (typeof message.pk !== 'string') throw new Error('no public key was sent');
+        offered = b64u.decode(message.pk);
+      } catch (err) {
+        await this.failKeyExchange(
+          `malformed public key: ${err.message}`,
+          `The other device sent a public key this device could not read (${err.message}). `
+          + 'The gate was not opened.',
+        );
+        return;
+      }
+      // THE CHECK. Only the responder holds a commitment, and only because only the
+      // initiator has to be bound: the responder answers before it has ever seen the
+      // initiator's key, so it has nothing to grind against and nothing to commit to.
+      // Binding the one side that COULD choose after seeing the other is what collapses
+      // the birthday search (crypto.js commitPublicKey) to a single blind guess.
+      if (!this.initiator) {
+        if (!this.peerCommitment) {
+          await this.failKeyExchange(
+            'the peer sent a public key with no commitment in front of it',
+            'The other device sent its key without first committing to it, which is what an attempt to '
+            + 'sit between these two devices looks like. The gate was not opened.',
+          );
+          return;
+        }
+        let got = null;
+        try {
+          got = await commitPublicKey(offered);
+        } catch (err) {
+          await this.failKeyExchange(
+            `could not check the key against its commitment: ${err.message}`,
+            `The other device sent a key that is not a usable public key (${err.message}). `
+            + 'The gate was not opened.',
+          );
+          return;
+        }
+        if (!equalCt(got, this.peerCommitment)) {
+          await this.failKeyExchange(
+            'the revealed public key does not match the commitment',
+            'The other device revealed a different key from the one it committed to. Somebody is '
+            + 'sitting between these two devices. The gate was not opened and nothing was sent.',
+          );
+          return;
+        }
+      }
+      this.clearRevealTimer();
+      this.peerPublicRaw = offered;
+      // The initiator owes its own reveal now that the responder's key has arrived.
+      await this.maybeSendPublicKey();
       await this.deriveKeys();
       return;
     }
@@ -729,6 +1067,20 @@ export class Link extends EventTarget {
       return;
     }
     if (message.t === 'restart') {
+      // The SAME settle guard restartConnection has, which this path did not: a handshake
+      // that started moments ago has not had a chance to succeed yet, and tearing it down
+      // throws away a key pair the peer may be in the middle of answering. Self-initiated
+      // restarts were guarded and peer-initiated ones were not, so a peer that repeated
+      // 'restart' drove an unbounded renegotiation loop through here, and after R2 that is
+      // a message only the genuine peer can send but still one it can send repeatedly.
+      //
+      // Deferred rather than dropped, exactly as restartConnection defers it: the request
+      // may be the only thing that gets this link moving again, so it is re-armed behind
+      // the backoff instead of being thrown away.
+      if (Date.now() - (this.lastRenegotiationAt ?? 0) < RESTART_SETTLE_MS) {
+        this.scheduleRestart('a handshake is already in progress');
+        return;
+      }
       // The peer reloaded, or asked for a full renegotiation. Discard our half of the dead
       // session and handshake again. resetForRenegotiation keeps any transfer in flight.
       this.emit('warning', 'The other device reconnected. Renegotiating.');
@@ -824,12 +1176,24 @@ export class Link extends EventTarget {
       this.setState(STATE.AUTH_FAILED, `could not send key confirmation: ${err.message}`);
       return;
     }
-    this.confirmTimer = setTimeout(() => {
-      if (!this.confirmedByPeer) {
-        this.setState(STATE.AUTH_FAILED, 'The other device did not confirm the shared secret in time.');
-        this.emit('auth-failed', 'No key confirmation received. The other device may not have the same link.');
+    // Named and re-armed by name. `arguments.callee` would be the obvious way to say
+    // "run me again" and it is a SyntaxError here: this is an ES module, so strict mode
+    // is not optional.
+    const onConfirmTimeout = () => {
+      if (this.confirmedByPeer) return;
+      // Same reasoning as armRevealTimer: a deadline this page slept through says nothing
+      // about the peer. See sleptThrough() for why AUTH_FAILED in particular must not be
+      // reached this way.
+      if (sleptThrough(CONFIRM_TIMEOUT_MS) && this.confirmGrace < BACKGROUND_GRACE_MAX) {
+        this.confirmGrace += 1;
+        this.emit('warning', 'this page was in the background while waiting for confirmation: waiting again.');
+        this.confirmTimer = setTimeout(onConfirmTimeout, CONFIRM_TIMEOUT_MS);
+        return;
       }
-    }, CONFIRM_TIMEOUT_MS);
+      this.setState(STATE.AUTH_FAILED, 'The other device did not confirm the shared secret in time.');
+      this.emit('auth-failed', 'No key confirmation received. The other device may not have the same link.');
+    };
+    this.confirmTimer = setTimeout(onConfirmTimeout, CONFIRM_TIMEOUT_MS);
   }
 
   /**
@@ -908,6 +1272,20 @@ export class Link extends EventTarget {
     }
 
     const { type, plaintext } = opened;
+    // NOTHING but CONTROL may be acted on before the peer has proved it holds the same key
+    // schedule. The send side has always been gated (requireConnected), the receive side
+    // was not, so a peer that had opened a data channel and never completed the key
+    // confirmation could push chat, secrets and file offers straight into this session:
+    // the frames authenticate, because a peer that got this far agreed a session, but
+    // agreeing a session is not the same as having proved it holds the room secret.
+    //
+    // Per branch and not at function entry, because CONTROL carries the confirmation
+    // itself and a gate at the top would refuse the one frame that opens the gate.
+    // onControl gates its own remaining branches for the same reason, one step further in.
+    if (type !== TYPE.CONTROL && !this.confirmedByPeer) {
+      this.emit('warning', `ignored a ${typeName(type)} frame that arrived before the other device confirmed the shared secret`);
+      return undefined;
+    }
     try {
       if (type === TYPE.CONTROL) return await this.onControl(decodeJson(plaintext));
       if (type === TYPE.CHAT) return this.emit('chat', { from: 'peer', text: decodeText(plaintext) });
@@ -956,6 +1334,16 @@ export class Link extends EventTarget {
       this.reportRoute();
       return;
     }
+    // Everything from here down is an ordinary capability, not part of the key exchange, so
+    // it waits for the confirmation exactly as the non-CONTROL frame types do. `sever` is
+    // deliberately BELOW this line and not above it: a peer that has not proved it holds
+    // the room secret must not be able to end this device's gate, and a game invite rides
+    // this channel too, so an ungated CONTROL would have left both of those open.
+    if (!this.confirmedByPeer) {
+      this.emit('warning',
+        `ignored a "${control.kind}" message that arrived before the other device confirmed the shared secret`);
+      return;
+    }
     if (control.kind === 'sever') { this.session.teardown('The other device burned the gate.'); return; }
     if (control.kind === 'file-accept' || control.kind === 'file-reject') {
       const out = this.outbound;
@@ -993,6 +1381,30 @@ export class Link extends EventTarget {
     if (control.kind === 'file-resume-wait') { this.onResumeWait(control); return; }
     if (control.kind === 'file-resume-deny') { await this.onResumeDenied(control); return; }
     if (control.kind === 'file-abort') { await this.onPeerAbort(control); return; }
+    if (control.kind === 'game') {
+      // Games ride the control channel rather than a frame type of their own: a move is a
+      // few bytes and a new frame type would need its own counter, its own size rules and
+      // its own place in the resume protocol for no gain.
+      //
+      // Nothing here understands the rules, on purpose. This is the other device's word
+      // about what it did, so it is passed up as data and the game layer validates it
+      // against its own engine before anything changes. A link that knew the rules would
+      // be a second implementation of them, and the two would drift.
+      const payload = control.payload;
+      if (!payload || typeof payload !== 'object' || typeof payload.t !== 'string') {
+        this.emit('warning', 'ignored a malformed game message');
+        return;
+      }
+      // A move is tens of bytes. Anything approaching this is not a game, and the cost of
+      // finding out is a JSON.stringify of something the peer chose the size of, so the
+      // cheap length check comes first.
+      if (JSON.stringify(payload).length > GAME_MESSAGE_LIMIT) {
+        this.emit('warning', 'ignored an oversized game message');
+        return;
+      }
+      this.emit('game', payload);
+      return;
+    }
     this.emit('warning', `ignored unknown control message "${control.kind}"`);
   }
 
@@ -1010,6 +1422,10 @@ export class Link extends EventTarget {
    * sender who only needs to be handed the file again.
    */
   async onResumeRequest(control) {
+    // Loaded before the first refusal rather than beside the first use: every path out of
+    // this method either sends a resume control message or denies with the frozen refusal,
+    // and both are this module's.
+    const R = await loadResume();
     const id = typeof control.id === 'string' ? control.id : null;
     if (!id) {
       await this.control({
@@ -1028,7 +1444,7 @@ export class Link extends EventTarget {
       // transfer WAS survives, which is enough to ask the user for the file again.
       const intent = this.recallOutboundIntent();
       if (!intent || intent.id !== id) {
-        await this.control({ kind: 'file-resume-deny', id, code: RESUME_REFUSED.code, reason: RESUME_REFUSED.reason });
+        await this.control({ kind: 'file-resume-deny', id, code: R.RESUME_REFUSED.code, reason: R.RESUME_REFUSED.reason });
         return;
       }
       out = {
@@ -1047,7 +1463,7 @@ export class Link extends EventTarget {
     // Every check on the peer's numbers lives in planResumeResponse: the token, the range
     // list, and the agreement between the byte count and the ranges. It refuses with the
     // one frozen message for anything that could tell the peer which state this side is in.
-    const plan = planResumeResponse(control, {
+    const plan = R.planResumeResponse(control, {
       id, size: out.size, chunkSize: out.chunkSize, token: out.resumeToken ?? null,
     });
     if (!plan.ok) {
@@ -1137,13 +1553,14 @@ export class Link extends EventTarget {
 
   /** RECEIVER side. The sender is about to continue; check it before accepting a byte. */
   async onResumeAccepted(control) {
+    const R = await loadResume();
     const inbound = this.incoming;
     // Everything that could distinguish "no such transfer" from "wrong token" answers with
     // one frozen refusal, and this side sends NOTHING back for it: a reply is itself a
     // signal, and a resume offer must not be usable to probe what this device holds.
-    const verdict = judgeResumeResponse(inbound, control);
+    const verdict = R.judgeResumeResponse(inbound, control);
     if (!verdict.ok) {
-      if (verdict.code === RESUME_REFUSED.code) return;
+      if (verdict.code === R.RESUME_REFUSED.code) return;
       await this.control({ kind: 'file-resume-deny', id: control.id, code: verdict.code, reason: verdict.reason });
       await this.failInbound(inbound, verdict.reason);
       return;
@@ -1597,7 +2014,10 @@ export class Link extends EventTarget {
     if (meta.size <= AUTO_ACCEPT_BYTES) {
       // No user gesture here, so never try to open a save dialog: straight to memory.
       try {
-        this.adoptSink(this.incoming, await createSink(meta, { preferMemory: true }));
+        // Both awaits are inside the try, so a failure to fetch the resume machinery is
+        // reported and rejected exactly like a sink that would not open.
+        const R = await loadResume();
+        this.adoptSink(R, this.incoming, await createSink(meta, { preferMemory: true }));
         await this.flushEarly(this.incoming);
         await this.rememberInboundRecord(this.incoming);
         await this.control({ kind: 'file-accept', id: meta.id, token: this.incoming.token });
@@ -1621,11 +2041,11 @@ export class Link extends EventTarget {
    * an un-indexed sink (which would append duplicates) or an untokened transfer (which would
    * accept a resume it never agreed to).
    */
-  adoptSink(inbound, sink, { written = 0, ledger = null } = {}) {
+  adoptSink(R, inbound, sink, { written = 0, ledger = null } = {}) {
     const chunkSize = Number(inbound.meta.chunkSize) || CHUNK_BYTES;
     let indexed;
     try {
-      indexed = createIndexedSink(sink, {
+      indexed = R.createIndexedSink(sink, {
         chunkSize, size: Number(inbound.meta.size), written, ledger,
       });
     } catch (err) {
@@ -1638,7 +2058,7 @@ export class Link extends EventTarget {
     inbound.sink = indexed;
     inbound.received = indexed.position;
     inbound.chunks = indexed.ledger.frontier;
-    inbound.token = mintResumeToken();
+    inbound.token = R.mintResumeToken();
     return indexed;
   }
 
@@ -1647,6 +2067,12 @@ export class Link extends EventTarget {
     if (!this.incoming) throw new Error('no incoming file to accept');
     const inbound = this.incoming;
     const { meta } = inbound;
+    // Fetched HERE, before the save dialog, and deliberately not beside adoptSink below.
+    // The check that this is still the transfer in progress is immediately followed by the
+    // adopt, and an await between the two would reopen the exact window that check exists
+    // to close. Doing it first also overlaps the fetch with the dialog, which is the
+    // longest wait on this path by orders of magnitude.
+    const R = await loadResume();
     let sink = null;
     try {
       sink = await createSink(meta);
@@ -1676,7 +2102,7 @@ export class Link extends EventTarget {
       this.emit('file-refused', { ...meta, reason });
       throw new Error(reason);
     }
-    this.adoptSink(inbound, sink);
+    this.adoptSink(R, inbound, sink);
     await this.rememberInboundRecord(inbound);
     await this.control({ kind: 'file-accept', id: meta.id, token: inbound.token });
     // From here on this side is waiting on the sender, so the quiet clock starts. Armed
@@ -1732,7 +2158,10 @@ export class Link extends EventTarget {
   async rememberInboundRecord(inbound) {
     if (!this.session.roomId || !inbound?.sink) return;
     try {
-      await saveResume(this.session.roomId, {
+      // Keyed on room AND peer. One key per room meant every Link in a mesh wrote to the
+      // same record, so the second peer's transfer erased the first peer's handle and the
+      // first peer's completion deleted the second peer's record out from under it.
+      await saveResume(this.session.roomId, this.peerId, {
         roomId: this.session.roomId,
         peerId: this.peerId,
         id: inbound.meta.id,
@@ -1750,9 +2179,18 @@ export class Link extends EventTarget {
     }
   }
 
+  /**
+   * Forget THIS pair's record and nobody else's.
+   *
+   * The peer id is not decoration. Without it this deleted the whole room's key, so one
+   * peer finishing its file destroyed another peer's in-flight resume record in the same
+   * gate.
+   */
   async forgetInboundRecord() {
     if (!this.session.roomId) return;
-    try { await clearResume(this.session.roomId); } catch (err) { this.emit('warning', `could not clear the resume record: ${err.message}`); }
+    try {
+      await clearResume(this.session.roomId, this.peerId);
+    } catch (err) { this.emit('warning', `could not clear the resume record: ${err.message}`); }
   }
 
   /**
@@ -1763,6 +2201,7 @@ export class Link extends EventTarget {
    */
   async adoptInbound(record) {
     if (this.incoming) throw new Error('another transfer is already in progress');
+    const R = await loadResume();
     // startOffset is a request; the sink clamps it to what the file actually contains,
     // because everything written and not committed before the reload was discarded.
     const chunkSize = Number(record.meta.chunkSize) || CHUNK_BYTES;
@@ -1787,7 +2226,7 @@ export class Link extends EventTarget {
     // skips it and the hole is permanent, silent, and invisible to every length check,
     // because the missing tail is never counted by either side. Rewinding to the last whole
     // chunk costs at most one chunk of re-sent data.
-    const whole = chunksOnDisk(raw.position, chunkSize, size);
+    const whole = R.chunksOnDisk(raw.position, chunkSize, size);
     // Clamped, because a complete file reports every chunk including the short last one:
     // whole * chunkSize then overshoots the file by the length of that chunk's padding.
     // Unclamped it was handed to the sink as `written`, and requestResume went on to claim
@@ -1809,7 +2248,7 @@ export class Link extends EventTarget {
       }
       await raw.seekTo(wholeBytes);
     }
-    const ledger = new ChunkLedger(chunkCount(size, chunkSize));
+    const ledger = new R.ChunkLedger(chunkCount(size, chunkSize));
     for (let i = 0; i < whole; i += 1) ledger.mark(i);
     this.incoming = {
       meta: record.meta,
@@ -1821,7 +2260,7 @@ export class Link extends EventTarget {
       resumes: 0,
       token: null,
     };
-    this.adoptSink(this.incoming, raw, { written: wholeBytes, ledger });
+    this.adoptSink(R, this.incoming, raw, { written: wholeBytes, ledger });
     const at = this.incoming.sink.position;
     await this.rememberInboundRecord(this.incoming);
     this.emit('file-incoming', record.meta);
@@ -1855,7 +2294,10 @@ export class Link extends EventTarget {
       // indices, so the flush can be idempotent for the same reason a live write is.
       inbound.early = inbound.early ?? [];
       inbound.earlyBytes = (inbound.earlyBytes ?? 0) + piece.bytes.byteLength;
-      if (inbound.earlyBytes > EARLY_LIMIT_BYTES) {
+      // Both limits, because either one alone can be walked around: bytes alone lets small
+      // chunks buy unbounded entries, and entries alone lets big chunks buy unbounded
+      // bytes. Same pairing as resume.js's post-accept buffer.
+      if (inbound.earlyBytes > EARLY_LIMIT_BYTES || inbound.early.length >= MAX_EARLY_CHUNKS) {
         // Dropping this silently left the other device with a row that never moved and no
         // reason for it, and every later file refused with "another transfer is already in
         // progress" if the sender kept going. Same rule as acceptIncoming: the peer is told
@@ -1993,6 +2435,19 @@ export class Link extends EventTarget {
     });
   }
 
+  /**
+   * Send one game message to this peer, sealed exactly like every other control message.
+   *
+   * Returns false rather than throwing when the channel is not open: a move made while
+   * the link is reconnecting is a move the game layer has to keep on its own board and
+   * re-offer, and a rejected promise on every click is not how that gets said.
+   */
+  async sendGame(payload) {
+    if (this.peer?.channel?.readyState !== 'open') return false;
+    await this.control({ kind: 'game', payload });
+    return true;
+  }
+
   // ------------------------------------------------------------ teardown
 
   /** Tell this one peer the gate is being burned. Best effort; teardown follows anyway. */
@@ -2015,6 +2470,7 @@ export class Link extends EventTarget {
     this.clearWatchdog();
     this.clearRestartTimer();
     if (this.confirmTimer) { clearTimeout(this.confirmTimer); this.confirmTimer = null; }
+    this.clearRevealTimer();
     try { this.peer?.close(); } catch (err) { void err; }
     if (this.incoming?.sink) {
       this.incoming.sink.abort(reason ?? 'the link closed').catch(() => {});
@@ -2044,6 +2500,8 @@ export class Link extends EventTarget {
     this.channel = null;
     this.keyPair = null;
     this.peerPublicRaw = null;
+    this.peerCommitment = null;
+    this.pkSent = false;
     // Before the reference is dropped, or the timer outlives the only object that can tell
     // it to be quiet and fires into a torn-down link.
     this.clearInboundQuiet(this.incoming);
@@ -2055,12 +2513,25 @@ export class Link extends EventTarget {
   }
 }
 
-/** Read whatever interrupted inbound transfer this room left behind. */
+/**
+ * Read whatever interrupted inbound transfer this room left behind.
+ *
+ * The NEWEST one. Records are now per peer, so a mesh can leave several behind; the UI
+ * offers one at a time and the most recently written is the one the user was watching when
+ * the page went away. The others are not lost: they keep their own keys and their own
+ * handles, and each is offered in turn as the transfers ahead of it are dealt with.
+ */
 export async function readInboundRecord(roomId) {
-  return loadResume(roomId);
+  const records = await listResume(roomId);
+  return records[0] ?? null;
 }
 
-/** Forget it. Exported so the session can clear it without owning a link. */
-export async function dropInboundRecord(roomId) {
-  return clearResume(roomId);
+/** Forget one participant's record. Exported so the session can clear it without a link. */
+export async function dropInboundRecord(roomId, peerId) {
+  return clearResume(roomId, peerId);
+}
+
+/** Forget every record this room left behind. What burning a gate has to do. */
+export async function dropRoomInboundRecords(roomId) {
+  return clearRoomResume(roomId);
 }

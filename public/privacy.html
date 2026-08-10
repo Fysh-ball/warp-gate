@@ -14,17 +14,20 @@
 </header>
 
 <main class="legal">
+<div class="legal-body">
 <p class="eyebrow">Legal</p>
 <h1>Privacy Policy</h1>
-<p class="doc-meta">Last updated: 9 August 2026</p>
+<p class="doc-meta">Last updated: 10 August 2026</p>
 
-<h2>The short version</h2>
+<h2 id="sec-the-short-version">The short version</h2>
 <p>We have no accounts, no database, no analytics, no tracking cookies and no access logs.
 We cannot read your messages or files, and we do not keep them. What unavoidably exists is
 network metadata, held briefly in memory and by the network provider in front of the
-Service.</p>
+Service. One thing is written down, and only if the operator of this instance has turned it
+on: a suggestion you type into the box on the front page is appended to a file, along with
+the hour it arrived. That file is the only thing the Service keeps outside memory.</p>
 
-<h2>Two pages, two policies</h2>
+<h2 id="sec-two-pages-two-policies">Two pages, two policies</h2>
 <p>The front page and the gate are separate documents, served with separate
 Content-Security-Policy headers, and this distinction is the one thing in this policy worth
 reading twice.</p>
@@ -44,7 +47,7 @@ reading twice.</p>
 one, is available to anything on the front page: the secret lives in a URL fragment, which is
 never sent to a server, and the two documents share no script, no storage key and no memory.</p>
 
-<h2>What we do not collect</h2>
+<h2 id="sec-what-we-do-not-collect">What we do not collect</h2>
 <ul>
   <li>No name, email address, phone number or account of any kind.</li>
   <li>No message content, file content, file names, file sizes or file types. These are
@@ -56,7 +59,7 @@ never sent to a server, and the two documents share no script, no storage key an
   <li>No web server access logs.</li>
 </ul>
 
-<h2>What exists while a gate is open</h2>
+<h2 id="sec-what-exists-while-a-gate-is-open">What exists while a gate is open</h2>
 <p>For the lifetime of a session only, and only in memory, the server holds:</p>
 <ul>
   <li>a random room identifier, derived from your secret in a way that does not reveal it;</li>
@@ -74,7 +77,7 @@ read them, which means it cannot see the network addresses they contain.</p>
 <p>This state is destroyed when the gate expires, when any participant burns it, or
 when the server restarts. None of it is written to disk.</p>
 
-<h2>Abuse prevention</h2>
+<h2 id="sec-abuse-prevention">Abuse prevention</h2>
 <p>To stop one user from denying the Service to others, we count recent requests per
 client. The counter is keyed by a value derived from your IP address using a secret that
 is generated fresh each time the server starts and is never written down. The counters
@@ -84,7 +87,25 @@ addresses. One counter lasts longer than minutes: a count of how many gates a cl
 currently holds open, which necessarily lasts as long as those gates do and is keyed the
 same unlinkable way.</p>
 
-<h2>Network providers who can see metadata</h2>
+<h2 id="sec-the-suggestion-box">The suggestion box</h2>
+<p>The front page can carry a box for telling us what to build next. It is off unless the
+operator of this instance has configured a file for it to write to, and while it is off the
+page does not offer the box at all. Where it is on, one line is appended to that file for
+each suggestion, and that line holds two things:</p>
+<ul>
+  <li>the text you typed, with control characters removed so that the file is safe to read;</li>
+  <li>the hour it arrived, in UTC, with the minutes and the seconds zeroed.</li>
+</ul>
+<p>Nothing else is written. Not your IP address, not the unlinkable abuse counter key derived
+from it, not your user agent, not the referrer, and nothing whatsoever from the signalling
+side: there is no code path between a suggestion and a gate. The hour is deliberately blunt
+for the same reason. A timestamp to the second would let whoever reads the file line a
+suggestion up with the gate its author had open.</p>
+<p>This file is the only thing the Service keeps outside memory, and it is kept until the
+operator deletes it. Write a suggestion as if a person will read it, because one will, and
+please do not put anything in it that you would not want kept.</p>
+
+<h2 id="sec-network-providers-who-can-see-metadata">Network providers who can see metadata</h2>
 <p>We cannot make the network invisible, and we will not pretend otherwise.</p>
 <ul>
   <li><strong>Cloudflare</strong> sits in front of the Service and terminates the HTTPS
@@ -103,7 +124,7 @@ same unlinkable way.</p>
       that you connected to this Service, as they can for any website.</li>
 </ul>
 
-<h2>What is stored in your browser</h2>
+<h2 id="sec-what-is-stored-in-your-browser">What is stored in your browser</h2>
 <p>The Service sets no cookies. It uses browser storage only for:</p>
 <ul>
   <li><code>localStorage</code>: a record that you accepted the Terms, with the version
@@ -145,30 +166,36 @@ already in the page; it is not written to storage and not transmitted anywhere, 
 discarded when the tab is closed or reloaded. A "Clear this now" button removes it
 immediately.</p>
 
-<h2>Retention</h2>
+<h2 id="sec-retention">Retention</h2>
 <p>Session state: until the gate ends, and never on disk. Abuse counters: minutes, in
-memory. Everything else: not collected, therefore not retained. There is nothing to
-export, and a deletion request would find nothing to delete.</p>
+memory. Suggestions, where the box is enabled: the text and the hour, on disk, until the
+operator deletes them. Everything else: not collected, therefore not retained. Apart from
+the suggestion file there is nothing to export, and a deletion request would find nothing to
+delete; a suggestion carries nothing that identifies who sent it, so we could not find yours
+in order to remove it even if you asked.</p>
 
-<h2>Legal requests</h2>
+<h2 id="sec-legal-requests">Legal requests</h2>
 <p>If we receive a valid legal demand, we can only produce what we hold, which for past
-sessions is nothing at all. We cannot decrypt, recover or reconstruct the contents of any
+sessions is nothing at all. Where the suggestion box is enabled, the file it appends to is
+the only record in existence, and it holds no identifier of any kind. We cannot decrypt, recover or reconstruct the contents of any
 session, because the keys exist only on the devices involved and are destroyed with
 the session.</p>
 
-<h2>Children</h2>
+<h2 id="sec-children">Children</h2>
 <p>The Service is not directed at children and is not intended for use by anyone under the
 age at which they can form a binding contract in their jurisdiction.</p>
 
-<h2>Changes</h2>
+<h2 id="sec-changes">Changes</h2>
 <p>Any change to this policy will be published on this page with an updated date.</p>
 
-<h2>Contact</h2>
+<h2 id="sec-contact">Contact</h2>
 <p>Privacy questions, and requests about this policy, can be sent to
 <a href="mailto:warpgate@fysh.site">warpgate@fysh.site</a>. This address is monitored by the operator
 of the Service and is the correct route for every enquiry, including legal ones.</p>
 
 <p class="doc-foot"><a href="/">Back to Warp Gate</a> &middot; <a href="/faq.html">FAQ</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/acceptable-use.html">Acceptable use</a> &middot; <a href="/privacy.html">Privacy</a></p>
+</div>
 </main>
+<script type="module" src="/js/legal.js"></script>
 </body>
 </html>

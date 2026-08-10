@@ -15,6 +15,21 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: node server/index.js
+    # Not root. Warp Gate binds 3095, reads /app read-only and appends to /data: none of
+    # that needs a privileged uid, and node:22-alpine defaults to root if nothing says
+    # otherwise.
+    #
+    # This interacts with `cap_drop: ALL` below in a way that cost a release to learn.
+    # Dropping ALL removes CAP_DAC_OVERRIDE, so even uid 0 inside this container is
+    # subject to ordinary permission checks: container-root could not write a ./data
+    # owned by the host user, the suggestion box refused every submission with
+    # `store_unwritable`, and from outside that is indistinguishable from nobody having
+    # written to it. Root without CAP_DAC_OVERRIDE is just a uid, and it owned nothing.
+    #
+    # So the rule for ./data is simple and there is no way around it: it must be owned by
+    # the uid named here. Set WG_UID/WG_GID in a .env beside this file to whichever user
+    # owns the deployment directory (`id -u`), and chown ./data to match.
+    user: "${WG_UID:-1000}:${WG_GID:-1000}"
     environment:
       - WG_HTTP_PORT=3095
       - WG_HTTP_HOST=0.0.0.0
@@ -31,9 +46,17 @@ services:
       # through networks which block 3478.
       - WG_STUN_URL=${WG_STUN_URL:-stun:stun.cloudflare.com:3478}
       # Traffic arrives through cloudflared (an existing connector tunnel, host networking) as of
-      # 2026-08-08, so CF-Connecting-IP must be trusted: without it every request looks
-      # like 127.0.0.1 and all users share a single rate-limit bucket. Safe here only
-      # because 3095 is bound to loopback, so nothing external can forge the header.
+      # 2026-08-08, so CF-Connecting-IP must be trusted: without it every request is keyed
+      # by the peer address, which is one address for everybody, and all users share a
+      # single rate-limit bucket. Safe here only because 3095 is bound to loopback, so
+      # nothing external can forge the header.
+      #
+      # UNVERIFIED, see "OPEN: WG_TRUST_PROXY=1 may be inert" in NOTES.md: this service is
+      # bridge-networked, so the address the process actually sees may be the bridge
+      # gateway rather than 127.0.0.1. The server only reads the forwarding header from an
+      # address on its trusted list, and WG_TRUSTED_PROXIES is deliberately NOT set here
+      # because the right value has not been measured. Measure it before setting it: a
+      # wrong entry trusts something that is not the proxy.
       - WG_TRUST_PROXY=${WG_TRUST_PROXY:-1}
       # TLS terminates at Cloudflare, so the response is served over HTTPS.
       - WG_HSTS=${WG_HSTS:-1}
@@ -46,8 +69,32 @@ services:
       # a URL that 404s is arguably worse than an empty one, because it silences the
       # boot warning while still giving a user no way to obtain the source.
       - WG_SOURCE_URL=${WG_SOURCE_URL:-https://github.com/Fysh-ball/warp-gate}
+      # The suggestion box. The ONLY thing this deployment keeps on disk, and the only
+      # reason the container has a writable path at all.
+      #
+      # Unset it and the box disappears from the landing and /api/suggest 404s, which is
+      # the right default for a self-hosted copy: it is the operator's own inbox and there
+      # is nobody to write to it. Read what has come in with:
+      #
+      #   docker compose exec warp-gate node deploy/read-suggestions.mjs /data/suggestions.jsonl
+      #
+      # or just `cat` the file on the host under ./data. It is JSON Lines, one per line,
+      # holding the text and the hour and nothing else (server/suggestions.js says why).
+      - WG_SUGGESTIONS_PATH=${WG_SUGGESTIONS_PATH:-/data/suggestions.jsonl}
     volumes:
       - ./app:/app:ro
+      # The only writable path that PERSISTS. read_only: true below still applies to
+      # everything else on the image, so this is the only place a bug in this process can
+      # leave anything behind. Note there is a second writable path: the tmpfs at /tmp
+      # further down, 8 MB in RAM, discarded on every restart and unused by Warp Gate.
+      # The directory must exist on the host before the first start AND be owned by the
+      # uid in `user:` above. The server does not create it, because a typo that silently
+      # created a second store would mean an operator reading an empty file while
+      # suggestions land somewhere they never look. It now says so at boot if it cannot
+      # write here, rather than only once per refused submission.
+      #
+      #   mkdir -p data && chown $(id -u):$(id -g) data && chmod 700 data
+      - ./data:/data
     ports:
       # HTTP stays on loopback: cloudflared runs with host networking and reaches it
       # at 127.0.0.1:3095. Nothing else should be able to.

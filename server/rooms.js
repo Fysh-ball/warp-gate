@@ -23,7 +23,53 @@ const rooms = new Map();
 // A stream that cannot drain is a dead stream, not a buffer. Past this much queued but
 // unflushed data the peer has stopped reading, and every relayed byte is unbounded
 // server heap: at the relay cap one room grows faster than the container's memory limit.
-const maxStreamBacklogBytes = 1024 * 1024;
+//
+// Both figures are read through functions rather than captured at module load, so a test
+// can start a server with either one configured and measure the behaviour the operator
+// would actually get. See config.js for what each one bounds and why the aggregate is
+// the one that matters.
+const maxStreamBacklogBytes = () => config.limits.maxStreamBacklogBytes;
+const maxTotalBacklogBytes = () => config.limits.maxTotalBacklogBytes;
+
+/**
+ * Process-wide sum of queued-but-unflushed SSE bytes.
+ *
+ * The per-stream cap alone bounds nothing real: at maxRooms 200 and maxParticipants 6
+ * there are 1,200 possible streams, so the per-stream allowance multiplies to far more
+ * than the container holds. This is the accumulator that bounds the actual resource.
+ *
+ * Each response's last-measured contribution is stashed on the response itself, so the
+ * sum is maintained by difference rather than by walking every live stream on every
+ * write. It can only ever run HIGH, never low: a stream that drains between writes still
+ * shows its old contribution until something touches it again, and the heartbeat touches
+ * every attached stream every heartbeatMs, so the drift is bounded in time as well as in
+ * direction. Over-counting refuses early, which is the safe direction for a memory bound.
+ */
+let totalBacklogBytes = 0;
+
+/** Re-measure one response's contribution to the sum, and return it. */
+function trackBacklog(res) {
+  const before = res.wgBacklog ?? 0;
+  const now = (res.writableEnded || res.destroyed) ? 0 : (res.writableLength ?? 0);
+  totalBacklogBytes += now - before;
+  res.wgBacklog = now;
+  return now;
+}
+
+/** Drop a response out of the sum for good. Registered once, on attach. */
+function releaseBacklog(res) {
+  if (res.wgBacklog === undefined) return;
+  totalBacklogBytes -= res.wgBacklog;
+  res.wgBacklog = undefined;
+  // Floating drift is impossible with integers, but a double release is not: guard the
+  // sum rather than trusting every future call site to be exactly once.
+  if (totalBacklogBytes < 0) totalBacklogBytes = 0;
+}
+
+/** Test and operator visibility. Never served over HTTP: it is a usage side channel. */
+export function backlogBytes() {
+  return totalBacklogBytes;
+}
 
 /**
  * How far past the 24h hard cap an ACTIVELY USED gate may be pushed.
@@ -297,27 +343,42 @@ function rosterFor(room, selfId) {
   return peers;
 }
 
+/** Destroy a stream and take its contribution back out of the aggregate immediately. */
+function dropStream(res) {
+  releaseBacklog(res);
+  try { res.destroy(); } catch (err) { void err; }
+  return false;
+}
+
 function writeChunk(res, chunk) {
-  if (!res || res.writableEnded || res.destroyed) return false;
-  if (res.writableLength > maxStreamBacklogBytes) {
-    res.destroy();
+  if (!res || res.writableEnded || res.destroyed) {
+    if (res) releaseBacklog(res);
     return false;
   }
+  // Re-measure before the check, not only after the write: this is the point at which a
+  // stream that has drained since its last write gives its allowance back, and without
+  // it the aggregate would only ever climb.
+  if (trackBacklog(res) > maxStreamBacklogBytes()) return dropStream(res);
+  // The aggregate is checked on the same stream that is about to grow it. A caller whose
+  // own backlog is zero is not the one holding the memory, so it is not the one dropped:
+  // an innocent fast reader must not be disconnected because somebody else stalled.
+  if (totalBacklogBytes > maxTotalBacklogBytes() && (res.wgBacklog ?? 0) > 0) return dropStream(res);
   try {
     // write() returns false when the chunk had to be buffered, which is normal on a slow
     // link. It is only fatal once the backlog is past the cap: that peer is not draining
     // at all, so the stream is destroyed and its slot detached by the usual close path.
-    if (!res.write(chunk) && res.writableLength > maxStreamBacklogBytes) {
-      res.destroy();
-      return false;
-    }
+    const flushed = res.write(chunk);
+    const mine = trackBacklog(res);
+    if (!flushed && mine > maxStreamBacklogBytes()) return dropStream(res);
+    // Checked after the write as well, so the very chunk that carries the process past
+    // the ceiling is the one that costs its stream, rather than the next one.
+    if (totalBacklogBytes > maxTotalBacklogBytes() && mine > 0) return dropStream(res);
     return true;
   } catch (err) {
     // A dead socket is normal, not exceptional. There is no one left to report it to, so
     // drop the stream rather than stashing a message nothing reads.
     void err;
-    res.destroy();
-    return false;
+    return dropStream(res);
   }
 }
 
@@ -386,6 +447,14 @@ export function attach(room, slotId, res) {
     try { slot.res.end(); } catch (err) { void err; }
   }
   slot.res = res;
+  // One listener, registered once, on the only event every response is guaranteed to
+  // emit. Releasing the aggregate from detach() alone would miss the paths that drop a
+  // response without going through it (a replaced stream above, destroyRoom below), and
+  // a leaked contribution is a permanent reduction in what the whole process may buffer.
+  if (!res.wgBacklogTracked) {
+    res.wgBacklogTracked = true;
+    res.once('close', () => releaseBacklog(res));
+  }
   // Somebody is here again, so the abandonment clock stops.
   room.emptySince = null;
 
@@ -461,8 +530,23 @@ export function destroyRoom(roomId, reason, exceptSlot = null) {
   for (const slot of room.slots.values()) {
     if (slot.graceTimer) clearTimeout(slot.graceTimer);
     if (slot.id !== exceptSlot && slot.res) writeEvent(slot.res, 'closed', { reason });
-    if (slot.res && !slot.res.writableEnded) {
-      try { slot.res.end(); } catch (err) { void err; }
+    const res = slot.res;
+    if (res && !res.writableEnded) {
+      try { res.end(); } catch (err) { void err; }
+    }
+    // end() queues a FIN behind everything the peer has not read yet. A reader stalled at
+    // a zero window never reads it, and once slot.res is nulled below nothing writes to
+    // that response again: the backlog guard cannot fire on it, the heartbeat skips it,
+    // and signal.js has already lifted the socket timeout for the stream. So the socket
+    // and its entry in the per-key stream counter were held until TCP gave up, which a
+    // peer sending window probes can defer indefinitely. Give a healthy client time to
+    // receive `closed`, then take the socket.
+    if (res) {
+      const linger = setTimeout(() => {
+        releaseBacklog(res);
+        try { res.destroy(); } catch (err) { void err; }
+      }, config.destroyLingerMs);
+      linger.unref?.();
     }
     // Drop the token so a late request cannot match a destroyed room's slot.
     slot.token = '';

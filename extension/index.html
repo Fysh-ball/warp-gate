@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>Warp Gate: what this extension is</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><a href="/index.html">WARP GATE</a></div>
+</header>
+
+<main class="legal">
+<div class="legal-body">
+<p class="eyebrow">Extension</p>
+<h1>What this extension is for</h1>
+
+<!-- The claim, stated once, in the same voice THREAT-MODEL.md uses. Everything below it
+     is either an elaboration of this paragraph or an honest limit on it. -->
+<p class="lede">Warp Gate encrypts everything between two browsers and the server never
+holds a key. The weak point was never the encryption: it was <strong>how the code that
+does the encryption reaches you</strong>. On the website, the server, and anything able to
+terminate TLS in front of it, hands your browser a fresh copy of that code on every visit,
+and could hand a different copy to one targeted person. This extension carries the code
+instead. It is installed once, and it changes only when the browser applies a signed
+update from the store.</p>
+
+<h2 id="sec-fixes">What installing this fixes</h2>
+<ul>
+  <li><strong>Per-request code substitution.</strong> The network cannot swap the client
+      out from under you, because the client no longer travels over the network. Nothing on
+      the gate page is fetched: not a script, not a stylesheet, not a font, not an icon.</li>
+  <li><strong>Injection by whatever sits in front of the server.</strong> This is not
+      hypothetical. Measured on 10 August 2026, the gate document served from the official
+      instance came back 938 bytes larger than the file in the repository, because the CDN
+      in front of it appends its own bot-detection script. That injection is harmless and
+      the site's Content-Security-Policy stopped it running. It is still a party between
+      the source and the browser modifying the page that holds a decryption key, and no
+      header fixes the case where the same party serves a modified script file instead.
+      There is nothing for it to modify here.</li>
+</ul>
+
+<h2 id="sec-does-not-fix">What installing this does not fix</h2>
+<p>This list is not a disclaimer. It is the part people get wrong.</p>
+<ul>
+  <li><strong>The signalling server still sees the metadata.</strong> Your address, the
+      timing, the room id, the sizes of requests, how long a gate lasted, and your
+      per-seat token. Everything it carries is ciphertext and it holds no key, but a
+      server that learns nothing about content still learns that you were there. Installing
+      an extension changes none of that.</li>
+  <li><strong>The other end.</strong> A gate link opens the ordinary web client on whoever
+      you send it to, unless they have installed this too. Their delivery risk is unchanged
+      until they do. The encryption between you is unaffected either way.</li>
+  <li><strong>Your device and your browser.</strong> Malware, a compromised profile, or
+      another extension with more privilege than this one sees everything. So does anyone
+      looking at the screen.</li>
+  <li><strong>The other participants.</strong> Anyone holding the link is a legitimate
+      participant and can keep, screenshot or forward anything you send. Nothing prevents
+      this and Warp Gate does not pretend to.</li>
+  <li><strong>The store.</strong> The signed update channel is the trust root now. It is a
+      narrower and far more accountable one than a per-request TLS terminator, because an
+      update is the same bytes for everyone and it is reviewed, but it is not nothing.</li>
+</ul>
+<p>The full accounting is in
+<a href="https://github.com/Fysh-ball/warp-gate/blob/main/THREAT-MODEL.md" target="_blank" rel="noopener noreferrer">THREAT-MODEL.md</a>
+in the repository, and the short version is in the <a href="/faq.html">FAQ</a>.</p>
+
+<h2 id="sec-server">Which server this signals to</h2>
+<p>Two browsers cannot find each other without something in the middle to pass the first
+few messages, so this extension still talks to a Warp Gate server. That server is
+<strong>not trusted</strong> in this design, which is exactly why the address is yours to
+choose: point it at your own instance and the trust question has a definite answer.</p>
+
+<div class="card">
+  <label for="origin-input"><strong>Signalling origin</strong></label>
+  <p class="small muted">Scheme and host, nothing else. For example
+  <code>https://warpgate.fysh.site</code>. Plain <code>http</code> is refused unless the
+  host is <code>localhost</code> or <code>127.0.0.1</code>, because an unencrypted
+  signalling hop on a real network gives away everything the metadata list above
+  describes to anyone on the path.</p>
+  <input type="text" id="origin-input" inputmode="url" spellcheck="false"
+         autocomplete="off" placeholder="https://warpgate.fysh.site">
+  <div class="row">
+    <button class="primary" id="origin-save">Save</button>
+    <button class="secondary" id="origin-reset">Use the default</button>
+  </div>
+  <p class="small" id="origin-status" role="status"></p>
+</div>
+
+<p class="small muted">Changing this needs your permission to reach the new host, and the
+browser will ask for it. That prompt is not a formality: an extension that could already
+reach any host would be able to send your signalling somewhere you never chose, and this
+one deliberately cannot until you say so.</p>
+
+<h2 id="sec-open">Open a gate</h2>
+<p>The gate runs in a normal tab. Clicking the Warp Gate icon in the toolbar does the same
+thing.</p>
+<p><a class="lp-action" href="/app.html">Open the gate</a></p>
+
+<h2 id="sec-audit">Checking this yourself</h2>
+<p>There is no build step and no dependency anywhere in this project, so the files inside
+this package are the files in the repository. The client here is a copy of the one in
+<code>public/</code> with the network destination made explicit, because the web client
+addresses the server it was served by and this one has to be told. Every changed line
+carries an <code>EXTENSION PATCH</code> comment and the complete list is in
+<code>extension/README.md</code>.</p>
+
+<h2 id="support">Supporting this</h2>
+<p>Warp Gate is free and has no accounts, no telemetry and nothing to sell. If it is
+useful to you, <a href="https://ko-fi.com/fysh_yum" target="_blank" rel="noopener noreferrer">ko-fi.com/fysh_yum</a>.</p>
+
+<p class="doc-foot"><a href="/app.html">Open the gate</a> &middot; <a href="/faq.html">FAQ</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/acceptable-use.html">Acceptable use</a> &middot; <a href="/privacy.html">Privacy</a></p>
+</div>
+</main>
+<script type="module" src="/js/options.js"></script>
+</body>
+</html>

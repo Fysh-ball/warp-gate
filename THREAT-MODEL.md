@@ -27,7 +27,7 @@ schedule.
 | Threat | How | Residual risk |
 |---|---|---|
 | The server operator reading messages or files | Payload keys come from ECDH plus a secret the server never receives | Holds only while the server serves honest code: see "You are trusting whoever serves the page" |
-| The server being compromised *after* you loaded the page | It holds no plaintext and no keys at any point. There is no storage layer to breach | None |
+| The server being compromised *after* you loaded the page | It holds no plaintext and no keys at any point. Gate state is a memory map with no storage layer behind it | None for anything sent through a gate. If the operator enabled the suggestion box there is one file on disk, holding suggestions and nothing from the signalling side: see "The suggestion box" below |
 | The server or Cloudflare learning peer IP addresses from the SDP | Signalling payloads are encrypted under a key derived from the room secret, so the relay sees only `{n, c}` | Cloudflare still sees every participant's client IP from the HTTP connections themselves |
 | An active man in the middle at the signalling layer | Each pair's key schedule mixes the room secret, and the two ends of every link exchange an explicit key confirmation before the UI reports that link connected | Someone who obtains the link is not a man in the middle; they are a participant |
 | Someone who obtains the link but not the room password | If a password was set, the key schedule needs it as well: PBKDF2-HMAC-SHA256 at 600,000 iterations, salted with the room secret, appended to the HKDF salt | Only helps if a password was set and did not travel alongside the link. The server does not and cannot enforce it |
@@ -37,8 +37,35 @@ schedule.
 | Passing a file chunk off as a chat message | The frame type is authenticated, so relabelling breaks the tag | None |
 | Guessing a room code to read traffic | The room id is derived from a 128-bit secret; holding the id does not yield the secret, and key confirmation fails | A guessed id can confirm a room exists, and that probe is rate limited. It can no longer take a seat: see the next row |
 | A device without the link taking a seat | Joining requires presenting a proof derived from the room secret (a one-way HKDF value; the server stores only its hash and compares in constant time), and each seated participant holds an unguessable capability token. Rooms also cap at a configured seat limit (`WG_MAX_PARTICIPANTS`, default 6) | Anyone who obtains the link holds the secret, so they can take a seat: they are a participant, not an intruder |
-| Data outliving the session | State is a single in-memory map. No database, no disk, no logs. A restart destroys every room | None |
+| Data outliving the session | Gate state is a single in-memory map. No database, no logs, and a restart destroys every room | None for gate content. The optional suggestion box is the one exception and it is a separate store: what you type into it is meant to outlive your session |
 | A session being reused after expiry | Idle, hard and absolute deadlines plus a sweeper, and the room is deleted on sever | None |
+
+## The suggestion box, the one thing that touches disk
+
+Everything above about server state being memory only is true of the signalling side. There
+is one deliberate exception, and it is worth stating plainly because the shipped deployment
+turns it on.
+
+If `WG_SUGGESTIONS_PATH` is set, the landing offers a box you can type into, and
+`POST /api/suggest` appends what you typed to a file. `deploy/docker-compose.yml` sets that
+variable by default, so the reference deployment, `warpgate.fysh.site` included, is running
+with the box on. A checkout run with no environment at all is not: the route returns 404 and
+the box is never rendered.
+
+What lands in the file is one JSON object per line holding **the text, and the hour it
+arrived**, rounded so the minute and the second are gone. Deliberately absent, and it must
+stay that way: the IP, the rate-limit key derived from it, the user agent, the referrer, and
+anything at all from the signalling side. There is no code path between the two halves of
+the server, which is what stops a suggestion being correlated with the gate its author had
+open at the time.
+
+What an operator takes on by enabling it is a file of things strangers chose to say. It
+survives restarts, it is in any backup or snapshot of that volume, and it is readable by
+anyone who can read the host. It is created mode 0600, capped at about 1 MiB, and refuses
+rather than rotating when full, but those bound its size and its permissions, not the fact
+that it exists. Leaving `WG_SUGGESTIONS_PATH` unset keeps the "nothing survives a restart"
+property whole, and that is the right default for a self-hosted copy: the box is the
+operator's own inbox, and on someone else's instance there is nobody to write to.
 
 ## The landing and the gate are separate documents
 
@@ -51,14 +78,23 @@ to load, and a marketing page has commercial reasons to want to load something. 
 landing (`index.html`, at `/`) and the gate (`app.html`, at `/app`) are two documents,
 with two Content-Security-Policy headers, and no shared script, storage key or JS heap.
 
-- The gate is served with `default-src 'none'` and no exception of any kind. Nothing an
-  operator can configure widens it. `WG_AD_ORIGINS` is matched against the resolved
-  **filename** in `server/index.js`, not against a request path, so no route, redirect
-  or traversal can carry a third-party origin onto it.
+- The gate is served with `default-src 'none'` as the fallback, and every exception to it
+  is `'self'`: `script-src`, `style-src`, `img-src`, `connect-src`, `font-src`,
+  `manifest-src`, `worker-src` and `frame-src`, plus `blob:` on `img-src` so a received
+  image can be previewed from bytes the page itself created. **No external origin
+  appears in it at all**, and `base-uri`, `form-action` and `frame-ancestors` are
+  `'none'`. Nothing an operator can configure widens it: `WG_AD_ORIGINS` is matched
+  against the resolved **filename** in `server/index.js`, not against a request path, so
+  no route, redirect or traversal can carry a third-party origin onto it.
 - The landing may be widened by `WG_AD_ORIGINS`, and only for `script-src`, `img-src`
-  and `frame-src`. Never `connect-src`: a sponsor that can open its own connections is
-  a sponsor that can report what it saw. Empty by default, and empty means the two
-  documents get a byte-identical policy.
+  and `frame-src`. Never `connect-src`, so a script running *in the landing document*
+  cannot open connections of its own. That is a real narrowing and it is not
+  containment: `frame-src` is widened, and a third-party frame is a separate document
+  served from the sponsor's origin under the sponsor's own CSP, not this one. It can
+  fetch wherever it likes and report the visitor's address and timing whatever
+  `connect-src` says here. The boundary that does hold is the narrower one, and it is
+  the one that matters: **a sponsor cannot reach the gate.** Empty by default, and empty
+  means the two documents get a byte-identical policy.
 - Nothing about a gate is reachable from the landing even in principle. The secret
   lives in a URL fragment, which is never sent to a server, and a fragment aimed at the
   landing is handed straight to `/app` before anything else runs.
@@ -107,6 +143,34 @@ What follows from that:
 4. For something truly high-stakes, encrypt it yourself before sending it, so that a
    compromised page never sees the plaintext at all.
 
+### This is not hypothetical, and it is happening on the official instance
+
+Measured 2026-08-10, during a deploy. The gate document served from
+`https://warpgate.fysh.site/app` was **938 bytes larger** than the file on disk. The
+difference was a `<script>` element appended before `</body>` that none of this source
+contains: Cloudflare's JS Detections bootstrap, which creates a hidden iframe and loads
+`/cdn-cgi/challenge-platform/scripts/jsd/main.js` into it.
+
+Nothing was compromised. It is stock bot detection on the CDN that terminates TLS for
+this hostname, and that CDN was already in the trusted position this section describes.
+Say it out loud anyway, because it is the mechanism, running, in production, on the one
+page that holds a decryption key in its heap: **a party between the source and the
+browser modified the document, and no part of Warp Gate had to be involved.**
+
+Two things about it are worth knowing.
+
+- **The Content-Security-Policy stopped it.** `script-src 'self'` with no
+  `'unsafe-inline'` and no nonce means an injected inline element cannot execute, however
+  it got there. Verified in a real browser rather than reasoned about: the bootstrap's
+  global is undefined and the iframe it appends as its first act is absent, with a control
+  proving the same probe reports the opposite once one exists. `tests/cdn-injection.test.mjs`
+  is that check, and it is kept permanently because the CDN's behaviour can change with a
+  dashboard toggle nobody in this repository controls.
+- **The CSP is a mitigation, not the answer.** It held because the injection was an
+  inline script. The same party could serve a modified `app.js` from the same origin, and
+  `'self'` permits that by definition. There is no header that fixes that case. Point 3
+  above is still the only configuration where the trust question has a definite answer.
+
 ## Not protected against
 
 These are real limits, not hypotheticals.
@@ -115,13 +179,31 @@ These are real limits, not hypotheticals.
 - **The other participants.** Anyone holding the link is a legitimate participant. They can
   save, screenshot, and forward anything you send. There is no way to prevent this and Warp
   Gate does not pretend to.
+- **Any one participant ending the gate for everybody.** `POST /api/bye` destroys the
+  room, not the caller's seat, and every seated participant is authorised to send it. In
+  a two-device gate that is symmetric and unremarkable. With `WG_MAX_PARTICIPANTS`
+  defaulting to 6 it is a unilateral kill: one participant, or anyone who has come by
+  that participant's capability token, ends the session for the other five. This is
+  deliberate. A gate is one shared thing behind one shared secret, so anyone entitled to
+  be in it is entitled to shut it, and there is no owner and no vote. If you need a gate
+  that a single participant cannot close, this is not it.
 - **Participants learning each other's IP addresses.** Every pair in a gate connects
   directly, so every participant learns every other participant's address. This is
   inherent to a direct connection and is the property most at odds with using Warp Gate
   between identities you want kept apart. It is stated in the onboarding for that reason.
 - **Cloudflare metadata**, when served through a tunnel: client IPs, timing, room ids,
-  request sizes and session duration. Cloudflare terminates TLS in that topology. The
-  payloads it carries are ciphertext, but the metadata is real. The same applies to the
+  request sizes, session duration, **and the per-seat capability token**. Cloudflare
+  terminates TLS in that topology. The payloads it carries are ciphertext, but the
+  metadata is real. The token is in that list because it travels in the query string of
+  `GET /api/events`, so it is visible to the TLS-terminating CDN, to any reverse proxy,
+  and to any upstream access log. It is in the URL because `EventSource` cannot set
+  request headers, which is a real constraint and not an oversight, but it is still the
+  URL. Holding the token decrypts nothing: it carries no part of the room secret, and
+  every payload it could reach is ciphertext. What it authorises is the seat: the same
+  token is what `POST /api/relay` and `POST /api/bye` check, so whoever holds it can
+  inject signalling frames at a named peer and can destroy the gate for everyone in it.
+  `referrer-policy: no-referrer` closes the `Referer` path; nothing closes the log path.
+  The same applies to the
   STUN server, which is deliberately Cloudflare's: it learns each device's public
   address, which Cloudflare already observes from the signalling connection itself. The
   point of choosing it is that it adds no party that was not already there. STUN is

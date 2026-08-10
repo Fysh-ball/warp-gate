@@ -14,9 +14,34 @@ import {
   describeLimit, canAccept, formatBytes, saveBlob, sanitizeFilename, revokeAllObjectUrls,
   canStreamToDisk,
 } from './transfer.js';
-import { encodeQr, drawQr } from './qr.js';
+// qr.js and share.js are reached through import() rather than a static import, so neither
+// is fetched to open a gate. See loadQr() and the initShare() call at the foot of this
+// file for why each is off the critical path.
+
 import { applySourceLink, copyText as writeClipboard } from './support.js';
 import { forgetPasswordKey, forgetAllPasswordKeys } from './vault.js';
+// gameplay.js, gameui.js and the four engines are ~88 KB and none of it can run until
+// somebody decides to play. They are therefore NOT imported here: see loadGames().
+// saswords.js is likewise not imported here: see loadSasWords(), which starts the fetch
+// the moment a gate exists.
+
+/**
+ * Fetch the QR encoder, once, the first time somebody asks to see a code.
+ *
+ * qr.js is 13 KB of encoder and generator polynomials that nothing needs in order to open
+ * or join a gate: the only two things that draw with it are the share panel, which is
+ * revealed by a press and deliberately renders nothing until then, and the donation modal
+ * in support.js. Both are decisions made after the page is usable, which is exactly the
+ * rule tests/size.test.mjs applies to everything else it keeps off the eager graph.
+ *
+ * The module namespace is cached rather than the promise being re-awaited per call so
+ * that a second reveal is synchronous in everything but name.
+ */
+let qrMod = null;
+async function loadQr() {
+  if (!qrMod) qrMod = await import('./qr.js');
+  return qrMod;
+}
 
 const $ = (id) => document.getElementById(id);
 const SCREENS = ['onboarding', 'home', 'password', 'waiting', 'connected', 'severed', 'failed'];
@@ -31,6 +56,19 @@ const MAX_MESSAGE_CHARS = 16000;
 
 let session = null;
 let config = null;
+// A file the operating system shared into this gate before there was a gate to share it
+// into. It waits here until a peer connects, then goes out like any other attachment.
+let pendingShare = [];
+// The game layer, built once per gate in wire(). Null until then.
+let games = null;
+let gameUi = null;
+let gamesLoading = null;
+// Messages that arrived while the module was still in flight, replayed in order once it
+// lands. Bounded: a peer that floods `game` frames at a device with no games loaded must
+// not be able to grow this without limit, and a real match never queues more than the
+// invite plus a move or two.
+const gameBacklog = [];
+const GAME_BACKLOG_MAX = 32;
 let ttlTimer = null;
 let diag = { candidates: [], ice: null, full: null };
 // True once this gate reached STATE.CONNECTED, which is the whole test for whether the
@@ -188,7 +226,25 @@ function wireDismissables() {
     btn.addEventListener('click', () => {
       const id = btn.dataset.dismiss;
       const target = $(id);
-      if (target) target.hidden = true;
+      // Fade and a 4px lift, then hide. Deliberately NOT a height collapse: these banners
+      // sit above a screen that may be running a live transfer, and animating a height
+      // relayouts the whole page under it on every frame.
+      //
+      // markDismissed runs immediately, not on animationend. What was dismissed is a fact
+      // the moment the button was pressed, and it must survive a reload landing in the
+      // middle of the 150ms.
+      if (target) {
+        // A banner that never hides because an animationend did not arrive is a worse
+        // outcome than one that hides abruptly, so the timer is a floor rather than a
+        // nicety: whichever lands first wins and the second call is a no-op.
+        const done = () => {
+          target.classList.remove('is-leaving');
+          target.hidden = true;
+        };
+        target.classList.add('is-leaving');
+        target.addEventListener('animationend', done, { once: true });
+        setTimeout(done, FADE_MS + 200);
+      }
       markDismissed(id);
     });
   }
@@ -196,7 +252,15 @@ function wireDismissables() {
 
 // How long the fade out runs before the modal is hidden outright. Must match the
 // transition in .wg-modal, or the panel snaps away mid-fade.
-const DONATE_FADE_MS = 180;
+//
+// Read out of the token rather than held as a literal. This was `180`, duplicating the
+// `0.18s` in the stylesheet, and the two were free to drift: nothing connected them and
+// nothing would have said so. The fallback is the token's own value, for the case where
+// the stylesheet did not load at all, where a modal that hides 150ms late is not the
+// problem anyone has.
+const FADE_MS = parseFloat(
+  getComputedStyle(document.documentElement).getPropertyValue('--motion-small'),
+) || 150;
 
 /**
  * Make a .wg-modal opaque, one layout after it stopped being display:none.
@@ -238,7 +302,7 @@ function maybeAskForSupport() {
     modal.classList.remove('wg-modal-open');
     document.removeEventListener('keydown', onKey);
     markDismissed('donate-modal');
-    setTimeout(() => { modal.hidden = true; }, DONATE_FADE_MS);
+    setTimeout(() => { modal.hidden = true; }, FADE_MS);
     // Back to the screen underneath, which is the one with "Open a new gate" on it.
     $('restart')?.focus();
   };
@@ -280,7 +344,7 @@ function confirmNetworkExposure() {
       $('net-continue').removeEventListener('click', onYes);
       $('net-cancel').removeEventListener('click', onNo);
       $('net-scrim').removeEventListener('click', onNo);
-      setTimeout(() => { modal.hidden = true; }, DONATE_FADE_MS);
+      setTimeout(() => { modal.hidden = true; }, FADE_MS);
       // Only a Continue records the acknowledgement. Backing out is not an answer to
       // "have you read this", so the next attempt asks again.
       if (proceed) markDismissed('net-modal');
@@ -310,8 +374,32 @@ function showUnlessPrompting(name) {
   show(name);
 }
 
+/**
+ * The screens that get an entrance, and the three that deliberately do not.
+ *
+ * 'severed' and 'failed' report a bad outcome, where a decorative arrival reads as
+ * flippant and delays text somebody needs to read right now. 'password' holds up an
+ * action and would put 300ms between the screen appearing and focus landing in
+ * #password-input. All three arrive in one frame instead.
+ */
+const ENTERING = new Set(['onboarding', 'home', 'waiting', 'connected']);
+
 function show(name) {
   for (const screen of SCREENS) $(`screen-${screen}`).hidden = screen !== name;
+  // The outgoing screen is hidden in the SAME frame as the incoming one appears: this is
+  // an entrance, never a crossfade. Fading one out and then the next in costs 450ms
+  // before the user sees the screen they asked for, and that does not read as polish, it
+  // reads as latency.
+  //
+  // No forced layout, no rAF, no double flush. An element leaving display:none restarts
+  // its CSS animations by itself, which is exactly why this is a @keyframes and not a
+  // transition: revealModal() has to do `void modal.offsetHeight` for that reason and
+  // that pattern is not copied here.
+  if (ENTERING.has(name)) {
+    const el = $(`screen-${name}`);
+    el.dataset.enter = '';
+    el.addEventListener('animationend', () => { delete el.dataset.enter; }, { once: true });
+  }
   // Any screen change ends whatever drag was in progress; the veil must not survive it.
   resetDrag();
   // The extras fill the space on the quiet screens, and stay out of the way while a
@@ -376,6 +464,33 @@ function scrollPageToTop() {
  * is being shown, and never re-runs on resize: reaching in to close a panel somebody
  * deliberately opened would be worse than either layout.
  */
+/**
+ * Fade a disclosure body in when the USER opens it, and only then.
+ *
+ * Keyed off a class this listener sets rather than off [open], and that distinction is
+ * the whole reason this function exists. The onboarding disclosures ship OPEN, so a
+ * `details.disc[open] > .disc-body` rule would replay on all five of them every time
+ * show('onboarding') runs and fitDisclosures() touches them. A toggle event is the only
+ * signal that says a person did this.
+ *
+ * Open only. Closing is instant: a panel somebody has decided to be rid of should be
+ * gone, not lingering while it is animated away.
+ */
+function wireDisclosureMotion() {
+  for (const disc of document.querySelectorAll('details.disc')) {
+    const body = disc.querySelector('.disc-body');
+    if (!body) continue;
+    disc.addEventListener('toggle', () => {
+      if (!disc.open) {
+        disc.classList.remove('is-opening');
+        return;
+      }
+      disc.classList.add('is-opening');
+      body.addEventListener('animationend', () => disc.classList.remove('is-opening'), { once: true });
+    });
+  }
+}
+
 let disclosuresFitted = false;
 function fitDisclosures() {
   if (disclosuresFitted) return;
@@ -492,14 +607,78 @@ function clearTranscript() {
 // and their wiring went with them: see support.js, which landing.js loads. This
 // document deliberately loads no code it does not need while a key is in memory.
 
+// The last line written, so an identical repeat can be folded into it instead of pushing
+// a ninth copy of the same sentence. A reconnect loop emits the SAME three messages every
+// backoff round, and at 40 retained lines that meant the entire log was one loop's noise:
+// the user's screenshot of a stuck gate showed "The other device never answered the
+// connection offer" seven times and nothing else. Repeats are information about COUNT, not
+// about sequence, so they belong on one line with a tally.
+let lastLine = null;
+let lastLineText = '';
+let lastLineLevel = '';
+let lastLineCount = 0;
+
+/** Empty the log and put the dock away. Called when the thing it describes is gone. */
+function clearLog() {
+  $('log').replaceChildren();
+  lastLine = null;
+  lastLineText = '';
+  lastLineLevel = '';
+  lastLineCount = 0;
+  $('log-latest').textContent = '';
+  $('log-more').textContent = '';
+  $('log-dock').hidden = true;
+  $('log-dock').removeAttribute('data-open');
+  $('log-toggle').setAttribute('aria-expanded', 'false');
+}
+
 function log(message, level = '') {
-  const line = document.createElement('div');
-  if (level) line.className = level;
-  line.textContent = message;
   const box = $('log');
-  box.appendChild(line);
-  while (box.children.length > 40) box.removeChild(box.firstChild);
+
+  if (lastLine && message === lastLineText && level === lastLineLevel) {
+    lastLineCount += 1;
+    // The message stays whole and the count is appended, rather than the message being
+    // rewritten: a line that says "x7" after the text is still greppable and still reads
+    // as the sentence it is.
+    lastLine.textContent = `${message}  (x${lastLineCount})`;
+  } else {
+    const line = document.createElement('div');
+    if (level) line.className = level;
+    line.textContent = message;
+    box.appendChild(line);
+    lastLine = line;
+    lastLineText = message;
+    lastLineLevel = level;
+    lastLineCount = 1;
+    while (box.children.length > 40) {
+      // If the pruned node IS the one repeats are being folded into, the reference has to
+      // go too. Otherwise the next duplicate would rewrite a node that is no longer in the
+      // document and the message would vanish instead of appearing.
+      const dropped = box.removeChild(box.firstChild);
+      if (dropped === lastLine) { lastLine = null; lastLineText = ''; lastLineCount = 0; }
+    }
+  }
+
   box.scrollTop = box.scrollHeight;
+
+  // The closed dock shows the newest line and, when it has been repeating, how many times.
+  const dock = $('log-dock');
+  dock.hidden = false;
+  $('log-latest').textContent = message;
+  $('log-latest').className = `log-latest${level ? ` ${level}` : ''}`;
+  $('log-more').textContent = lastLineCount > 1 ? `x${lastLineCount}` : '';
+}
+
+function armLogDock() {
+  const dock = $('log-dock');
+  const toggle = $('log-toggle');
+  toggle.addEventListener('click', () => {
+    const open = dock.hasAttribute('data-open');
+    if (open) dock.removeAttribute('data-open');
+    else dock.setAttribute('data-open', '');
+    toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+    if (!open) { const box = $('log'); box.scrollTop = box.scrollHeight; }
+  });
 }
 
 function badge(text, kind) {
@@ -544,6 +723,181 @@ function stopTtl() {
   $('ttl').hidden = true;
 }
 
+// ---------------------------------------------------------------- camera scan
+
+let scanAbort = null;
+
+/**
+ * Wire the "scan with the camera" button.
+ *
+ * The scanner and the QR decoder behind it are ~57 KB and are imported only when the
+ * button is pressed. The button itself is revealed only if this browser can open a camera
+ * at all, and that check needs no module: it is one property lookup, done inline, so a
+ * device that cannot scan never fetches the code that scans.
+ *
+ * @param {() => void} joinNow the same join path the button and the Enter key use. A
+ *   scanned code goes through it rather than around it, so a scan is not a second, less
+ *   validated way into a gate.
+ */
+function armScanner(joinNow) {
+  const btn = $('scan-btn');
+  const panel = $('scan-panel');
+  const video = $('scan-video');
+  const note = $('scan-note');
+
+  // Inline rather than imported: see above. Mirrors scanSupported() in qrscan.js, which
+  // is the authority once the module is loaded.
+  if (typeof navigator?.mediaDevices?.getUserMedia !== 'function') return;
+  btn.hidden = false;
+
+  const close = () => {
+    if (scanAbort) { scanAbort.abort(); scanAbort = null; }
+    panel.hidden = true;
+    btn.hidden = false;
+  };
+
+  $('scan-cancel').addEventListener('click', close);
+
+  btn.addEventListener('click', async () => {
+    btn.hidden = true;
+    panel.hidden = false;
+    note.textContent = 'Starting the camera...';
+
+    let mod;
+    try {
+      mod = await import('./qrscan.js');
+    } catch (err) {
+      close();
+      log(`the scanner could not be loaded: ${err.message}`, 'bad');
+      return;
+    }
+
+    scanAbort = new AbortController();
+    note.textContent = 'Point the camera at the other screen. Nothing leaves this device: '
+      + 'the picture is read here and thrown away.';
+
+    try {
+      const text = await mod.scanOnce(video, { signal: scanAbort.signal });
+      close();
+      // Put it in the field before joining. The person watching needs to see WHAT was
+      // read, especially when the scan picked up a different code than they meant, and a
+      // scanner that silently acts on what it saw is a scanner nobody can correct.
+      $('join-input').value = text;
+      joinNow();
+    } catch (err) {
+      close();
+      // One message per cause. A single "could not scan" for a refused permission and for
+      // a laptop with no camera names neither of them.
+      const said = {
+        denied: 'the camera was not allowed. Type the words instead, or allow the camera in the site settings.',
+        no_camera: 'no camera was found on this device.',
+        in_use: 'the camera is already in use by another app.',
+        timeout: 'no code was found. Try filling more of the frame with the code.',
+        unsupported: 'this browser cannot open a camera.',
+        cancelled: null, // the user closed it; saying so is noise
+      }[err.code] ?? `the camera failed: ${err.message}`;
+      if (said) log(said, 'warn');
+    }
+  });
+}
+
+// ---------------------------------------------------------------- the spoken wordlist
+
+let sasWordsLoading = null;
+
+/**
+ * Fetch the wordlist that turns the verification digits into two spoken words.
+ *
+ * The saving here is CPU rather than bytes: the wordlist itself (words.js) stays eager
+ * because crypto.js needs it to decode a typed gate code. What defers is saswords.js's
+ * module-eval work, which filters and phonetically de-collides all 7776 entries to build
+ * the spoken list, and on a phone that is main-thread time spent before the home screen
+ * paints for a value nobody sees until a peer connects.
+ *
+ * It still needs justifying more carefully than the games, because it IS on the security
+ * path. Three things make deferring it safe:
+ *
+ *   - The digits are the verification value. They are written to the screen from the
+ *     event itself, synchronously, and never wait on this. The words are a reading aid
+ *     laid beside them.
+ *   - The fetch is started by wire(), which runs when a gate is CREATED. A peer cannot
+ *     connect for at least a network round trip after that, so by the time an `sas` event
+ *     exists the list has had seconds, not milliseconds.
+ *   - If it never arrives, the screen shows digits and no words. That is the mechanism
+ *     this site shipped with, and it is still sound: two people reading five digits at
+ *     each other verify exactly as much as two people reading two words.
+ *
+ * What it must never do is show words derived from a different list than the peer's. It
+ * cannot: the derivation is pure and the list is pinned by SHA-256 in saswords.js.
+ */
+function loadSasWords() {
+  if (!sasWordsLoading) {
+    sasWordsLoading = import('./saswords.js').catch((err) => {
+      // Cleared so a later gate retries rather than inheriting one bad fetch forever.
+      sasWordsLoading = null;
+      log(`spoken words unavailable, verify by digits: ${err.message}`, 'warn');
+      return null;
+    });
+  }
+  return sasWordsLoading;
+}
+
+// ---------------------------------------------------------------- games, on demand
+
+/**
+ * Bring the games in, once, for this gate.
+ *
+ * The four engines plus the match layer plus the board renderer are ~88 KB, and a gate
+ * whose two people never open a board should not pay for a chess move generator. More to
+ * the point for an auditor: none of that code is on the security path, and shipping it
+ * ahead of the verification words puts entertainment bytes in front of the one screen
+ * that has to be right.
+ *
+ * Two things trigger it: this device opening the drawer, or the other device sending an
+ * invite. Whichever comes first wins; the second finds `gamesLoading` already set.
+ *
+ * A failed import is reported and left non-fatal. Chess not loading must never take the
+ * transfer down with it, so this is deliberately not awaited by anything that matters.
+ */
+function loadGames(active) {
+  if (gamesLoading) return gamesLoading;
+  const area = $('game-area');
+  if (!area.childElementCount) area.textContent = 'Loading games...';
+
+  gamesLoading = Promise.all([import('./gameplay.js'), import('./gameui.js')])
+    .then(([play, ui]) => {
+      // The gate this load was started for may already be gone: a burn, a severed link
+      // or a second create all replace `session` while the fetch is in flight. Wiring a
+      // board to a dead link would send its moves nowhere and never say so.
+      if (session !== active) return;
+      const built = new play.GameSession({
+        send: (peerId, payload) => active.sendGameTo(peerId, payload),
+      });
+      gameUi = new ui.GameUI({
+        root: area,
+        games: built,
+        // Asked for on every render rather than captured once: people join and leave a
+        // gate, and a stale partner list offers a game to somebody who is not here.
+        partners: () => (session === active ? active.gamePartners() : []),
+        onNotice: (text) => log(text, 'warn'),
+      });
+      // Drain BEFORE publishing `games`, and drain synchronously, so an invite that
+      // arrived during the fetch is applied ahead of any message that arrives after it.
+      // Setting `games` first would let a later frame overtake the queued one.
+      for (const held of gameBacklog) built.receive(held.peer, held.payload);
+      gameBacklog.length = 0;
+      games = built;
+      gameUi.render();
+    })
+    .catch((err) => {
+      gamesLoading = null;
+      gameBacklog.length = 0;
+      area.textContent = 'Games could not be loaded.';
+      log(`games unavailable: ${err.message}`, 'warn');
+    });
+  return gamesLoading;
+}
+
 // ---------------------------------------------------------------- session wiring
 
 function wire(active) {
@@ -551,6 +905,40 @@ function wire(active) {
   // Per gate, not per page: two gates in one tab are two separate answers to "did this
   // actually work for you". Reset here rather than at boot for that reason.
   everConnected = false;
+
+  // The games live for exactly one gate. A new gate is a new board, and a GameSession
+  // carried over from the last one would hold a match id and a peer that no longer exist.
+  // Cleared here rather than reloaded: the module stays in the browser's module map, so
+  // a second gate pays for the fetch once and the constructor again.
+  games = null;
+  gameUi = null;
+  gamesLoading = null;
+  gameBacklog.length = 0;
+
+  // Started here, at gate creation, rather than when the first `sas` event fires. A peer
+  // is at minimum a signalling round trip away, so this has the whole handshake to land
+  // in and the words are already there when the screen that shows them appears.
+  loadSasWords();
+  // Somebody who opened the drawer during the last gate has it open now, and an empty
+  // panel would read as "no games here".
+  if ($('games-disc').open) loadGames(active);
+
+  // session.js forwards a link's object events with the peer id stamped on, so the whole
+  // detail IS the payload plus that stamp. The stamp is applied after the spread, so a
+  // peer cannot forge which board its own move belongs to by sending a `peer` field.
+  active.addEventListener('game', (event) => {
+    // An invite is the other half of the trigger: a peer can start a game on a device
+    // that has never opened the drawer, and dropping their invite while the module
+    // fetched would look like the invite was never sent.
+    if (!games) {
+      if (gameBacklog.length >= GAME_BACKLOG_MAX) return;
+      gameBacklog.push({ peer: event.detail.peer, payload: event.detail });
+      loadGames(active);
+      return;
+    }
+    games.receive(event.detail.peer, event.detail);
+  });
+
   active.addEventListener('state', (event) => {
     const [label, kind] = STATE_LABELS[event.detail.state] ?? [event.detail.state, 'work'];
     badge(label, kind);
@@ -564,6 +952,15 @@ function wire(active) {
       ttl.hidden = false;
       ttl.textContent = 'live';
       $('compose-hint').textContent = describeLimit();
+      // Whatever the operating system shared into this page before a gate existed goes
+      // out now. Cleared first, so a second connection does not send it twice.
+      if (pendingShare.length) {
+        const queued = pendingShare;
+        pendingShare = [];
+        sendFiles(queued);
+      }
+      // The partner list only becomes non-empty here, so the menu has to be redrawn.
+      if (gameUi) gameUi.render();
     }
     // Only a genuine key-confirmation failure says "could not verify". A connectivity
     // stall has its own state and its own far more specific message, set by the
@@ -587,9 +984,29 @@ function wire(active) {
     if (event.detail.detail) log(`${label}: ${event.detail.detail}`);
   });
 
-  active.addEventListener('sas', (event) => { $('sas').textContent = event.detail; });
+  active.addEventListener('sas', (event) => {
+    const digits = event.detail;
+    $('sas').textContent = digits;
+    // The words are derived, not sent, and the derivation is a few hundred microseconds
+    // of SHA-256. It is still async, so the answer is only written if the code on screen
+    // is still the one it was derived from: a gate that re-keyed while this was in flight
+    // must not end up showing one peer's digits beside another peer's words.
+    const holder = $('sas-words');
+    if (!holder) return;
+    holder.textContent = '';
+    loadSasWords().then((mod) => {
+      if (!mod) return; // digits only, and that is a complete verification on its own
+      return mod.sasPhrase(digits).then((phrase) => {
+        if ($('sas').textContent === digits) holder.textContent = phrase;
+      });
+    }).catch((err) => { void err; });
+  });
 
-  active.addEventListener('roster', (event) => renderRoster(event.detail ?? {}));
+  active.addEventListener('roster', (event) => {
+    renderRoster(event.detail ?? {});
+    if (games) games.reconcile(active.gamePartners().map((p) => p.peer));
+    if (gameUi) gameUi.render();
+  });
 
   active.addEventListener('route', (event) => {
     const route = event.detail;
@@ -647,6 +1064,10 @@ function wire(active) {
     log(typeof detail === 'string' ? detail : detail.message, 'warn');
     // The gate is idle again, so show how long it has left.
     if (detail && detail.expiresAt) startTtl(detail.expiresAt);
+    // Reconciled against who is actually left rather than against this event's detail,
+    // which is a sentence for the log and does not always name a peer.
+    if (games) games.reconcile(active.gamePartners().map((p) => p.peer));
+    if (gameUi) gameUi.render();
   });
 
   active.addEventListener('severed', (event) => {
@@ -664,6 +1085,10 @@ function wire(active) {
     // one pins a decoded bitmap and a blob with nothing to release it, so they are
     // demoted to Save-only rows here rather than held until pagehide.
     releaseAllPreviews();
+    // A board belongs to a gate. The transcript survives a burn so it can be read; a
+    // half-finished game cannot be played on, and leaving it on screen with dead buttons
+    // reads as a gate that is still live.
+    if (games) games.reset();
     // Any transfer still running is over. Without this the row froze mid-progress with
     // no explanation, which reads as "still going" on a screen that says the gate ended.
     for (const bar of document.querySelectorAll('#messages progress')) {
@@ -680,6 +1105,11 @@ function wire(active) {
     $('severed-reason').textContent = reason === 'Gate burned.' ? '' : reason;
     history.replaceState(null, '', location.pathname);
     show('severed');
+    // The log described a gate that no longer exists. It used to survive the burn and sit
+    // across the bottom of the severed screen still reciting the reconnect attempts of a
+    // dead session, which reads as a gate that is somehow still trying. Everything it held
+    // was about the connection, and the connection is what just ended.
+    clearLog();
     // Last, and only after show(): the ask sits over the severed screen, so the screen has
     // to exist underneath it first.
     maybeAskForSupport();
@@ -881,6 +1311,12 @@ function diagnosticText() {
  *
  * The roster is hidden outright when nobody else is here, which keeps a waiting gate quiet.
  */
+// slot id -> last known connected flag. Bounded by the gate's participant count, which is
+// bounded by the server's slot limit, so this cannot grow without end. Never cleared on
+// an empty roster: a peer that drops and comes back is the same person returning, not a
+// new arrival, and re-animating them would say otherwise.
+const rosterSeen = new Map();
+
 function renderRoster({ self = null, selfName = null, peers = [] } = {}) {
   const el = $('roster');
   if (!el) return;
@@ -900,6 +1336,18 @@ function renderRoster({ self = null, selfName = null, peers = [] } = {}) {
   for (const peer of peers) {
     const chip = document.createElement('span');
     chip.className = `who-chip ${peer.connected ? 'live' : 'away'}`;
+    // Arrival and departure, keyed off the slot id rather than off the element.
+    //
+    // This function rebuilds the whole roster with replaceChildren on EVERY render, and a
+    // render happens on any peer state change, so an entrance rule written against the
+    // chip itself would replay across the entire roster whenever one person's SAS was
+    // derived. rosterSeen is what tells a genuinely new participant apart from the same
+    // participant re-rendered. For the same reason "away" is an animation and not a
+    // transition on .away: there is no surviving element for a transition to run on.
+    const wasConnected = rosterSeen.get(peer.id);
+    if (wasConnected === undefined) chip.classList.add('is-new');
+    else if (wasConnected && !peer.connected) chip.classList.add('is-dimming');
+    rosterSeen.set(peer.id, Boolean(peer.connected));
     chip.appendChild(nameSpan(peer.name ?? peer.label));
     if (peer.sas) {
       const code = document.createElement('span');
@@ -1012,8 +1460,40 @@ function bubble(from, extraClass = '', label = null) {
     discardRow(evicted);
     list.removeChild(evicted);
   }
+  markArrival(wrap);
   list.scrollTop = list.scrollHeight;
   return wrap;
+}
+
+// A burst guard, not a rate limit. Three rows in a 200ms window is more than anyone
+// reads; past that the animation is not telling anybody anything and every extra row is
+// another element on the compositor, on the same main thread a transfer is using. A peer
+// replaying history, or a transfer emitting status rows faster than they can be read,
+// would otherwise put the whole burst up at once.
+const BURST_WINDOW_MS = 200;
+const BURST_MAX = 3;
+let burstStart = 0;
+let burstCount = 0;
+
+/**
+ * Mark a row as newly arrived, so the stylesheet fades it in.
+ *
+ * No will-change: #messages holds up to MAX_MESSAGES rows and a layer per row is memory
+ * held for the life of the gate. MDN is explicit that will-change "should not be used to
+ * anticipate performance problems".
+ */
+function markArrival(el) {
+  const now = performance.now();
+  if (now - burstStart > BURST_WINDOW_MS) {
+    burstStart = now;
+    burstCount = 0;
+  }
+  burstCount += 1;
+  if (burstCount > BURST_MAX) return;
+  el.classList.add('is-new');
+  // Removed on the way out, so a row that is still on screen an hour later is not
+  // carrying an animation the compositor has to keep a record of.
+  el.addEventListener('animationend', () => el.classList.remove('is-new'), { once: true });
 }
 
 function scrollMessages() {
@@ -1151,6 +1631,44 @@ const rowTitle = (row) => row.querySelector('.file-title');
  * A stalled transfer can reconnect many times, and appending would turn one paused
  * transfer into a wall of near-identical lines that buries the row's actual state.
  */
+// Pending status writes, coalesced to one paint. This is the one hot path in the file
+// that fights everything else: a transfer calls rowStatus() many times a second, on a row
+// inside a scrolling container, and every call was one style invalidation. Writing the
+// same text twice between two frames buys nothing, so the last value per row wins and the
+// intermediate ones are dropped. The Map is keyed by the row element and emptied on every
+// flush, so it holds at most one entry per transfer in flight.
+const pendingStatus = new Map();
+let statusFrame = 0;
+let statusTimer = 0;
+
+function flushStatus() {
+  if (statusFrame) cancelAnimationFrame(statusFrame);
+  if (statusTimer) clearTimeout(statusTimer);
+  statusFrame = 0;
+  statusTimer = 0;
+  for (const [row, { line, text, level }] of pendingStatus) {
+    void row;
+    line.className = `file-status ${level}`;
+    line.textContent = text;
+  }
+  pendingStatus.clear();
+}
+
+/**
+ * Ask for a flush on the next frame, with a timer as the floor.
+ *
+ * rAF alone would be wrong here for the same reason it is wrong in revealModal(): a tab
+ * that is not being painted never fires one. A transfer runs perfectly well in a
+ * background tab, and its status line silently freezing until the tab is looked at again
+ * would be a real regression sold as an optimisation. Whichever of the two lands first
+ * flushes and cancels the other, so a visible tab still gets exactly one write per frame.
+ */
+function scheduleStatusFlush() {
+  if (statusFrame || statusTimer) return;
+  statusFrame = requestAnimationFrame(flushStatus);
+  statusTimer = setTimeout(flushStatus, 32);
+}
+
 function rowStatus(row, text, level = 'muted small') {
   let line = row.querySelector('.file-status');
   if (!line) {
@@ -1158,15 +1676,20 @@ function rowStatus(row, text, level = 'muted small') {
     line.className = 'file-status';
     row.appendChild(line);
   }
-  line.className = `file-status ${level}`;
-  // .warn is only styled inside #log, so a warning colour here has to be set directly.
-  // The variable is the stylesheet's own, so the two cannot drift apart.
-  line.style.color = level.includes('warn') ? 'var(--warn)' : '';
-  line.textContent = text;
+  // .warn is only styled inside #log, so a warning colour here used to be written as
+  // line.style.color on every single call. It is a class now: an inline style write is a
+  // style invalidation whether or not the value changed, and the colour comes from the
+  // stylesheet's own token either way, so nothing about the rendered result differs.
+  pendingStatus.set(row, { line, text, level });
+  scheduleStatusFlush();
   return line;
 }
 
 function clearRowStatus(row) {
+  // Drop the queued write first. A flush landing after the element was removed would
+  // write the status that was just cleared back into a detached node, and the next
+  // rowStatus() for that row would find no .file-status and build a second one.
+  pendingStatus.delete(row);
   row.querySelector('.file-status')?.remove();
 }
 
@@ -1422,7 +1945,57 @@ async function sendFiles(files) {
   return run;
 }
 
+/**
+ * Wait for at least one connected link, waking the ones that are not.
+ *
+ * THE BUG THIS EXISTS FOR, and it is the phone case the user reported: tapping Attach
+ * opens the OS file picker, which freezes this tab. Both mobile engines reclaim an
+ * RTCPeerConnection from a frozen tab, so however long the user spends choosing files is
+ * time the link spends dead and backing off. The picker's `change` event then fires the
+ * INSTANT they tap Done, which is the one moment the link is guaranteed not to be back
+ * yet. requireConnected() threw, and from the user's side the gate refused a send for no
+ * visible reason immediately after they had done exactly what it asked.
+ *
+ * Picking files is not a request to send them within the next 40 milliseconds. It is a
+ * request to send them. So: ask every link to retry now rather than at the back of its
+ * backoff, then wait, and only give up if the gate really does not come back.
+ *
+ * Polled rather than event-driven on purpose. The connected state is derived from several
+ * links and several state machines, `connectedLinks()` is the one place that decides it,
+ * and a 250ms poll of a getter cannot disagree with it the way a second event subscription
+ * could. Twelve polls a second cost nothing next to a file transfer.
+ */
+async function waitForLink(timeoutMs = 30000) {
+  if (!session) return false;
+  if (session.connectedLinks().length) return true;
+
+  session.wakeAll('a file is waiting to be sent');
+  log('Waiting for the gate to come back before sending.', 'warn');
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => { setTimeout(r, 250); });
+    if (!session) return false;
+    if (session.connectedLinks().length) {
+      log('The gate is back. Sending now.', 'ok');
+      return true;
+    }
+  }
+  return false;
+}
+
 async function sendFilesNow(list) {
+  if (!session) return;
+  if (!(await waitForLink())) {
+    // Named per file rather than once for the batch: the row in the transcript is where
+    // the user looks for what happened to a particular file, and a single line in the log
+    // does not tell them which of the four they picked went nowhere.
+    for (const file of list) {
+      log(`could not send ${file.name}: the gate did not reconnect`, 'bad');
+      noteFileOutcome('me', file.name, 'Not sent: the gate did not reconnect');
+    }
+    return;
+  }
   for (const file of list) {
     if (!session) return;
     // renderProgress reads this to tell a send this side started from a forged one.
@@ -1534,17 +2107,29 @@ async function startCreate() {
     // default.
     let drawn = false;
     const revealShare = () => {
+      // The code itself is written synchronously and the panel is revealed synchronously.
+      // Only the canvas waits for the encoder, because the readable code is the thing the
+      // press asked for and the QR is the convenience beside it: making the whole reveal
+      // await a fetch would put a network round trip between the press and the words.
       $('room-code').textContent = formatted;
-      if (!drawn) {
-        try {
-          drawQr($('qr'), encodeQr(link));
-          drawn = true;
-        } catch (err) {
-          log(`could not render a QR code: ${err.message}. Use the link instead.`, 'warn');
-        }
-      }
       $('share-hidden').hidden = true;
       $('share-shown').hidden = false;
+      if (drawn) return;
+      // Set before the await, not after: two fast presses would otherwise both pass the
+      // check and draw the same code twice.
+      drawn = true;
+      loadQr().then(({ encodeQr, drawQr }) => {
+        drawQr($('qr'), encodeQr(link));
+        // Set only after the pixels are actually on the canvas. An empty canvas reads as
+        // fully transparent, which samples as every pixel dark, so "is there a code here
+        // yet" cannot be answered from the bitmap alone: this is the signal that says the
+        // draw landed, for anything waiting on it.
+        $('qr').dataset.drawn = '1';
+      }).catch((err) => {
+        drawn = false;
+        delete $('qr').dataset.drawn;
+        log(`could not render a QR code: ${err.message}. Use the link instead.`, 'warn');
+      });
     };
     const hideShare = () => {
       $('room-code').textContent = '';
@@ -1733,7 +2318,66 @@ async function severNow() {
 
 // ---------------------------------------------------------------- boot
 
+/**
+ * Opening the drawer is a decision to play, and it is the point at which the games are
+ * worth their bytes. Registered once at boot rather than per gate: `wire()` runs on every
+ * create and join, and a listener added there would stack.
+ */
+function armGamesDrawer() {
+  $('games-disc').addEventListener('toggle', (event) => {
+    if (!event.target.open || !session) return;
+    loadGames(session);
+  });
+}
+
+/**
+ * Refuse to arm the gate when the browser has not given this page the Web Crypto API.
+ *
+ * `crypto.subtle` exists in a secure context only: TLS, or one of the loopback addresses.
+ * A self-hosted copy reached at `http://192.168.x.x` therefore serves a byte-identical
+ * `/app` whose cryptography is missing, and the old behaviour was an uncaught TypeError
+ * out of `crypto.js` partway through opening a gate. `qrscan.js` and `download.js` already
+ * test `isSecureContext` and disappear quietly, which made the remaining failure harder to
+ * read rather than easier: the page looked merely reduced instead of broken.
+ *
+ * Tested through `globalThis.crypto?.subtle` rather than `isSecureContext` alone, because
+ * the thing that must exist is the API, and a browser that reports a secure context but
+ * withholds `subtle` should still be refused instead of trusted into a throw.
+ *
+ * Returns true when the page is usable.
+ */
+function requireSecureContext() {
+  if (globalThis.crypto?.subtle) return true;
+
+  const banner = $('insecure-warning');
+  if (banner) {
+    // Named explicitly. "Not secure" on its own reads as a warning about the site; the
+    // address in the bar is the whole cause, so it is the whole message.
+    const origin = globalThis.location?.origin ?? 'this address';
+    $('insecure-warning-text').textContent = `${origin} was not served over HTTPS and is not `
+      + 'a loopback address, so this browser withheld the encryption API from the page.';
+    banner.hidden = false;
+  }
+
+  for (const id of ['create-btn', 'join-btn']) {
+    const btn = $(id);
+    if (!btn) continue;
+    btn.disabled = true;
+    btn.title = 'Unavailable: this page cannot encrypt over a plain HTTP address.';
+  }
+
+  log('This page is not a secure context, so it cannot encrypt. Use HTTPS or localhost.', 'bad');
+  return false;
+}
+
 async function boot() {
+  // Before the config fetch, so that an insecure origin says so immediately rather than
+  // after a network round trip, and before anything can reach a crypto call.
+  if (!requireSecureContext()) {
+    show('home');
+    return;
+  }
+
   try {
     config = await fetchConfig();
   } catch (err) {
@@ -1849,6 +2493,8 @@ async function boot() {
   runCapabilityCheck(false);
   watchLogHeight();
   wireDismissables();
+  wireDisclosureMotion();
+  armGamesDrawer();
 
   // Say up front what this browser can RECEIVE, before a gate is opened, rather than
   // letting someone set one up and find out mid-transfer. Sending is unaffected either way.
@@ -1879,12 +2525,41 @@ async function boot() {
     // acting on it submits half-composed text.
     if (e.key === 'Enter' && !e.isComposing) joinNow();
   });
+  armScanner(joinNow);
+  armLogDock();
   $('sever').addEventListener('click', severNow);
   $('waiting-sever').addEventListener('click', severNow);
   $('clear-transcript').addEventListener('click', clearTranscript);
   window.addEventListener('pagehide', () => {
     cancelClipboardWipe();
     releaseAllPreviews();
+  });
+
+  // The tab coming back is the strongest signal available that the network picture has
+  // changed, and this document had no handler for it at all: recovery was left entirely
+  // to EventSource's own reconnect plus Link's exponential backoff, which by design gets
+  // slower the longer things have been wrong.
+  //
+  // That is exactly backwards for the case that made this necessary. A phone opening the
+  // OS file picker freezes this tab, the peer connection is reclaimed underneath it, and
+  // the backoff walks out to its 30s ceiling while nobody is watching. The picker then
+  // returns and fires `change` immediately, so the send met a link that was half a minute
+  // from even trying. Waking here closes that gap to zero.
+  //
+  // `pageshow` as well as `visibilitychange`, because a back/forward-cache restore does
+  // not always produce the latter, and a restored page is precisely one whose connections
+  // are gone. Both paths are no-ops on a healthy link.
+  const wakeLinks = (why) => {
+    if (document.visibilityState !== 'visible') return;
+    try {
+      session?.wakeAll(why);
+    } catch (err) {
+      log(`could not retry the connection on returning to the page: ${err.message}`, 'warn');
+    }
+  };
+  document.addEventListener('visibilitychange', () => wakeLinks('the page is back in front'));
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) wakeLinks('the page was restored from the cache');
   });
   $('restart').addEventListener('click', () => { location.href = location.pathname; });
   $('failed-restart').addEventListener('click', () => { location.href = location.pathname; });
@@ -2041,6 +2716,23 @@ function afterAgreement() {
   else if (stored && tryDecodeGateCode(stored)) runFlow($('join-btn'), () => startJoin(stored));
   else show('home');
 }
+
+// Registers the download worker at load, which is what makes this page installable and
+// gives it a share target at all, and picks up anything the operating system shared into
+// it. Nothing about a shared file touches the network: it comes back out of the Cache
+// Storage the worker put it in. Deliberately not awaited and never fatal, so a browser
+// with none of this loads the gate exactly as before.
+// Reached by import() rather than a static import for the same reason it was already not
+// awaited: nothing here is needed to open or join a gate, so it must not be one of the
+// files a browser fetches before the page is usable. The behaviour is unchanged, because
+// the result was only ever consumed in a .then().
+import('./share.js').then(({ initShare }) => initShare()).then((files) => {
+  if (!files.length) return;
+  pendingShare = files;
+  log(files.length === 1
+    ? `${sanitizeFilename(files[0].name)} is attached and will send as soon as a gate opens.`
+    : `${files.length} files are attached and will send as soon as a gate opens.`);
+}).catch((err) => { void err; });
 
 // Without this, any throw inside boot left the page with NO screen visible and nothing
 // logged: a blank app and no way to tell why.

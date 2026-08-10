@@ -16,12 +16,19 @@ import {
   encodeWordIndices, canonicalPhrase, randomWordIndices,
   WORDS, WORD_COUNT, WORDLIST_SHA256, CODE_WORDS,
   deriveSecret, clearSecretCache, CODE_STRETCH_ITERATIONS,
+  commitPublicKey,
 } from '../public/js/crypto.js';
 import {
   canAccept, createSink, sanitizeFilename, MEMORY_LIMIT_BYTES,
 } from '../public/js/transfer.js';
 import { Session, STATE } from '../public/js/session.js';
 import { savePasswordKey, recallPasswordKey, forgetAllPasswordKeys } from '../public/js/vault.js';
+import { Link, STATE as LINK_STATE } from '../public/js/link.js';
+import { Signal } from '../public/js/signal.js';
+import {
+  CHUNK_INDEX_BYTES, frameChunk, unframeChunk, createIndexedSink,
+} from '../public/js/resume.js';
+import { scanOnce, lastScanError, SCAN_ERR } from '../public/js/qrscan.js';
 
 const te = new TextEncoder();
 const subtle = globalThis.crypto.subtle;
@@ -893,6 +900,741 @@ const randomSecret = () => new Uint8Array(crypto.randomBytes(16));
     none === null && recallPasswordKey(roomId) === null);
 
   forgetAllPasswordKeys();
+}
+
+
+// ================================================================ the SAS collision
+//
+// THE ATTACK, SIMULATED. Before commit-then-reveal, both sides sent their ephemeral
+// public key unconditionally with nothing in front of it, and the SAS is a function of a
+// transcript over both keys. An attacker on the relay path who also holds the gate code
+// could therefore hold both real public keys, having bound itself to nothing, and search
+// for a pair of substitute keys that makes BOTH humans read the same digits.
+//
+// The search is cheap because each side's SAS depends on only ONE of the attacker's keys:
+//
+//   what A computes  = f(pk_A, pk_M_facing_A)     one value per A-facing candidate
+//   what B computes  = f(pk_M_facing_B, pk_B)     one value per B-facing candidate
+//
+// so it is a birthday collision between two independent lists, not a search over pairs:
+// n candidates each side gives n^2 chances at the modulus. At the real 100000 that is
+// about 316 keypairs per side, roughly 640 curve operations, well under a second.
+//
+// Run here at a REDUCED modulus so the suite stays fast. The reduction is the last two
+// digits of the real SAS, which is the real value modulo 100: an attacker facing a
+// two-digit SAS needs exactly the collision an attacker facing five digits needs, and the
+// arithmetic of the search is identical. Nothing about the derivation is stubbed.
+//
+// The negative control is the whole point of the section: the SAME attacker, with the
+// SAME candidate pool, is measured again under the rule that it must fix each key before
+// it sees the key that key will be compared against. Its advantage has to disappear.
+{
+  const secret = randomSecret();
+  const roomId = await deriveRoomId(secret);
+
+  // The reduced SAS: the real five digits, taken modulo 100. 100000 is divisible by 100,
+  // so this is as uniform as the value it comes from.
+  const SAS_MOD = 100;
+  const reduce = (sas) => sas.slice(-2);
+
+  // What ONE side ends up reading out loud, given its own key pair and the key it was
+  // handed. `role` is the pair role: the initiator is 'a', the responder 'b'.
+  const sasFor = async (mine, theirPublicRaw, role) => reduce((await deriveSession({
+    secret, privateKey: mine.privateKey, publicRaw: mine.publicRaw,
+    peerPublicRaw: theirPublicRaw, role, roomId,
+  })).sas);
+
+  const pool = (n) => Promise.all(Array.from({ length: n }, () => generateKeyPair()));
+
+  // n^2 / SAS_MOD chances at a collision. 40 a side is 1600 chances at 100, so the search
+  // failing would itself be news.
+  const CANDIDATES = 40;
+  const RUNS = 3;
+
+  let grindsFound = 0;
+  let grindsAgreed = 0;
+  for (let run = 0; run < RUNS; run += 1) {
+    const a = await generateKeyPair();   // the initiator
+    const b = await generateKeyPair();   // the responder
+
+    // PRE-FIX ORDERING: the attacker already holds pk_A and pk_B and has published
+    // nothing, so it can compute what each victim WOULD read for every candidate it holds.
+    const facingA = await pool(CANDIDATES);
+    const facingB = await pool(CANDIDATES);
+    // Facing A the attacker plays the responder, so it derives with role 'b' against pk_A.
+    const seenByA = await Promise.all(facingA.map((m) => sasFor(m, a.publicRaw, 'b')));
+    // Facing B it plays the initiator, so role 'a' against pk_B.
+    const seenByB = await Promise.all(facingB.map((m) => sasFor(m, b.publicRaw, 'a')));
+
+    const byValue = new Map();
+    for (let i = 0; i < seenByA.length; i += 1) if (!byValue.has(seenByA[i])) byValue.set(seenByA[i], i);
+    let hit = null;
+    for (let j = 0; j < seenByB.length; j += 1) {
+      const i = byValue.get(seenByB[j]);
+      if (i !== undefined) { hit = { i, j }; break; }
+    }
+    if (!hit) continue;
+    grindsFound += 1;
+
+    // And now what the two humans actually read, derived by the victims themselves rather
+    // than by the attacker's model of them.
+    const readByA = await sasFor(a, facingA[hit.i].publicRaw, 'a');
+    const readByB = await sasFor(b, facingB[hit.j].publicRaw, 'b');
+    if (readByA === readByB) grindsAgreed += 1;
+  }
+
+  check(`the pre-fix grind finds a colliding key pair on every run (${CANDIDATES} candidates a side, modulus ${SAS_MOD})`,
+    grindsFound === RUNS, `${grindsFound}/${RUNS} runs found one`);
+  check('and both victims then read the SAME code while talking to the attacker, which is the attack',
+    grindsAgreed === RUNS, `${grindsAgreed}/${RUNS} collisions actually agreed`);
+
+  // ---------------------------------------------------------------- the negative control
+  //
+  // Same attacker, same modulus, under commit-then-reveal. It must fix its B-facing key
+  // before pk_B exists to compare against, and its A-facing key before pk_A is revealed,
+  // so neither list can be computed and neither can be searched. All that is left is one
+  // blind guess per gate, which is 1 in SAS_MOD, and the count below has to look like
+  // chance rather than like an attack.
+  const TRIALS = 200;
+  let blindAgreed = 0;
+  for (let t = 0; t < TRIALS; t += 1) {
+    // The attacker moves FIRST, which is exactly what the commitment costs it.
+    const facingA = await generateKeyPair();
+    const facingB = await generateKeyPair();
+    const a = await generateKeyPair();
+    const b = await generateKeyPair();
+    const readByA = await sasFor(a, facingA.publicRaw, 'a');
+    const readByB = await sasFor(b, facingB.publicRaw, 'b');
+    if (readByA === readByB) blindAgreed += 1;
+  }
+  // Expected TRIALS / SAS_MOD = 2. The bound is generous by a factor of twenty so this
+  // cannot flake, and it is still nowhere near the 100% the grind achieves above.
+  check(`with the keys fixed first, the same attacker succeeds only by chance (${blindAgreed}/${TRIALS}, expected about ${TRIALS / SAS_MOD})`,
+    blindAgreed <= TRIALS / 5, `${blindAgreed} of ${TRIALS} blind attempts agreed`);
+  // CONTROL for the measurement itself, not for the fix. A count near zero is exactly what
+  // a comparison that can never report "agreed" would also print, so the same sasFor and
+  // the same equality are run once over a pair that MUST agree: two honest peers, each
+  // holding the other's real key. If this cannot see agreement, the zero above means
+  // nothing at all.
+  {
+    const a = await generateKeyPair();
+    const b = await generateKeyPair();
+    const readByA = await sasFor(a, b.publicRaw, 'a');
+    const readByB = await sasFor(b, a.publicRaw, 'b');
+    check('CONTROL: the same comparison DOES report agreement for an honest pair, so a low count above is a result and not a broken measurement',
+      readByA === readByB, `${readByA} vs ${readByB}`);
+  }
+}
+
+// ---------------------------------------------------------------- the commitment itself
+{
+  const a = await generateKeyPair();
+  const b = await generateKeyPair();
+  const ha = await commitPublicKey(a.publicRaw);
+  const hb = await commitPublicKey(b.publicRaw);
+
+  check('a key commitment is a 32-byte SHA-256 digest', ha instanceof Uint8Array && ha.length === 32, String(ha?.length));
+  check('the same key commits to the same value twice',
+    Buffer.from(await commitPublicKey(a.publicRaw)).equals(Buffer.from(ha)));
+  check('CONTROL: two different keys commit to different values, so the digest really covers the key',
+    !Buffer.from(ha).equals(Buffer.from(hb)));
+
+  // Domain separation, recomputed independently rather than taken from the module. A
+  // commitment that is a bare SHA-256 of a public key could be confused with any other
+  // hash of the same bytes elsewhere in the protocol.
+  const expected = crypto.createHash('sha256')
+    .update(Buffer.concat([Buffer.from('wg/v1/pkc', 'utf8'), Buffer.from(a.publicRaw)]))
+    .digest();
+  check('the commitment is SHA-256 over the label "wg/v1/pkc" and the key, computed independently',
+    expected.equals(Buffer.from(ha)));
+  check('CONTROL: and it is NOT a bare SHA-256 of the key, so the label is doing work',
+    !crypto.createHash('sha256').update(Buffer.from(a.publicRaw)).digest().equals(Buffer.from(ha)));
+
+  let refusedShort = false;
+  try { await commitPublicKey(a.publicRaw.subarray(0, 64)); } catch (err) { refusedShort = /65-byte/.test(err.message); }
+  check('a value that is not a 65-byte point cannot be committed to', refusedShort);
+}
+
+// ================================================================ commit-then-reveal
+//
+// The protocol half of the fix, driven through Link's real signalling handler.
+//
+// Link is exercised directly with a stand-in Session because the state machine is the
+// thing under test, not WebRTC: connect() would build an RTCPeerConnection, which Node has
+// no business having. Everything below goes through the same onSignalMessage every relayed
+// message goes through in the browser.
+{
+  const makeLink = ({ initiator }) => {
+    const sent = [];
+    const events = [];
+    let severed = false;
+    const session = {
+      severed: false,
+      needsRestart: false,
+      passwordGate: Promise.resolve(),
+      signal: { send: async (message, to) => { sent.push({ ...message, to }); return true; } },
+      labelFor: () => 'peer',
+      sever: async () => { severed = true; session.severed = true; },
+    };
+    const link = new Link({ session, peerId: initiator ? 'zzz' : 'aaa', initiator });
+    for (const name of ['warning', 'auth-failed', 'sas', 'chat', 'secret', 'game']) {
+      link.addEventListener(name, (event) => events.push({ name, detail: event.detail }));
+    }
+    return {
+      link, sent, events, session, get severed() { return severed; },
+      said: (re) => events.some((e) => re.test(String(e.detail))),
+    };
+  };
+
+  // ---- the responder answers a commitment and nothing else
+  {
+    const peer = await generateKeyPair();
+    const r = makeLink({ initiator: false });
+    r.link.keyPair = await generateKeyPair();
+
+    await r.link.onSignalMessage({ t: 'pk', pk: b64u.encode(peer.publicRaw) });
+    check('a responder refuses a public key that arrived with no commitment in front of it',
+      r.link.peerPublicRaw === null && r.link.state === LINK_STATE.AUTH_FAILED,
+      `state=${r.link.state} pinned=${Boolean(r.link.peerPublicRaw)}`);
+    check('and it says so out loud rather than timing out silently',
+      r.said(/without first committing/), JSON.stringify(r.events.map((e) => e.name)));
+    check('and it severs, so nothing can be exchanged over the link it was refused on', r.severed);
+  }
+
+  // ---- the honest exchange, in order
+  {
+    const peer = await generateKeyPair();
+    const r = makeLink({ initiator: false });
+    r.link.keyPair = await generateKeyPair();
+
+    check('a responder sends nothing before the commitment arrives', r.sent.length === 0);
+    await r.link.onSignalMessage({ t: 'pkc', h: b64u.encode(await commitPublicKey(peer.publicRaw)) });
+    check('once committed to, the responder answers with exactly its own public key',
+      r.sent.length === 1 && r.sent[0].t === 'pk' && r.sent[0].pk === b64u.encode(r.link.keyPair.publicRaw),
+      JSON.stringify(r.sent.map((m) => m.t)));
+    check('and it does not reveal anything about the initiator it has not been told yet',
+      r.link.peerPublicRaw === null);
+
+    await r.link.onSignalMessage({ t: 'pk', pk: b64u.encode(peer.publicRaw) });
+    check('a reveal that matches the commitment is accepted',
+      r.link.peerPublicRaw !== null
+      && Buffer.from(r.link.peerPublicRaw).equals(Buffer.from(peer.publicRaw)),
+      `state=${r.link.state}`);
+    check('CONTROL: the honest path does not sever, so the refusals above mean something', !r.severed);
+  }
+
+  // ---- THE CHECK: a reveal that is not what was committed to
+  {
+    const promised = await generateKeyPair();
+    const substituted = await generateKeyPair();
+    const r = makeLink({ initiator: false });
+    r.link.keyPair = await generateKeyPair();
+
+    await r.link.onSignalMessage({ t: 'pkc', h: b64u.encode(await commitPublicKey(promised.publicRaw)) });
+    await r.link.onSignalMessage({ t: 'pk', pk: b64u.encode(substituted.publicRaw) });
+
+    check('a key that is not the one committed to is refused, which is the whole fix',
+      r.link.peerPublicRaw === null && r.link.state === LINK_STATE.AUTH_FAILED,
+      `state=${r.link.state} pinned=${Boolean(r.link.peerPublicRaw)}`);
+    check('the refusal names what happened rather than reporting a generic failure',
+      r.said(/revealed a different key from the one it committed to/),
+      JSON.stringify(r.events.filter((e) => e.name === 'auth-failed').map((e) => e.detail)));
+    check('and the gate is severed rather than left half-open', r.severed);
+    check('no session keys were derived from a substituted key', r.link.sessionKeys === null);
+  }
+
+  // ---- a malformed commitment is a refusal, not a shrug
+  {
+    for (const [what, h] of [['not base64url', '!!!!'], ['the wrong length', b64u.encode(new Uint8Array(16))]]) {
+      const r = makeLink({ initiator: false });
+      r.link.keyPair = await generateKeyPair();
+      await r.link.onSignalMessage({ t: 'pkc', h });
+      check(`a commitment that is ${what} ends the exchange`,
+        r.link.state === LINK_STATE.AUTH_FAILED && r.severed, `state=${r.link.state}`);
+    }
+  }
+
+  // ---- the initiator does not reveal first
+  {
+    const peer = await generateKeyPair();
+    const i = makeLink({ initiator: true });
+    i.link.keyPair = await generateKeyPair();
+
+    await i.link.maybeSendPublicKey();
+    check('an initiator holding no peer key sends nothing, so its key cannot be ground against',
+      i.sent.length === 0, JSON.stringify(i.sent.map((m) => m.t)));
+
+    await i.link.onSignalMessage({ t: 'pk', pk: b64u.encode(peer.publicRaw) });
+    check('the initiator reveals only after the responder has committed itself by answering',
+      i.sent.length === 1 && i.sent[0].t === 'pk', JSON.stringify(i.sent.map((m) => m.t)));
+  }
+
+  // ---- an initiator refuses to play responder
+  {
+    const other = await generateKeyPair();
+    const i = makeLink({ initiator: true });
+    i.link.keyPair = await generateKeyPair();
+    await i.link.onSignalMessage({ t: 'pkc', h: b64u.encode(await commitPublicKey(other.publicRaw)) });
+    check('an initiator refuses a commitment, which is the roles being inverted under it',
+      i.link.peerCommitment === null && i.sent.length === 0 && i.said(/ignored a key commitment/),
+      `sent=${i.sent.length}`);
+  }
+
+  // ---- the wait cannot deadlock
+  {
+    const peer = await generateKeyPair();
+    const r = makeLink({ initiator: false });
+    r.link.keyPair = await generateKeyPair();
+
+    // The timer's callback is captured rather than waited for: eight seconds of real time
+    // in a unit suite is eight seconds nobody gets back, and what is under test is what
+    // the callback DOES, not that setTimeout counts.
+    const realSetTimeout = globalThis.setTimeout;
+    let fire = null;
+    globalThis.setTimeout = (fn, ms) => {
+      if (ms === 8000 && fire === null) { fire = fn; return 0; }
+      return realSetTimeout(fn, ms);
+    };
+    try {
+      await r.link.onSignalMessage({ t: 'pkc', h: b64u.encode(await commitPublicKey(peer.publicRaw)) });
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    check('the responder arms a clock on the reveal it is now owed', typeof fire === 'function');
+    fire?.();
+    check('a commitment that is never opened ends the exchange instead of hanging for ever',
+      r.link.state === LINK_STATE.AUTH_FAILED, `state=${r.link.state}`);
+    check('and it says the key was promised and never sent',
+      r.said(/promised a key and never sent it/),
+      JSON.stringify(r.events.filter((e) => e.name === 'auth-failed').map((e) => e.detail)));
+  }
+
+  // ---- renegotiation carries neither the commitment nor the latch
+  {
+    const first = await generateKeyPair();
+    const second = await generateKeyPair();
+    const r = makeLink({ initiator: false });
+    r.link.keyPair = await generateKeyPair();
+    await r.link.onSignalMessage({ t: 'pkc', h: b64u.encode(await commitPublicKey(first.publicRaw)) });
+    await r.link.onSignalMessage({ t: 'pk', pk: b64u.encode(first.publicRaw) });
+    check('the first handshake completed its exchange', r.link.peerPublicRaw !== null && r.link.pkSent === true);
+
+    r.link.resetForRenegotiation();
+    check('renegotiation drops the commitment, the reveal and the sent latch together',
+      r.link.peerCommitment === null && r.link.peerPublicRaw === null && r.link.pkSent === false
+      && r.link.keyPair === null && r.link.sessionKeys === null);
+
+    // And the fresh handshake is checked against the FRESH commitment, not the stale one.
+    r.link.keyPair = await generateKeyPair();
+    const before = r.sent.length;
+    await r.link.onSignalMessage({ t: 'pkc', h: b64u.encode(await commitPublicKey(second.publicRaw)) });
+    await r.link.onSignalMessage({ t: 'pk', pk: b64u.encode(second.publicRaw) });
+    check('a renegotiated link accepts the new key against the new commitment',
+      r.link.peerPublicRaw !== null
+      && Buffer.from(r.link.peerPublicRaw).equals(Buffer.from(second.publicRaw))
+      && r.sent.length === before + 1 && !r.severed,
+      `state=${r.link.state} severed=${r.severed}`);
+  }
+
+  // ---- the restart path now settles, exactly as restartConnection does
+  {
+    const r = makeLink({ initiator: false });
+    r.link.lastRenegotiationAt = Date.now();
+    // Stubbed so that a build WITHOUT the guard is observable rather than merely fatal:
+    // the unguarded path calls connect(), which builds an RTCPeerConnection and throws in
+    // Node, and a check that can only ever crash on the broken build has not been shown to
+    // fail, it has been shown to explode. This makes the wrong behaviour reportable.
+    r.link.connect = async () => { r.link.connectCalled = true; };
+    await r.link.onSignalMessage({ t: 'restart' });
+    check('a peer-sent restart landing on a handshake that just started is deferred, not obeyed',
+      r.link.restartTimer !== null && r.said(/handshake is already in progress/),
+      `timer=${Boolean(r.link.restartTimer)}`);
+    check('and the handshake under way is left alone rather than torn down and restarted',
+      r.link.connectCalled === undefined, `connect called: ${Boolean(r.link.connectCalled)}`);
+    r.link.clearRestartTimer();
+
+    // CONTROL: the guard is a guard and not a blanket refusal.
+    const s = makeLink({ initiator: false });
+    s.link.lastRenegotiationAt = Date.now() - 60_000;
+    s.link.connect = async () => { s.link.connected_called = true; };
+    await s.link.onSignalMessage({ t: 'restart' });
+    check('CONTROL: a restart arriving on a settled link is still obeyed',
+      s.link.connected_called === true && s.said(/Renegotiating/));
+  }
+}
+
+// ================================================================ who sent it
+//
+// `from` rides inside the sealed envelope under k_sig, and every seated participant holds
+// k_sig, so any one seat could put any other seat's name on a message. The server now
+// attaches the token-authenticated sender as a sibling field `sfrom`, outside the sealed
+// bytes, and the page drops anything where the two disagree.
+//
+// Driven through the real relay listener with a stand-in EventSource, so what is measured
+// is the code path a relayed message actually takes: parse, open, check sender, check
+// sequence, dispatch.
+{
+  const secret = randomSecret();
+  const signalKey = await deriveSignalKey(secret);
+
+  class FakeEventSource {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+    constructor(url) {
+      this.url = url;
+      this.readyState = 1;
+      this.listeners = new Map();
+      FakeEventSource.last = this;
+    }
+    addEventListener(name, fn) {
+      if (!this.listeners.has(name)) this.listeners.set(name, []);
+      this.listeners.get(name).push(fn);
+    }
+    close() { this.readyState = 2; }
+    emit(name, data) { for (const fn of this.listeners.get(name) ?? []) fn({ data }); }
+  }
+
+  const settle = () => new Promise((resolve) => { setTimeout(resolve, 25); });
+
+  const wire = () => {
+    const previous = globalThis.EventSource;
+    globalThis.EventSource = FakeEventSource;
+    const signal = new Signal({ roomId: 'ROOM', token: 'tok', signalKey });
+    signal.selfId = 'me';
+    signal.connect();
+    globalThis.EventSource = previous;
+    const seen = [];
+    const refused = [];
+    const undecryptable = [];
+    signal.addEventListener('message', (e) => seen.push(e.detail));
+    signal.addEventListener('impersonation-refused', (e) => refused.push(e.detail));
+    signal.addEventListener('undecryptable', (e) => undecryptable.push(e.detail));
+    return { signal, source: FakeEventSource.last, seen, refused, undecryptable };
+  };
+
+  const relay = async (w, message, sfrom) => {
+    const envelope = await sealEnvelope(signalKey, message);
+    w.source.emit('relay', JSON.stringify(sfrom === undefined ? envelope : { ...envelope, sfrom }));
+    await settle();
+  };
+
+  // ---- the honest case
+  {
+    const w = wire();
+    await relay(w, { t: 'pk', from: 'peer-1', seq: 1, epoch: 1000 }, 'peer-1');
+    check('a message whose sealed sender matches the seat the server authenticated is delivered',
+      w.seen.length === 1 && w.seen[0].from === 'peer-1',
+      `${w.seen.length} delivered, ${w.refused.length} refused`);
+  }
+
+  // ---- the forgery
+  {
+    const w = wire();
+    await relay(w, { t: 'sever', from: 'victim', seq: 1, epoch: 1000 }, 'attacker');
+    check('a message sealed under another participant\'s name is dropped',
+      w.seen.length === 0 && w.refused.length === 1,
+      `${w.seen.length} delivered, ${w.refused.length} refused`);
+    check('and the refusal names both the claim and the truth',
+      /claims to come from victim/.test(w.refused[0]) && /sent by attacker/.test(w.refused[0]),
+      w.refused[0]);
+  }
+
+  // ---- absent is a drop, and it says why
+  {
+    const w = wire();
+    await relay(w, { t: 'pk', from: 'peer-1', seq: 1, epoch: 1000 }, undefined);
+    check('a relay with no server attestation at all is dropped rather than trusted',
+      w.seen.length === 0, `${w.seen.length} delivered`);
+    check('and the diagnosis names the cause: a server older than this page',
+      w.undecryptable.length === 1 && /older than this page/.test(w.undecryptable[0]),
+      JSON.stringify(w.undecryptable));
+  }
+
+  // ---- ORDERING. The check has to run before the replay counter remembers anything.
+  {
+    const w = wire();
+    // A forgery claiming to be peer-1, at a high sequence. If this reached acceptSeq it
+    // would set peer-1's watermark to (1000, 500).
+    await relay(w, { t: 'pk', from: 'peer-1', seq: 500, epoch: 1000 }, 'attacker');
+    check('the forged message did not get through', w.seen.length === 0);
+    // The real peer-1 now speaks for the first time, at sequence 1 as it always would.
+    await relay(w, { t: 'pk', from: 'peer-1', seq: 1, epoch: 1000 }, 'peer-1');
+    check('one seat cannot burn another seat\'s sequence space, so the real peer is still heard',
+      w.seen.length === 1 && w.seen[0].seq === 1,
+      `${w.seen.length} delivered after the forgery`);
+    check('CONTROL: the sequence guard itself still refuses a genuine replay',
+      await (async () => {
+        await relay(w, { t: 'pk', from: 'peer-1', seq: 1, epoch: 1000 }, 'peer-1');
+        return w.seen.length === 1;
+      })(), `${w.seen.length} delivered after the replay`);
+  }
+}
+
+// ================================================================ the receive path
+//
+// handleFrame used to dispatch CHAT, SECRET, FILE_START, FILE_CHUNK, FILE_END and every
+// CONTROL message the moment a channel existed. The SEND side was gated on the link being
+// connected; the receive side was not, so a peer that had agreed a session but had not
+// completed key confirmation could push chat, secrets, file offers and game invites into a
+// session that had not accepted it.
+{
+  const secret = randomSecret();
+  const roomId = await deriveRoomId(secret);
+
+  // A fresh pair per victim, rather than one pair reused three times. Reusing it would trip
+  // the KEYS_IN_USE guard in Channel, which exists to stop a second Channel restarting a
+  // nonce counter at zero over keys that have already sealed something, and that guard is
+  // one of the defences this work is not allowed to weaken. So each victim gets its own
+  // derivation and its own sender, and the frames are sealed once per victim. Nothing about
+  // what is measured changes: the ONLY difference between the blocks below is
+  // confirmedByPeer.
+  const makePair = async () => {
+    const a = await generateKeyPair();
+    const b = await generateKeyPair();
+    const keysA = await deriveSession({ secret, privateKey: a.privateKey, publicRaw: a.publicRaw, peerPublicRaw: b.publicRaw, role: 'a', roomId });
+    const keysB = await deriveSession({ secret, privateKey: b.privateKey, publicRaw: b.publicRaw, peerPublicRaw: a.publicRaw, role: 'b', roomId });
+    const events = [];
+    let torn = false;
+    const session = {
+      severed: false,
+      needsRestart: false,
+      signal: { send: async () => true },
+      labelFor: () => 'peer',
+      sever: async () => { session.severed = true; },
+      teardown: () => { torn = true; },
+    };
+    // B is the victim whose receive path is under test; A is the peer doing the sending.
+    const link = new Link({ session, peerId: 'zzz', initiator: true });
+    link.sessionKeys = keysB;
+    link.channel = new Channel(keysB);
+    for (const name of ['chat', 'secret', 'game', 'warning', 'file-incoming', 'file-offered']) {
+      link.addEventListener(name, (event) => events.push({ name, detail: event.detail }));
+    }
+    const sender = new Channel(keysA);
+    return {
+      link, events, sender, keysA,
+      get torn() { return torn; },
+      saw: (n) => events.some((e) => e.name === n),
+      chat: () => sender.seal(TYPE.CHAT, te.encode('hello')),
+      secret: () => sender.seal(TYPE.SECRET, te.encode('shh')),
+      game: () => sender.sealJson(TYPE.CONTROL, { kind: 'game', payload: { t: 'invite' } }),
+      sever: () => sender.sealJson(TYPE.CONTROL, { kind: 'sever' }),
+      confirm: () => sender.sealJson(TYPE.CONTROL, { kind: 'confirm', value: b64u.encode(keysA.confirmMine) }),
+    };
+  };
+
+  {
+    const v = await makePair();
+    for (const frame of [await v.chat(), await v.secret(), await v.game(), await v.sever()]) {
+      await v.link.handleFrame(frame);
+    }
+    check('an unconfirmed peer cannot put a chat message into the session', !v.saw('chat'));
+    check('an unconfirmed peer cannot put a secret into the session', !v.saw('secret'));
+    check('an unconfirmed peer cannot start a game', !v.saw('game'));
+    check('an unconfirmed peer cannot burn the gate', v.torn === false);
+    check('and every one of those is reported rather than silently dropped',
+      v.events.filter((e) => e.name === 'warning').length === 4,
+      JSON.stringify(v.events.map((e) => e.name)));
+  }
+
+  {
+    // CONTROL: the same frames, on a link whose peer HAS confirmed. Without this the checks
+    // above would pass on a build that dropped every frame it was ever handed.
+    const v = await makePair();
+    v.link.confirmedByPeer = true;
+    for (const frame of [await v.chat(), await v.secret(), await v.game()]) {
+      await v.link.handleFrame(frame);
+    }
+    check('CONTROL: a confirmed peer\'s chat still arrives', v.saw('chat'));
+    check('CONTROL: a confirmed peer\'s secret still arrives', v.saw('secret'));
+    check('CONTROL: a confirmed peer\'s game message still arrives', v.saw('game'));
+    await v.link.handleFrame(await v.sever());
+    check('CONTROL: and a confirmed peer can still burn the gate', v.torn === true);
+  }
+
+  {
+    // The confirmation frame itself must never be caught by the gate, which is why the
+    // check sits per branch rather than at the top of handleFrame.
+    const v = await makePair();
+    await v.link.handleFrame(await v.confirm());
+    check('the key confirmation itself is exempt, or nothing could ever be confirmed',
+      v.link.confirmedByPeer === true, `state=${v.link.state}`);
+  }
+}
+
+// ================================================================ chunk framing bounds
+{
+  // R4: a chunk frame carrying an index and no bytes.
+  const empty = new Uint8Array(CHUNK_INDEX_BYTES);
+  let refusedEmpty = null;
+  try { unframeChunk(empty); } catch (err) { refusedEmpty = err.message; }
+  check('a chunk frame with an index and no bytes is refused',
+    refusedEmpty !== null && /no bytes/.test(refusedEmpty), String(refusedEmpty));
+  check('CONTROL: and its refusal is a different message from the too-short-to-parse one',
+    await (async () => {
+      let shortMsg = null;
+      try { unframeChunk(new Uint8Array(3)); } catch (err) { shortMsg = err.message; }
+      return shortMsg !== null && shortMsg !== refusedEmpty && /too short/.test(shortMsg);
+    })());
+  check('CONTROL: a one-byte body is still accepted, so the bound is exact rather than blunt',
+    unframeChunk(frameChunk(7, Uint8Array.of(0x41))).bytes.byteLength === 1);
+
+  // W7: a declared size whose chunks cannot all be named by a 32-bit index.
+  const sink = { kind: 'memory', async write() {}, async finish() {}, async abort() {} };
+  const MAX_INDEX_SPACE = 0x1_0000_0000;
+  let refusedHuge = null;
+  try {
+    createIndexedSink(sink, { chunkSize: 1, size: MAX_INDEX_SPACE + 1 });
+  } catch (err) { refusedHuge = err.message; }
+  check('a file needing more chunks than a 32-bit index can name is refused before a sink is opened',
+    refusedHuge !== null && /32-bit chunk index/.test(refusedHuge), String(refusedHuge));
+  check('CONTROL: a file that fits the index space exactly is still accepted',
+    typeof createIndexedSink(sink, { chunkSize: 1, size: MAX_INDEX_SPACE }).write === 'function');
+}
+
+// ================================================================ the pre-accept buffer
+//
+// Chunks that arrive while the accept dialog is on screen are held. The hold was bounded in
+// BYTES only, and a zero-length chunk contributed zero bytes while still costing an array
+// entry, so the buffer grew without limit for 30 bytes a frame on the wire. Zero length is
+// refused at the framing layer now; this is the second bound, on entries.
+{
+  const events = [];
+  const session = {
+    severed: false, needsRestart: false, roomId: 'ROOM',
+    signal: { send: async () => true }, labelFor: () => 'peer',
+    sever: async () => {}, teardown: () => {},
+  };
+  const link = new Link({ session, peerId: 'zzz', initiator: true });
+  for (const name of ['warning', 'file-failed']) {
+    link.addEventListener(name, (event) => events.push({ name, detail: event.detail }));
+  }
+  // No channel, so control() is a no-op: the peer cannot be told, which is not what is
+  // under test here and would need a whole second link to observe.
+  link.channel = null;
+  link.incoming = {
+    meta: { id: 'f1', name: 'big.bin', size: 1 << 30, chunkSize: 16384 },
+    received: 0, chunks: 0, sink: null, stalled: false, resumes: 0, token: null,
+  };
+
+  // One byte each: the cheapest entry that survives the zero-length refusal.
+  const one = Uint8Array.of(0x41);
+  for (let i = 0; i < 4000 && link.incoming; i += 1) {
+    await link.onFileChunk(frameChunk(i, one));
+  }
+  check('the pre-accept buffer stops growing on an entry count, not only on a byte count',
+    link.incoming === null, `still holding ${link.incoming?.early?.length ?? 0} entries`);
+  check('and the transfer is failed with a reason rather than dropped in silence',
+    events.some((e) => e.name === 'file-failed'), JSON.stringify(events.map((e) => e.name)));
+
+  // CONTROL: the same buffer takes an ordinary run-ahead without complaining, so the cap
+  // above is a cap on abuse rather than on use.
+  const ok = new Link({ session, peerId: 'yyy', initiator: true });
+  ok.channel = null;
+  ok.incoming = {
+    meta: { id: 'f2', name: 'ok.bin', size: 1 << 30, chunkSize: 16384 },
+    received: 0, chunks: 0, sink: null, stalled: false, resumes: 0, token: null,
+  };
+  for (let i = 0; i < 200; i += 1) await ok.onFileChunk(frameChunk(i, one));
+  check('CONTROL: 200 held chunks is still an ordinary sender running ahead',
+    ok.incoming !== null && ok.incoming.early.length === 200,
+    `held ${ok.incoming?.early?.length}`);
+}
+
+// ================================================================ peer-chosen filenames
+//
+// The name arrives exactly as the other side wrote it and ends up as a header value on the
+// streaming download route, where the service worker encodes it. A lone surrogate cannot
+// be encoded as UTF-8, so encodeURIComponent throws, the route answers 500, the start
+// handshake never fires, and the page blames a stalled connection ten seconds later. That
+// route is the only way Firefox and Safari receive a large file.
+{
+  const encodes = (s) => { try { encodeURIComponent(s); return true; } catch (err) { return false; } };
+
+  check('CONTROL: a lone surrogate really does break encodeURIComponent, which is the bug',
+    !encodes('a\ud800b.txt'));
+
+  check('a lone high surrogate is stripped', encodes(sanitizeFilename('a\ud800b.txt')));
+  check('a lone low surrogate is stripped', encodes(sanitizeFilename('a\udc00b.txt')));
+  check('a name that is nothing but lone surrogates falls back rather than becoming empty',
+    sanitizeFilename('\ud800\ud801') === 'warp-gate-file', sanitizeFilename('\ud800\ud801'));
+
+  // Pairs are kept: an emoji in a filename is a name a person picked, not an attack.
+  const emoji = 'holiday \u{1F600}.jpg';
+  check('a well-formed surrogate PAIR survives, so emoji filenames are not silently deleted',
+    sanitizeFilename(emoji) === emoji, sanitizeFilename(emoji));
+
+  // Truncation at a UTF-16 index used to cut through a pair and produce a lone surrogate
+  // out of a name that was individually well-formed.
+  const split = `${'A'.repeat(119)}\u{1F600}${'B'.repeat(50)}`;
+  check('CONTROL: the truncation point really does land inside the emoji in this name',
+    split.length > 120 && split.charCodeAt(119) >= 0xd800 && split.charCodeAt(119) <= 0xdbff);
+  const truncated = sanitizeFilename(split);
+  check('truncating never cuts between the halves of a surrogate pair',
+    encodes(truncated) && truncated.length <= 120, `${truncated.length} chars, encodes=${encodes(truncated)}`);
+
+  // R6: the leading-dot strip used to run before .trim(), so one leading space defeated it.
+  check('a leading space no longer smuggles ".." past the leading-dot strip',
+    sanitizeFilename(' ..') === 'warp-gate-file', sanitizeFilename(' ..'));
+  check('nor a hidden file', sanitizeFilename(' .bashrc') === 'bashrc', sanitizeFilename(' .bashrc'));
+  check('nor a traversal spelling: the leading dots are gone and the separators are already replaced',
+    sanitizeFilename('  ../../etc/passwd') === '_.._etc_passwd',
+    sanitizeFilename('  ../../etc/passwd'));
+  check('CONTROL: the guard still worked without the leading space, so the space was the whole bug',
+    sanitizeFilename('..') === 'warp-gate-file' && sanitizeFilename('.bashrc') === 'bashrc');
+  check('an ordinary name is untouched', sanitizeFilename('report.pdf') === 'report.pdf');
+}
+
+// ================================================================ the camera's only voice
+//
+// qrscan's per-frame decode must not throw: the next frame is a fresh attempt and very
+// often the one that works. The reason used to be discarded outright, which left the whole
+// camera path with no diagnostic at all: a decoder failing on every single frame looked
+// exactly like a camera pointed at a wall.
+{
+  const realNavigator = globalThis.navigator;
+  const realDocument = globalThis.document;
+
+  const track = { stop() {} };
+  const stream = { getTracks: () => [track] };
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => ({
+      drawImage() {},
+      getImageData() { throw new Error('the frame could not be read'); },
+    }),
+  };
+  const video = {
+    srcObject: null, muted: false, videoWidth: 640, videoHeight: 480,
+    setAttribute() {}, play: async () => {},
+  };
+
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { mediaDevices: { getUserMedia: async () => stream } },
+    configurable: true, writable: true,
+  });
+  globalThis.document = { createElement: () => canvas };
+
+  const abort = new AbortController();
+  const scan = scanOnce(video, { signal: abort.signal }).then(() => null, (err) => err);
+  // Long enough for at least one 260 ms decode attempt, then cancel.
+  await new Promise((resolve) => { setTimeout(resolve, 700); });
+  abort.abort();
+  const outcome = await scan;
+
+  if (realNavigator === undefined) delete globalThis.navigator;
+  else Object.defineProperty(globalThis, 'navigator', { value: realNavigator, configurable: true, writable: true });
+  if (realDocument === undefined) delete globalThis.document;
+  else globalThis.document = realDocument;
+
+  check('CONTROL: the scan really ran and was cancelled, so the frames really were attempted',
+    outcome?.code === SCAN_ERR.CANCELLED, String(outcome?.code ?? outcome));
+  check('a decode that throws is survivable: the scanner keeps going rather than falling over',
+    outcome instanceof Error && outcome.code === SCAN_ERR.CANCELLED);
+  check('and the reason is KEPT rather than discarded, which is the camera path\'s only diagnostic',
+    lastScanError() === 'the frame could not be read', String(lastScanError()));
 }
 
 process.exit(summary('crypto') ? 0 : 1);

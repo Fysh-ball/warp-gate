@@ -35,7 +35,69 @@ const WORDS = [
 ];
 
 const FLIP_MS = 2400;
-const FADE_MS = 300;
+
+// ------------------------------------------------------- the pause control (SC 2.2.2)
+//
+// WCAG SC 2.2.2, Pause Stop Hide, is LEVEL A, and this page had two failures of it. The
+// flipper is "moving information lasting more than five seconds" (four words, 2.4s each,
+// forever). The hero preview is "auto-updating information", which has no five-second
+// grace at all. Both loops already returned early on a hidden tab, which is a good
+// instinct and is NOT a 2.2.2 mechanism: it is not reachable by the user and it does
+// nothing while the tab is on screen.
+//
+// One button, one attribute on <html>, covering both loops and the header sweep. The CSS
+// side is `html[data-motion="off"]`; the JS side is loopsOff(), because no stylesheet can
+// stop a setInterval from rewriting a transform.
+const MOTION_KEY = 'wg.motion.v1';
+const motionMq = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+/**
+ * Is the OS asking for less motion, RIGHT NOW?
+ *
+ * A function rather than a boolean, and this is the whole point. Two places in this file
+ * used to read `.matches` once at module load and close over the result, so somebody who
+ * turned the setting on mid-visit kept the hero tumbling until they reloaded the page.
+ */
+const motionReduced = () => motionMq.matches;
+
+/** Should a perpetual loop sit this beat out? Read live, on every tick, never cached. */
+const loopsOff = () => document.documentElement.dataset.motion === 'off' || motionReduced();
+
+function armMotionToggle() {
+  const btn = document.getElementById('motion-toggle');
+  if (!btn) return;
+
+  let stored = null;
+  try {
+    stored = localStorage.getItem(MOTION_KEY);
+  } catch (err) {
+    // Private mode throws on the read as well as on the write. A preference that cannot
+    // be persisted must still be settable for this visit, so this is a warning and not a
+    // reason to leave the control unwired.
+    console.warn(`[warp gate] could not read the motion preference: ${err.message}`);
+  }
+
+  const apply = (off) => {
+    if (off) document.documentElement.dataset.motion = 'off';
+    else delete document.documentElement.dataset.motion;
+    btn.setAttribute('aria-pressed', off ? 'true' : 'false');
+    btn.textContent = off ? 'Resume motion' : 'Pause motion';
+  };
+
+  apply(stored === 'off');
+
+  btn.addEventListener('click', () => {
+    const off = document.documentElement.dataset.motion !== 'off';
+    apply(off);
+    try {
+      localStorage.setItem(MOTION_KEY, off ? 'off' : 'on');
+    } catch (err) {
+      console.warn(`[warp gate] could not save the motion preference: ${err.message}`);
+    }
+  });
+}
+
+armMotionToggle();
 
 const shell = document.getElementById('flipper');
 const box = document.getElementById('flipbox');
@@ -43,7 +105,30 @@ const box = document.getElementById('flipbox');
 // Nothing to do on the legal pages, which share this stylesheet but not the hero.
 if (shell && box && box.children.length === 4) {
   const faces = Array.prototype.slice.call(box.children);
-  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Which quarter turn the cube is on, and half its height. Both live out here because
+  // size() and the flip timer each need to write the box transform and neither may drop
+  // the other's half of it. Declared before size() runs: `let` in the same block is in
+  // its temporal dead zone until this line executes, so a reference from size() called
+  // above would throw rather than read a stale zero.
+  let step = 0;
+  let depth = 0;
+
+  /**
+   * The box transform, written in one place.
+   *
+   * `translateZ(-depth)` is not decoration and it is the reason the word stopped being
+   * clipped on its left edge. The faces sit on the surface of a cube of half-height
+   * `depth`, each pushed out by `translateZ(depth)`. With the box itself at z=0 the front
+   * face therefore sat `depth` px NEARER the viewer than the perspective origin, and a
+   * 800px perspective magnifies that by 800/(800-depth): about 3.2% at hero size. The
+   * clip box is not magnified, so the face grew out of it symmetrically, roughly 5px past
+   * each edge, and clip-path ate the first glyph. Pushing the box back by the same depth
+   * puts the front face exactly at z=0, where the scale factor is 1.
+   */
+  function setAngle() {
+    box.style.transform = `translateZ(${-depth}px) rotateX(${step * 90}deg)`;
+  }
 
   /**
    * Give the box one fixed height and one fixed width, so neither the headline
@@ -61,7 +146,6 @@ if (shell && box && box.children.length === 4) {
   function size() {
     const cs = window.getComputedStyle(faces[0]);
     const fontPx = parseFloat(cs.fontSize) || 24;
-    const h = Math.round(fontPx * 1.34);
 
     const probe = document.createElement('span');
     // CSSOM, not a style attribute: the CSP forbids the latter, not this.
@@ -73,25 +157,56 @@ if (shell && box && box.children.length === 4) {
     probe.style.fontSize = cs.fontSize;
     probe.style.fontWeight = cs.fontWeight;
     probe.style.letterSpacing = cs.letterSpacing;
+    // `normal`, so the probe reports the height the FONT wants for a line rather than the
+    // height this page happens to have asked for. That number is what the clip box has to
+    // clear, and it is not derivable from the font size: for the stack in use here it came
+    // out at 50px against a 36.5px font, a ratio of 1.371.
+    probe.style.lineHeight = 'normal';
     document.body.appendChild(probe);
 
     let w = 0;
+    let natural = 0;
     try {
       for (const word of WORDS) {
         probe.textContent = word;
-        w = Math.max(w, Math.ceil(probe.getBoundingClientRect().width));
+        const r = probe.getBoundingClientRect();
+        w = Math.max(w, Math.ceil(r.width));
+        natural = Math.max(natural, Math.ceil(r.height));
       }
     } finally {
       probe.remove();
     }
+
+    // WHY THIS IS NOT `fontPx * 1.34` ANY MORE. It was, and it cut the descender off the
+    // "y" in "Sysadmins". 1.34em is below what the font itself reserves for a line, so the
+    // glyph box overhung the clip box by half a pixel at each end and clip-path took it.
+    // The measured line box is the floor; +2 is slack for the fractional rect. The old
+    // constant stays as a lower bound so a browser that reports a mean `normal` height
+    // cannot shrink the box below what it used to be.
+    const h = Math.max(Math.round(fontPx * 1.34), natural + 2);
 
     // +4, not +12: the old slack covered the frame's padding and border, which are gone.
     // Some slack has to stay, because getBoundingClientRect returns a fractional width
     // and overflow:hidden clips on the rounded-down integer.
     shell.style.width = `${w + 4}px`;
     shell.style.height = `${h}px`;
+    // The strut in ::before shares this line height, which is what lines the rotating
+    // word up with the "For" beside it: the faces sit in a line box of exactly h at the
+    // top of the shell, so the strut's baseline and theirs are the same line.
+    shell.style.lineHeight = `${h}px`;
     box.style.height = `${h}px`;
     box.style.width = '100%';
+    // The depth is layout, not motion, so it is written with the transition off: at load
+    // the box would otherwise interpolate from `none` to `translateZ(-h/2)`, which is a
+    // 3% zoom-out over 620ms that nobody asked for, and a resize would replay it. The
+    // reflow read in between is what makes `none` apply to this write rather than to the
+    // whole pair. Only the quarter turns the timer writes are meant to be seen moving.
+    const keep = box.style.transition;
+    box.style.transition = 'none';
+    depth = h / 2;
+    setAngle();
+    void box.offsetHeight;
+    box.style.transition = keep;
     for (let i = 0; i < faces.length; i += 1) {
       const face = faces[i];
       face.style.width = '100%';
@@ -113,25 +228,22 @@ if (shell && box && box.children.length === 4) {
 
   for (let i = 0; i < faces.length; i += 1) faces[i].textContent = WORDS[i];
 
-  let step = 0;
-  setInterval(() => {
+  const flipTimer = setInterval(() => {
+    // Reduced motion is a standing preference, not a pause, so the timer goes away for
+    // good and the word already on show is the word that stays. What used to happen was
+    // worse than nothing: the stylesheet swapped the tumble for a 300ms crossfade and
+    // this loop kept swapping the text every 2.4 seconds forever, so a reduced-motion
+    // visitor got a perpetual loop with the amplitude turned down rather than a stop.
+    // #lp-preview below has always done the right thing here; this now matches it.
+    if (motionReduced()) { clearInterval(flipTimer); return; }
+    // The button, by contrast, is reversible: skip the beat and keep the timer, so
+    // pressing it again picks the tumble back up where it left off.
+    if (loopsOff()) return;
     // No point tumbling a box on a screen nobody is looking at.
     if (document.visibilityState !== 'visible') return;
 
     step += 1;
-    if (reduced) {
-      // Someone asked not to be given a 3D tumble, so they get a crossfade: the
-      // stylesheet swaps the transition to opacity and only the text changes.
-      box.style.opacity = '0';
-      setTimeout(() => {
-        faces[0].textContent = WORDS[step % WORDS.length];
-        for (let i = 1; i < faces.length; i += 1) faces[i].style.display = 'none';
-        box.style.opacity = '1';
-      }, FADE_MS);
-      return;
-    }
-
-    box.style.transform = `rotateX(${step * 90}deg)`;
+    setAngle();
     // Re-label the face that is currently behind the box, one quarter turn ahead
     // of where it will be needed, so the swap is never visible.
     const incoming = (step + 1) % faces.length;
@@ -183,7 +295,11 @@ if (gate) {
   // would leave the panel in a state no frame of the script describes, which is worse
   // than the still picture it started as.
   const complete = Object.values(el).every(Boolean) && msgs.length === 3 && dots.length === 3;
-  const noMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Read once HERE on purpose: this decides which of two shapes the panel takes, a loop
+  // or the settled final frame, and that is a construction-time choice. Every LATER read
+  // goes through loopsOff() inside the tick, so the setting changing mid-visit stops the
+  // loop rather than waiting for a reload.
+  const noMotion = motionReduced();
 
   // One cycle, as milliseconds from the top of it. Named rather than inlined because
   // three of them are read by the renderer as well as by the script below.
@@ -236,11 +352,10 @@ if (gate) {
     el.wait.style.transform = 'translateY(-50%)';
     el.wait.style.opacity = '0';
     el.wait.hidden = false;
-    // The stylesheet gives the fill a percentage width. Scaling a full-width bar is
-    // the same picture and a cheaper one, so the width is taken back here rather than
-    // left as two mechanisms disagreeing about who owns the bar.
-    el.fill.style.width = '100%';
-    el.fill.style.transformOrigin = 'left center';
+    // The width and the origin used to be set here, undoing a `width: 62%` the stylesheet
+    // had just applied: two mechanisms disagreeing about who owns the bar, with the
+    // script always winning the argument one frame later. The stylesheet states scaleX
+    // now, so there is nothing left to take back and this loop only moves the number.
     for (const node of stack) node.style.transition = `opacity ${STACK_FADE_MS}ms ease`;
 
     let elapsed = 0;
@@ -439,6 +554,10 @@ if (gate) {
     render();
 
     setInterval(() => {
+      // The pause control, and the live reduced-motion read. Freezing mid-cycle is a
+      // correct resting state for this panel: every frame of the loop is a picture of a
+      // gate in some stage of use, which is what the markup is on its own.
+      if (loopsOff()) return;
       // Same rule the flipper follows: nothing moves on a screen nobody is looking at.
       if (document.visibilityState !== 'visible') return;
 
@@ -461,13 +580,97 @@ if (gate) {
     // have ended on and no timer is ever created. The messages and the badge are
     // already right in the markup; only the meter has a mid-transfer value to finish.
     el.pct.textContent = 'sent';
-    el.fill.style.width = '100%';
-    el.fill.style.transformOrigin = 'left center';
+    // The stylesheet already owns the width, the origin and a starting scaleX(0.62), and
+    // sets `transition: none` on this element under reduced motion, so the bar arrives at
+    // its final length in one frame rather than growing into it.
     el.fill.style.transform = 'scaleX(1)';
     el.state.textContent = 'connected';
     el.clock.textContent = 'live';
   }
 }
+
+// ------------------------------------------------------------- scroll reveal
+//
+// Sections rise 8px and fade in as they come into view, once each, and then the machinery
+// takes itself apart.
+//
+// The failure model is the important part. `html.js-reveal` is what makes .u-reveal
+// invisible, this is the only place that class is ever added, and it is added LAST, after
+// the observer exists and every target has been enrolled. A dead script, a module the CSP
+// refused, a parse error above this line, or a browser with no IntersectionObserver all
+// leave the page fully painted. The failure mode is "no reveal", never "no content",
+// which is the only acceptable direction for a decoration that starts at opacity 0.
+//
+// Nothing in the hero is enrolled. It is above the fold, and fading the LCP element in
+// delays the LCP paint by the length of the fade and buys nothing at all.
+// `.support-card`, not `a.support-card`: that row is two anchors and two coin panels that
+// are divs, and revealing only the anchors would stagger half a row in and leave the
+// other half standing there. Hover colour is still anchors-only, which is correct,
+// because the divs are not links.
+const REVEAL_SELECTOR = '.lp-section, .lp-step, .lp-card, .lp-slot, .support-card';
+const STAGGER_MS = 40;
+// Nine cards at 40ms apart would put 360ms between the first and the last, by which point
+// the stagger has stopped reading as a group arriving and started reading as a queue.
+const STAGGER_MAX = 5;
+// A reveal that gets halfway leaves content at opacity 0 permanently, which is far worse
+// than no reveal at all. animationend is the normal path; this is the one that runs when
+// there was no animation to end.
+const REVEAL_FAILSAFE_MS = 1500;
+
+function armReveal() {
+  if (typeof IntersectionObserver !== 'function') return;
+
+  const targets = Array.prototype.slice.call(document.querySelectorAll(REVEAL_SELECTOR))
+    .filter((el) => !el.closest('.lp-hero'));
+  if (!targets.length) return;
+
+  // Position among SAME-PARENT siblings, so a row of cards staggers across itself and
+  // the sections do not inherit a delay from how many cards happen to precede them.
+  // Computed here rather than in the callback: this reads the DOM tree, which is cheap,
+  // but doing it up front keeps the observer callback to a class swap and a timer.
+  const delayOf = new Map();
+  for (const el of targets) {
+    const siblings = el.parentElement ? el.parentElement.children : [el];
+    const index = Math.min(Array.prototype.indexOf.call(siblings, el), STAGGER_MAX);
+    delayOf.set(el, index * STAGGER_MS);
+  }
+
+  const settle = (el) => {
+    el.classList.remove('is-in');
+    el.classList.remove('u-reveal');
+    el.style.animationDelay = '';
+  };
+
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const el = entry.target;
+      // Immediately, and before anything else: once revealed, never again. An element
+      // scrolled back past must not replay.
+      observer.unobserve(el);
+      // CSSOM, not a style attribute: the CSP forbids the latter, not this.
+      el.style.animationDelay = `${delayOf.get(el) ?? 0}ms`;
+      el.classList.add('is-in');
+      el.addEventListener('animationend', () => settle(el), { once: true });
+      setTimeout(() => settle(el), REVEAL_FAILSAFE_MS + (delayOf.get(el) ?? 0));
+    }
+  }, {
+    // A section counts as arrived slightly before its top edge reaches the bottom of the
+    // window, so the fade is already running by the time it is properly in view rather
+    // than starting at the moment somebody looks at it.
+    rootMargin: '0px 0px -6% 0px',
+  });
+
+  for (const el of targets) {
+    el.classList.add('u-reveal');
+    observer.observe(el);
+  }
+  // LAST. Everything above can fail without hiding anything; from this line on, .u-reveal
+  // is invisible until the observer says otherwise, so the observer has to exist first.
+  document.documentElement.classList.add('js-reveal');
+}
+
+armReveal();
 
 // ------------------------------------------------------------- hero CTAs
 //
@@ -482,12 +685,87 @@ if (gate) {
 // page is not the place to invent one. The buttons already say when a copy did not land.
 wireSupport((message) => console.warn(`[warp gate] ${message}`));
 
+// ----------------------------------------------------------------- the suggestion box
+
+// Matches WG_SUGGESTIONS_MAX_CHARS's default and the textarea's maxlength. Three copies of
+// one number is two too many, but the server is the only one that can be authoritative and
+// it does not publish it; the two client-side copies are both advisory, and a mismatch
+// costs a refusal with a clear message rather than lost text.
+const SUGGEST_MAX = 600;
+
+function armSuggestions() {
+  const section = document.getElementById('suggest-section');
+  const form = document.getElementById('suggest-form');
+  const text = document.getElementById('suggest-text');
+  const count = document.getElementById('suggest-count');
+  const said = document.getElementById('suggest-said');
+  const send = document.getElementById('suggest-send');
+  if (!section || !form || !text) return;
+
+  section.hidden = false;
+
+  const tally = () => {
+    const left = SUGGEST_MAX - [...text.value].length;
+    // Silent until it starts to matter. A counter that is always on screen is a counter
+    // that tells everybody their idea is too long before they have written it.
+    count.textContent = left <= 100 ? `${left} characters left` : '';
+  };
+  text.addEventListener('input', tally);
+  tally();
+
+  form.addEventListener('submit', async (event) => {
+    // The CSP sets form-action 'none', so a real submission would be blocked rather than
+    // navigating: this is what makes the form work at all, not a nicety.
+    event.preventDefault();
+    const body = text.value.trim();
+    if (!body) { said.textContent = 'Write something first.'; return; }
+
+    send.disabled = true;
+    said.textContent = 'Sending...';
+    try {
+      const res = await fetch('/api/suggest', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: body }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.status === 204) {
+        // Cleared on success only. A failed send that wiped the box would lose what
+        // somebody just wrote, and there is no draft anywhere to get it back from.
+        text.value = '';
+        tally();
+        said.textContent = 'Sent. Thank you: it is in the file, with no name on it.';
+        return;
+      }
+      // One sentence per cause, for the same reason as everywhere else in this codebase.
+      said.textContent = {
+        429: 'That is a few in quick succession. Try again in a minute.',
+        507: 'The box is full at the moment. Try again later.',
+        404: 'This copy of Warp Gate does not collect suggestions.',
+        400: 'That was refused: it may be empty or over 600 characters.',
+      }[res.status] ?? `That did not send (http ${res.status}). Try again in a moment.`;
+    } catch (err) {
+      // Never a bare catch: an aborted timeout and a dead network read differently to
+      // whoever is looking at the console.
+      said.textContent = 'That did not send. Check the connection and try again.';
+      console.warn(`[warp gate] suggestion failed: ${err.message}`);
+    } finally {
+      send.disabled = false;
+    }
+  });
+}
+
 // Fetched here rather than through signal.js: that module knows how to open and join
 // rooms, and the landing has no business importing it. One same-origin GET, with the
 // timeout every external fetch in this codebase carries.
 fetch('/api/config', { signal: AbortSignal.timeout(8000) })
   .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`http ${res.status}`))))
-  .then((config) => applySourceLink(config?.sourceUrl))
+  .then((config) => {
+    applySourceLink(config?.sourceUrl);
+    // Only revealed if this deployment actually accepts suggestions. A box that posts into
+    // a 404 collects nothing and says nothing, which is a worse answer than not asking.
+    if (config?.suggestions === true) armSuggestions();
+  })
   // The link stays hidden rather than pointing somewhere wrong. Section 13 is satisfied
   // by the gate document, which is where the interaction actually happens.
   .catch((err) => console.warn(`[warp gate] could not read /api/config: ${err.message}`));

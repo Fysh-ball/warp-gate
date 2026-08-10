@@ -22,11 +22,8 @@ export class Signal extends EventTarget {
     //
     // Be clear about what `from` is and is not. It is sealed under k_sig, which EVERY
     // participant in the room holds, so it is unforgeable by the server and by anyone
-    // outside the room, and forgeable by anyone inside it. It is routing, not
-    // authentication. What actually binds a link to a participant is that pair's own ECDH
-    // and the key confirmation over it: a participant who mislabels a message still cannot
-    // produce a confirmation for a session it did not agree, so it gains nothing but a
-    // failed handshake on a link it was never party to.
+    // outside the room, and forgeable by anyone inside it, which is why every message is
+    // now cross-checked against `sfrom` on the way in: see checkSender below.
     this.selfId = null;
 
     // Replay control for signalling.
@@ -102,6 +99,58 @@ export class Signal extends EventTarget {
     return true;
   }
 
+  /**
+   * Refuse a message whose sealed `from` is not who the server says sent it.
+   *
+   * WHAT THIS CLOSES. `from` rides inside the envelope under k_sig, and k_sig comes from
+   * the room secret alone, so every seated participant can seal one. Before this check,
+   * any one seat could therefore write any other seat's name on a signalling message, and
+   * session.js routes on that name and will open a link for it. From a single seat that
+   * bought three attacks on a pair the attacker was not part of: seal a `pk` as another
+   * peer and the victim pins the wrong key and never revisits it, permanently partitioning
+   * the pair; seal a `restart` and drive the victim's renegotiation; seal a `sever` and end
+   * the victim's gate.
+   *
+   * It is NOT a confidentiality break and must not be described as one. Every send is
+   * addressed at exactly one peer (LinkSignal), so a victim's real public key only ever
+   * reaches the genuine peer; what a forger got was disruption, not a session.
+   *
+   * THE CONTRACT. The server attaches the token-authenticated sender's slot id as a
+   * SIBLING field `sfrom`, next to the sealed envelope and never inside it, and passes the
+   * envelope itself through byte-identical. It has to be outside: putting it inside would
+   * mean the server writing into a payload it is not supposed to be able to read.
+   *
+   * ABSENT `sfrom` IS A DROP, deliberately. Treating "the server did not say" as "trusted"
+   * would reinstate the entire bug, because the field an attacker controls is the one
+   * inside the envelope and the one it does not control is the one it would rather were
+   * missing. The same reasoning already governs `acceptSeq` above, which refuses a message
+   * with no epoch or sequence rather than assuming an older sender: both halves of this
+   * app ship together, so there is no such thing as a peer or a server that predates a
+   * field. What a stale server DOES get is a named diagnosis rather than silence: the
+   * `undecryptable` event below says the server did not attest the sender, which is the
+   * one sentence that turns "the gate mysteriously never connects" into "that server is
+   * running an older build".
+   */
+  checkSender(message, envelope) {
+    const sealed = typeof message?.from === 'string' ? message.from : null;
+    const attested = typeof envelope?.sfrom === 'string' && envelope.sfrom ? envelope.sfrom : null;
+    if (!attested) {
+      this.dispatchEvent(new CustomEvent('undecryptable', {
+        detail: 'the server did not say which seat sent a signalling message, so it was dropped: '
+          + 'this server is running a build older than this page',
+      }));
+      return false;
+    }
+    if (sealed !== attested) {
+      this.dispatchEvent(new CustomEvent('impersonation-refused', {
+        detail: `refused a signalling message that claims to come from ${sealed ?? 'nobody'} `
+          + `but was sent by ${attested}`,
+      }));
+      return false;
+    }
+    return true;
+  }
+
   connect() {
     if (this.closed) throw new Error('signal channel already closed');
     const url = `/api/events?room=${encodeURIComponent(this.roomId)}&token=${encodeURIComponent(this.token)}`;
@@ -132,6 +181,10 @@ export class Signal extends EventTarget {
       }
       try {
         const message = await openEnvelope(this.signalKey, envelope);
+        // Before acceptSeq, on purpose. acceptSeq REMEMBERS (epoch, seq) per sender, so
+        // letting a forged message reach it first would let one seat burn another seat's
+        // sequence space and have every genuine later message refused as a replay.
+        if (!this.checkSender(message, envelope)) return;
         if (!this.acceptSeq(message)) return;
         this.dispatchEvent(new CustomEvent('message', { detail: message }));
       } catch (err) {

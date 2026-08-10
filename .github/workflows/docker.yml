@@ -1,0 +1,161 @@
+# Build the image, prove it actually serves a gate, and publish it to GHCR on a tag.
+#
+# No secret beyond the built-in GITHUB_TOKEN, deliberately. A self-hostable project whose
+# release pipeline needs a hand-provisioned registry credential is one that only its
+# authors can release, and the point of this repository is that anyone can run it.
+#
+# The smoke job is not decoration. An image that builds is not an image that boots: the
+# failure this repository is most exposed to is server/*.js being ES modules with no
+# package.json to say so, which builds identically on every Node and then dies at start
+# on any runtime older than 22.7. That is invisible to `docker build` and obvious to one
+# `curl`.
+
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  # So a release can be re-cut without pushing a tag twice.
+  workflow_dispatch:
+
+# Least privilege. `packages: write` is only granted to the job that publishes; the smoke
+# job below cannot push anything even if its build step were compromised.
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: build and prove it serves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for this runner's architecture and load it
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # load, not push: the image goes into the runner's local daemon so the next
+          # step can actually start it. A registry push here would publish an image that
+          # nothing has yet started.
+          load: true
+          tags: warp-gate:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start it exactly as the README tells a stranger to
+        run: |
+          docker run -d --name warp-gate-ci -p 127.0.0.1:3095:3095 \
+            --read-only --tmpfs /tmp:size=8m --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            warp-gate:ci
+
+      - name: Wait for the image's own HEALTHCHECK to report healthy
+        # Waiting on the container's declared healthcheck rather than on a sleep, so this
+        # step is also a test of the HEALTHCHECK itself: a probe that can never pass fails
+        # the build here instead of being discovered as a permanently-unhealthy container
+        # in production. --format is used rather than `docker inspect` output in bulk
+        # because only this one field is wanted.
+        run: |
+          for i in $(seq 1 30); do
+            state=$(docker inspect --format '{{.State.Health.Status}}' warp-gate-ci)
+            echo "health: $state"
+            [ "$state" = "healthy" ] && exit 0
+            [ "$state" = "unhealthy" ] && break
+            sleep 2
+          done
+          echo "container never became healthy"
+          docker logs warp-gate-ci
+          exit 1
+
+      - name: It is not root
+        # `id -u` must be non-zero. The check is written to fail loudly if `docker exec`
+        # itself fails, rather than comparing an empty string against 0 and passing.
+        run: |
+          uid=$(docker exec warp-gate-ci id -u)
+          echo "container uid: ${uid:?docker exec produced nothing}"
+          if [ "$uid" = "0" ]; then echo "BAD: running as root"; exit 1; fi
+          echo "OK: non-root"
+
+      - name: Health, landing, gate, and the security headers
+        run: |
+          set -e
+          echo '--- /api/health ---'
+          test "$(curl -fsS http://127.0.0.1:3095/api/health)" = '{"ok":true}'
+          echo 'OK'
+          echo '--- / and /app return 200 ---'
+          curl -fsS -o /dev/null -w '/     %{http_code}\n' http://127.0.0.1:3095/
+          curl -fsS -o /dev/null -w '/app  %{http_code}\n' http://127.0.0.1:3095/app
+          echo '--- headers on /app ---'
+          hdrs=$(curl -fsS -D - -o /dev/null http://127.0.0.1:3095/app | tr 'A-Z' 'a-z')
+          for h in content-security-policy referrer-policy x-content-type-options \
+                   permissions-policy cross-origin-opener-policy cross-origin-resource-policy; do
+            echo "$hdrs" | grep -q "^$h:" || { echo "MISSING: $h"; exit 1; }
+            echo "present: $h"
+          done
+          # The gate, and only the gate, may reach a camera. If this ever inverts, a page
+          # that holds a decryption key has been given a capability it must not have.
+          echo "$hdrs" | grep -q 'permissions-policy: camera=(self)' \
+            || { echo 'BAD: /app is not granted camera=(self)'; exit 1; }
+          landing=$(curl -fsS -D - -o /dev/null http://127.0.0.1:3095/ | tr 'A-Z' 'a-z')
+          echo "$landing" | grep -q 'permissions-policy: camera=()' \
+            || { echo 'BAD: the landing page is not denied the camera'; exit 1; }
+          echo 'OK: camera is granted to /app only'
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f warp-gate-ci || true
+
+  publish:
+    name: publish to ghcr.io
+    # Only on a tag, and only after the image has been proven to serve.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The only elevated permission in this file, scoped to the one job that needs it.
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # Built in. No repository secret has to be provisioned for a release.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Lowercased by the action. GHCR rejects a mixed-case path, and this repository
+          # is owned by `Fysh-ball`, so a literal ${{ github.repository }} would 400.
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # arm64 is not speculative: README.md claims a Raspberry Pi is enough to run
+          # this, and an amd64-only image would make that claim false. Emulating a build
+          # that is one COPY costs seconds.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

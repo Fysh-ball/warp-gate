@@ -14,14 +14,14 @@ const START_TIMEOUT_MS = 10_000;
 // enough that a download nobody is consuming cannot pile up in the worker.
 const INITIAL_CREDITS = 8;
 
-let registration = null;
+// One definition, shared with transfer.js, which needs to ask the question without pulling
+// this file onto the eager graph. Re-exported so an existing importer of download.js keeps
+// working from one import.
+import { supportsStreamDownload } from './streamable.js';
 
-export function supportsStreamDownload() {
-  return typeof navigator !== 'undefined'
-    && 'serviceWorker' in navigator
-    && typeof ReadableStream === 'function'
-    && globalThis.isSecureContext === true;
-}
+export { supportsStreamDownload } from './streamable.js';
+
+let registration = null;
 
 /**
  * Register the worker and wait until it is actually controlling this page.

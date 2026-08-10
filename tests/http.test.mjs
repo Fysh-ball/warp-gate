@@ -10,6 +10,8 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import { spawn } from 'node:child_process';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { check, summary, startServer, request, delay, makeJoinProof } from './lib/harness.mjs';
@@ -17,6 +19,11 @@ import { check, summary, startServer, request, delay, makeJoinProof } from './li
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const PORT = 3781;
+// Every server this suite spawns beyond the first sits in a private band well clear of the
+// other suites. The offsets used to land on 3785 to 3793, which other suites in this repo
+// also use: a run could fail with EADDRINUSE for a reason that had nothing to do with the
+// code under test, and an EADDRINUSE reads exactly like a server that refused to boot.
+const BAND = 100;
 
 /**
  * Send a request line exactly as written, with no client-side normalisation.
@@ -101,11 +108,30 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
     isolation['cross-origin-opener-policy'] === 'same-origin', isolation['cross-origin-opener-policy']);
   check('other origins cannot read the response',
     isolation['cross-origin-resource-policy'] === 'same-origin', isolation['cross-origin-resource-policy']);
-  check('camera, microphone and geolocation are switched off',
+  check('camera, microphone and geolocation are switched off on the landing',
     /camera=\(\)/.test(isolation['permissions-policy'] ?? '')
     && /microphone=\(\)/.test(isolation['permissions-policy'] ?? '')
     && /geolocation=\(\)/.test(isolation['permissions-policy'] ?? ''),
     isolation['permissions-policy']);
+
+  // The gate, and ONLY the gate, may reach a camera: it reads a QR code off the other
+  // device's screen. Asserted as a difference rather than as one page's header, because
+  // the risk here is not "the gate cannot scan", it is "everything can".
+  {
+    const gatePP = surfaces[1][1].headers['permissions-policy'] ?? '';
+    check('the gate document may use this origin\'s camera',
+      /camera=\(self\)/.test(gatePP), gatePP);
+    check('and nothing else on the site may: not the landing, not an asset, not a 404',
+      [0, 2, 4, 5].every((i) => /camera=\(\)/.test(surfaces[i][1].headers['permissions-policy'] ?? '')),
+      surfaces.map(([w, r]) => `${w}: ${r.headers['permissions-policy']}`).join(' | '));
+    check('the camera allowance does not drag microphone or geolocation along with it',
+      /microphone=\(\)/.test(gatePP) && /geolocation=\(\)/.test(gatePP), gatePP);
+    // A frame inside the gate must not inherit the grant. `(self)` is the origin's own
+    // documents only, and frame-ancestors already stops the gate being framed; this
+    // asserts the half that is this header's job.
+    check('and it is not granted to any other origin',
+      !/camera=\([^)]*(\*|https?:)/.test(gatePP), gatePP);
+  }
 
   // HSTS is only correct where TLS actually terminates in front of this process, so it
   // is off by default. Both halves are asserted: an always-on or always-off
@@ -149,7 +175,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 // against a server that actually has the variable set: a check run only with it unset
 // would pass on a build where the two documents share one policy again.
 {
-  const P = PORT + 2;
+  const P = PORT + BAND + 2;
   const ADS = 'https://ads.example.net';
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_AD_ORIGINS: ADS,
@@ -188,7 +214,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 }
 
 {
-  const P = PORT + 1;
+  const P = PORT + BAND + 1;
   const srv = await startServer({ WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_HSTS: '1' });
   const res = await request(P, 'GET', '/');
   check('HSTS IS sent once the deployment says TLS terminates in front',
@@ -203,7 +229,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 
 // ---------------------------------------------------------------- static containment
 {
-  const P = PORT + 2;
+  const P = PORT + BAND + 2;
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_REJECT_PER_WINDOW: '2000', WG_API_PER_WINDOW: '5000',
   });
@@ -306,7 +332,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
   // Five routes used to be entirely unmetered: /api/health, /api/config and /api/room
   // were free reads, and /api/relay and /api/bye would parse a full body from an
   // unauthenticated caller as often as asked.
-  const P = PORT + 3;
+  const P = PORT + BAND + 3;
   const LIMIT = 4;
 
   const publicGets = [
@@ -351,7 +377,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
   // /api/relay and /api/bye sit behind the all-routes backstop rather than a limiter of
   // their own. Spend the backstop on cheap reads, then show that the two body-parsing
   // routes are refused as well.
-  const P = PORT + 4;
+  const P = PORT + BAND + 4;
   const spend = async (port, n) => {
     for (let i = 0; i < n; i += 1) await request(port, 'GET', '/api/config');
   };
@@ -400,7 +426,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
   // A caller that keeps being refused is probing. That budget is separate and far
   // tighter than the others, and it is what stops the 404/403 split on /api/room being
   // a free room-existence oracle.
-  const P = PORT + 8;
+  const P = PORT + BAND + 8;
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_REJECT_PER_WINDOW: '5', WG_API_WINDOW_MS: '60000',
@@ -434,7 +460,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 {
   // Concurrent SSE streams are a gauge, not a counter: four per key, and a fifth must
   // be refused rather than quietly accepted.
-  const P = PORT + 5;
+  const P = PORT + BAND + 5;
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_STREAMS_PER_KEY: '2',
     WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
@@ -485,7 +511,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
   // the process: a few thousand cancelled loads and the server can no longer open a
   // file or accept a connection. The fix is pipeline(), which tears the read stream
   // down when its destination dies.
-  const P = PORT + 6;
+  const P = PORT + BAND + 6;
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_PUBLIC_GET_PER_WINDOW: '50000', WG_API_PER_WINDOW: '50000',
@@ -584,7 +610,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 
 // ---------------------------------------------------------------- malformed requests
 {
-  const P = PORT + 7;
+  const P = PORT + BAND + 7;
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_REJECT_PER_WINDOW: '2000', WG_API_PER_WINDOW: '5000', WG_PUBLIC_GET_PER_WINDOW: '2000',
@@ -626,6 +652,385 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 
   check('none of the malformed input reached stderr', srv.stderr() === '', srv.stderr().slice(0, 300));
   await srv.stop();
+}
+
+// ---------------------------------------------------------------- compression
+//
+// Behind Cloudflare the edge compresses everything and this is invisible. The project
+// tells people to run their own instance, and a self-hosted one was shipping the whole
+// hand-written, comment-heavy front end raw. These checks are about the server, so they
+// are made against the server, not against the deployment in front of it.
+{
+  const P = PORT + BAND + 8;
+  const srv = await startServer({ WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0' });
+
+  // The shared helper decodes the body as utf8, which turns a gzip stream into mojibake.
+  // Raw bytes, so the answer can actually be decompressed and compared.
+  const raw = (pathname, headers = {}) => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: P, method: 'GET', path: pathname, headers }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.setTimeout(6000, () => req.destroy(new Error('request timeout')));
+    req.end();
+  });
+
+  const plain = await raw('/js/app.js');
+  const packed = await raw('/js/app.js', { 'accept-encoding': 'gzip' });
+  check('a client that does not ask for gzip is not sent gzip',
+    plain.headers['content-encoding'] === undefined, String(plain.headers['content-encoding']));
+  check('a client that asks for gzip gets it', packed.headers['content-encoding'] === 'gzip',
+    String(packed.headers['content-encoding']));
+  check('the compressed answer is substantially smaller', packed.body.length * 2 < plain.body.length,
+    `${plain.body.length} raw, ${packed.body.length} gzipped`);
+  check('and it decompresses to exactly the same bytes',
+    zlib.gunzipSync(packed.body).equals(plain.body),
+    `${zlib.gunzipSync(packed.body).length} vs ${plain.body.length}`);
+  check('content-length describes the body that was actually sent',
+    Number(packed.headers['content-length']) === packed.body.length,
+    `${packed.headers['content-length']} declared, ${packed.body.length} received`);
+  check('a compressible answer carries vary: accept-encoding, so a shared cache cannot mix the two',
+    /accept-encoding/i.test(String(packed.headers.vary)) && /accept-encoding/i.test(String(plain.headers.vary)),
+    `${plain.headers.vary} / ${packed.headers.vary}`);
+
+  const refused = await raw('/js/app.js', { 'accept-encoding': 'gzip;q=0' });
+  check('q=0 is read as a refusal, not as a preference',
+    refused.headers['content-encoding'] === undefined, String(refused.headers['content-encoding']));
+
+  const png = await raw('/icons/icon-192.png', { 'accept-encoding': 'gzip' });
+  check('an already-compressed image is not gzipped again',
+    png.headers['content-encoding'] === undefined && png.body.length > 0,
+    `${png.headers['content-encoding']} ${png.body.length} bytes`);
+
+  const head = await new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: P, method: 'HEAD', path: '/js/app.js', headers: { 'accept-encoding': 'gzip' } },
+      (res) => { res.resume(); res.on('end', () => resolve({ headers: res.headers })); });
+    req.on('error', reject);
+    req.end();
+  });
+  check('HEAD describes the same response a GET would return',
+    head.headers['content-encoding'] === 'gzip'
+    && Number(head.headers['content-length']) === packed.body.length,
+    `${head.headers['content-encoding']} ${head.headers['content-length']} vs ${packed.body.length}`);
+
+  // CONTROL. Every check above compares two answers from the same server, so it would
+  // still pass if the comparison itself were vacuous. This asks the same questions of a
+  // pair that is known to differ, and of a body that is known not to be gzip.
+  check('CONTROL: the byte-for-byte comparison can fail',
+    !zlib.gunzipSync(packed.body).equals(Buffer.concat([plain.body, Buffer.from('x')])),
+    'a body with one extra byte was not accepted as identical');
+  let sawThrow = false;
+  try { zlib.gunzipSync(plain.body); } catch (err) { sawThrow = true; void err; }
+  check('CONTROL: the identity answer really is not gzip', sawThrow,
+    'gunzip of the uncompressed body threw, as it must');
+
+  await srv.stop();
+}
+
+// --------------------------------------------------- a bad config refuses to boot
+//
+// The failure these replace was asynchronous and unattributable. WG_AD_ORIGINS is
+// interpolated into a header that is only ever set inside an fs.stat callback, so a CRLF
+// in it made res.setHeader throw ERR_INVALID_CHAR with nothing on the stack to catch it
+// (there is no process.on('uncaughtException') anywhere in server/), and the process died
+// on the first GET /. The operator's evidence was a blank page.
+//
+// startServer() is deliberately not used here: it waits for a listening banner, and the
+// whole point is that there is never going to be one.
+function bootOutcome(env) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { err += d.toString(); });
+    // Not unref'd: a timer that lets the process exit while this is still open would
+    // report "it exited" without having waited, which is the same green output either way.
+    const kill = setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) { void e; } }, 6000);
+    child.on('exit', (code) => { clearTimeout(kill); resolve({ code, out, err }); });
+    child.on('error', (e) => { clearTimeout(kill); resolve({ code: null, out, err: `${err}${e.message}` }); });
+  });
+}
+
+{
+  const P = PORT + BAND + 9;
+  const base = { WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0' };
+
+  // CONTROL FIRST. Every assertion below is "the process exited 1", which a server that
+  // cannot start for any reason at all satisfies. Prove the same environment minus the
+  // bad value starts and listens.
+  const okBoot = await startServer(base);
+  check('CONTROL: this environment starts a server when nothing in it is malformed',
+    /warp-gate http/.test(okBoot.stdout()), JSON.stringify(okBoot.stdout().slice(0, 200)));
+  await okBoot.stop();
+
+  // Each of these produced a working-looking boot and a wrong number. Measured, all of
+  // them, against the parseInt this replaced: '1e9' parsed as 1, '0x1F' as 0, '10x' as 10.
+  const badInts = [
+    ['WG_SUGGESTIONS_MAX_BYTES', '1e9', 'a one BYTE cap, so the store 507s from the first write'],
+    ['WG_SUGGESTIONS_MAX_BYTES', '0x1F', 'zero'],
+    ['WG_MAX_ROOMS', '10x', 'ten'],
+    ['WG_MAX_ROOMS', '2,000', 'two'],
+    ['WG_HEARTBEAT_MS', ' ', 'silently the default'],
+  ];
+  for (const [name, value, wasInterpretedAs] of badInts) {
+    const outcome = await bootOutcome({ ...base, [name]: value });
+    // A blank value is the one case that is legitimately the default rather than an
+    // error: an operator who writes FOO= in a compose file means "leave it alone".
+    const wantExit = value.trim() === '' ? 0 : 1;
+    if (wantExit === 1) {
+      check(`${name}=${value} refuses to boot rather than becoming ${wasInterpretedAs}`,
+        outcome.code === 1 && outcome.err.includes(name),
+        `exit ${outcome.code}: ${JSON.stringify(outcome.err.slice(0, 200))}`);
+      check(`...and says so before listening, not at first request`,
+        !/warp-gate http/.test(outcome.out), JSON.stringify(outcome.out.slice(0, 200)));
+    }
+  }
+
+  // Blank is not malformed. Without this the guard could be "refuse everything", which
+  // would also pass every check above.
+  const blank = await startServer({ ...base, WG_HEARTBEAT_MS: '' });
+  check('CONTROL: an empty value is the default, not an error',
+    /warp-gate http/.test(blank.stdout()), JSON.stringify(blank.stdout().slice(0, 200)));
+  await blank.stop();
+
+  // WG_AD_ORIGINS. A CRLF kills the process asynchronously; a semicolon injects a whole
+  // directive. Built with String.fromCharCode so no raw control byte enters this file:
+  // one of those makes grep treat the whole file as binary and return nothing.
+  const CR = String.fromCharCode(13);
+  const LF = String.fromCharCode(10);
+  const badOrigins = [
+    [`https://x.example${CR}${LF}x-evil: 1`, 'a CRLF, which throws inside an fs.stat callback'],
+    ['https://x.example; script-src-elem *', 'a second CSP directive that was never in the policy'],
+    ['javascript:alert(1)', 'a scheme that is not http or https'],
+    ['https://x.example/path', 'a path, which is not an origin'],
+    ["https://x.example 'unsafe-inline'", 'a second source expression'],
+    ['not-an-origin-at-all', 'a bare word'],
+  ];
+  for (const [value, why] of badOrigins) {
+    const outcome = await bootOutcome({ ...base, WG_AD_ORIGINS: value });
+    check(`WG_AD_ORIGINS carrying ${why} refuses to boot`,
+      outcome.code === 1 && outcome.err.includes('WG_AD_ORIGINS'),
+      `exit ${outcome.code}: ${JSON.stringify(outcome.err.slice(0, 200))}`);
+  }
+
+  // ...and the values an operator legitimately wants still work, or the validation would
+  // be indistinguishable from removing the feature.
+  const goodOrigins = 'https://ads.example.net,http://localhost:8080,https://*.cdn.example.com:443';
+  const good = await startServer({ ...base, WG_AD_ORIGINS: goodOrigins });
+  const landing = (await request(P, 'GET', '/')).headers['content-security-policy'] ?? '';
+  check('CONTROL: ordinary sponsor origins still boot and still reach the landing',
+    landing.includes('https://ads.example.net')
+    && landing.includes('http://localhost:8080')
+    && landing.includes('https://*.cdn.example.com:443'),
+    landing);
+  await good.stop();
+}
+
+// --------------------------------------------------- a symlink is not a served file
+{
+  // index.js resolved the path and checked containment on the RESULT of path.resolve,
+  // which does not resolve symbolic links, and then called fs.stat, which follows them.
+  // A link inside public/ was therefore served from wherever it pointed, and a link named
+  // index.html would have carried LANDING_CSP, and with it WG_AD_ORIGINS, onto it: the
+  // single route by which an operator knob could reach non-landing content.
+  //
+  // There is no symlink in public/ today. This plants one, so the check is measured
+  // against the state it exists for rather than against its absence, and removes it in a
+  // finally plus an exit hook so a crash cannot leave it behind.
+  const P = PORT + BAND + 10;
+  const secret = path.join(ROOT, `.wg-symlink-target-${process.pid}`);
+  // No .html suffix: the containment block above enumerates public/*.html and expects
+  // every one of them to serve 200, and a probe file has no business appearing in that.
+  const link = path.join(PUBLIC_DIR, `.wg-symlink-probe-${process.pid}`);
+  const MARKER = 'OUTSIDE_THE_PUBLIC_TREE_MARKER';
+  const cleanup = () => {
+    for (const f of [link, secret]) {
+      try { fs.rmSync(f, { force: true }); } catch (err) { void err; }
+    }
+  };
+  process.on('exit', cleanup);
+
+  let srv = null;
+  try {
+    fs.writeFileSync(secret, `${MARKER}\n`);
+    fs.symlinkSync(secret, link);
+    check('CONTROL: the planted symlink exists and really does point outside public/',
+      fs.lstatSync(link).isSymbolicLink()
+      && fs.readFileSync(link, 'utf8').includes(MARKER)
+      && !path.resolve(fs.realpathSync(link)).startsWith(PUBLIC_DIR + path.sep),
+      fs.realpathSync(link));
+
+    srv = await startServer({ WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0' });
+    const res = await rawGet(P, `/${path.basename(link)}`);
+    check('a symlink inside the public tree is not served',
+      res.status === 404, `status ${res.status}, ${res.body.length} bytes`);
+    check('and nothing from its target came back',
+      !res.body.includes(MARKER), res.body.slice(0, 120));
+
+    // The refusal must be about the link, not about the server having stopped serving.
+    const real = await rawGet(P, '/index.html');
+    check('CONTROL: an ordinary file on the same server is still served',
+      real.status === 200 && real.body.length > 0, `status ${real.status}`);
+  } finally {
+    if (srv) await srv.stop();
+    cleanup();
+  }
+  check('the planted symlink was removed',
+    !fs.existsSync(link) && !fs.existsSync(secret),
+    `${fs.existsSync(link)} / ${fs.existsSync(secret)}`);
+}
+
+// --------------------------------------------------- a cross-site POST is refused
+{
+  // Nothing here matches on Origin, and readJson parses any content type, so a hostile
+  // page posting text/plain is a SIMPLE request: no preflight, and /api/create and
+  // /api/suggest are reachable as the visitor. Write-only, since no CORS header is ever
+  // set and the response cannot be read back, but burning a visitor's create budget and
+  // posting suggestions as them are both real.
+  const P = PORT + BAND + 11;
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
+    WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
+  });
+
+  const create = (headers, roomId) => request(P, 'POST', '/api/create', {
+    roomId, sessionMinutes: 10, joinProofHash: makeJoinProof().hash,
+  }, headers);
+
+  const cross = await create({ 'sec-fetch-site': 'cross-site' }, 'XSTE0001');
+  check('a POST that says it came from another site is refused',
+    cross.status === 403 && cross.json?.error === 'cross_site', `${cross.status} ${cross.text}`);
+
+  const sibling = await create({ 'sec-fetch-site': 'same-site' }, 'XSTE0002');
+  check('and so is one from a sibling host, since this application is one origin',
+    sibling.status === 403 && sibling.json?.error === 'cross_site', `${sibling.status} ${sibling.text}`);
+
+  // The positive arms. Without these the check is satisfied by a route that refuses
+  // everything, which is the failure mode a header guard most easily becomes.
+  const own = await create({ 'sec-fetch-site': 'same-origin' }, 'XSTE0003');
+  check('CONTROL: the page\'s own POST is accepted', own.status === 200, `${own.status} ${own.text}`);
+
+  const typed = await create({ 'sec-fetch-site': 'none' }, 'XSTE0004');
+  check('CONTROL: a user-initiated request is accepted', typed.status === 200, `${typed.status} ${typed.text}`);
+
+  // ABSENT MEANS ALLOW, and that is a decision rather than an oversight: the header is
+  // sent by every current browser, so absent means a non-browser client (curl, the
+  // project's own tools/, this harness, a monitoring probe). Denying those to defend
+  // against a browser that is not sending it trades a real availability break for a
+  // defence in depth that per-seat capability tokens already do not depend on.
+  const silent = await create({}, 'XSTE0005');
+  check('a client that sends no Sec-Fetch-Site is allowed, deliberately',
+    silent.status === 200, `${silent.status} ${silent.text}`);
+
+  // It covers every POST, not just the one that was easy to reach.
+  const suggestCross = await request(P, 'POST', '/api/suggest', { text: 'hi' }, { 'sec-fetch-site': 'cross-site' });
+  check('the guard is on the method, so /api/suggest is covered too',
+    suggestCross.status === 403 && suggestCross.json?.error === 'cross_site',
+    `${suggestCross.status} ${suggestCross.text}`);
+
+  // GET is not refused: a cross-site GET of /api/config reads nothing a visitor could not
+  // read anyway, and refusing it would break an ordinary <img> or a link preview.
+  const getCross = await request(P, 'GET', '/api/config', undefined, { 'sec-fetch-site': 'cross-site' });
+  check('CONTROL: a cross-site GET is not refused, only a cross-site POST',
+    getCross.status === 200, `${getCross.status}`);
+
+  await srv.stop();
+}
+
+// ------------------------------------------ the reject budget cannot lock out a live gate
+{
+  // The budget refused EVERY api route once a key spent its allowance, so thirty ordinary
+  // users holding stale links (a resumed gate that expired is a 404 no_room, through
+  // nobody's fault) could take live /api/events reconnects and /api/relay offline for the
+  // rest of the window. Behind a proxy whose address is not trusted, every one of those
+  // users shares a single key, so thirty of them is one bucket.
+  const P = PORT + BAND + 12;
+  const srv = await startServer({
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
+    WG_REJECT_PER_WINDOW: '3', WG_API_WINDOW_MS: '60000',
+    WG_API_PER_WINDOW: '5000', WG_PUBLIC_GET_PER_WINDOW: '5000',
+    WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500',
+  });
+
+  // A real gate, created BEFORE the budget is spent, so what follows is a live session
+  // and not a probe dressed as one.
+  const proof = makeJoinProof();
+  const gate = await request(P, 'POST', '/api/create', {
+    roomId: 'GATE0001', sessionMinutes: 10, joinProofHash: proof.hash,
+  });
+  const joined = await request(P, 'POST', '/api/join', { roomId: 'GATE0001', joinProof: proof.proof });
+  check('CONTROL: a gate exists and seats two before the budget is spent',
+    gate.status === 200 && joined.status === 200, `${gate.status}/${joined.status}`);
+
+  // Spend the budget the way an ordinary user with a dead link does.
+  const stale = [];
+  for (let i = 0; i < 10; i += 1) {
+    stale.push((await request(P, 'GET', `/api/room?room=STAR000${i}&token=x`)).status);
+  }
+  check('CONTROL: the budget really is spent, so the rest of this block is not vacuous',
+    stale.includes(429), `statuses ${stale.join(',')}`);
+
+  // THE ASSERTION. Every one of these is refused as 429 by the pre-fix server.
+  const relay = await request(P, 'POST', '/api/relay', {
+    roomId: 'GATE0001', token: gate.json.token, to: joined.json.slotId, envelope: { n: 'a', c: 'b' },
+  });
+  check('a live relay is not refused by a budget spent on a different route',
+    relay.status === 200, `${relay.status} ${relay.text}`);
+
+  const events = await new Promise((resolve) => {
+    const req = http.get({
+      host: '127.0.0.1', port: P,
+      path: `/api/events?room=GATE0001&token=${encodeURIComponent(gate.json.token)}`,
+    }, (res) => { resolve(res.statusCode); req.destroy(); });
+    req.on('error', () => resolve(0));
+  });
+  check('and neither is an /api/events reconnect', events === 200, `status ${events}`);
+
+  const bye = await request(P, 'POST', '/api/bye', { roomId: 'GATE0001', token: joined.json.token });
+  check('and neither is /api/bye', bye.status === 200, `${bye.status} ${bye.text}`);
+
+  // The budget still bites where it was written to bite. Without this the fix would be
+  // indistinguishable from deleting the budget.
+  const stillProbing = await request(P, 'GET', '/api/room?room=STAR0009&token=x');
+  check('CONTROL: the route that spent the budget is still refused by it',
+    stillProbing.status === 429, `${stillProbing.status} ${stillProbing.text}`);
+
+  await srv.stop();
+}
+
+// ------------------------------------------- the timeout lift happens after authorisation
+{
+  // index.js called req.setTimeout(0) and res.setTimeout(0) keyed on the pathname alone,
+  // before handleApi had looked at the room or the token, so naming the path was enough to
+  // get an unbounded timeout. Not exploitable as it stands (headersTimeout still applies
+  // and the route carries no body) and therefore NOT observable over the wire: with
+  // server.timeout defaulting to 0 the pre-fix and post-fix servers behave identically.
+  //
+  // So this is a structural assertion, stated as such rather than dressed up as a
+  // behavioural one. It is the honest available check, and it fails against the pre-fix
+  // source, which is the property that makes it worth having.
+  const indexSrc = fs.readFileSync(path.join(ROOT, 'server', 'index.js'), 'utf8');
+  const signalSrc = fs.readFileSync(path.join(ROOT, 'server', 'signal.js'), 'utf8');
+
+  check('index.js no longer lifts a timeout on the way in to the API',
+    !/req\.setTimeout\(0\)/.test(indexSrc) && !/res\.setTimeout\(0\)/.test(indexSrc),
+    'server/index.js still calls setTimeout(0) before handleApi');
+
+  const gate = signalSrc.indexOf("if (!slot) return fail(res, 403, 'bad_token');");
+  const lift = signalSrc.indexOf('req.setTimeout(0)');
+  const events = signalSrc.indexOf("url.pathname === '/api/events'");
+  check('signal.js lifts both timeouts, and only inside the /api/events branch',
+    /req\.setTimeout\(0\)/.test(signalSrc) && /res\.setTimeout\(0\)/.test(signalSrc)
+    && lift > events && events !== -1,
+    `events at ${events}, lift at ${lift}`);
+  check('and does it only after a token has bought a seat',
+    gate !== -1 && lift > gate, `last bad_token guard at ${gate}, lift at ${lift}`);
 }
 
 process.exit(summary('http surface') ? 0 : 1);

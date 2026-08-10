@@ -1,0 +1,48 @@
+# Keep the build context to the source that is actually served.
+#
+# This file does two jobs. The obvious one is speed: without it the context includes .git
+# and 125 KB of design prose. The one that matters is that anything sent to the daemon
+# can end up in an image layer by accident, so a local .env, a suggestions store or a
+# tunnel token must never be in the context in the first place. The Dockerfile also names
+# its COPYs explicitly, so this is the second of two independent reasons none of the
+# below reaches the image.
+
+.git
+.gitignore
+
+# Developer tooling. Not served, not imported by anything under server/.
+tests
+tools
+
+# Long-form documentation. Read it in the repository, not in the image.
+DESIGN.md
+THREAT-MODEL.md
+CLAUDE.md
+docs
+
+# The browser extension is a separate artefact with its own copies of the pages. The
+# server only ever serves public/, so shipping it would put a second, divergent copy of
+# app.html inside the image where nothing can reach it and everything can confuse it.
+extension
+
+# Deployment material. Nothing under deploy/ belongs in the image, least of all a compose
+# file carrying an operator's own hostnames, EXCEPT the one script the docs tell you to
+# run inside the container to read the suggestion box back.
+#
+# The exception line is not optional and its absence is not silent: excluding the
+# directory without re-including that file makes the matching COPY in the Dockerfile fail
+# the build with "not found". Measured, 2026-08-10, by writing it the other way first.
+deploy
+!deploy/read-suggestions.mjs
+
+# Secrets and state. None of these should exist in a checkout, and if one does it must
+# not be copied into a layer that gets pushed to a registry.
+.env
+.env.*
+secrets
+data
+*.jsonl
+
+# Anything a stray `npm install` left behind. Warp Gate has no dependencies; if this
+# directory exists it is not part of the program.
+node_modules

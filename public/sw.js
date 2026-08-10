@@ -216,3 +216,132 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(new Response('bad transfer headers', { status: 500 }));
   }
 });
+
+/* ------------------------------------------------------------------ share target
+ *
+ * "Hold a photo in the gallery, share to Warp Gate, the gate opens with it attached."
+ *
+ * WHY A POST TARGET, AND WHY THE WORKER ANSWERS IT
+ *
+ * A GET share target can only carry title, text and url as query parameters. A FILE
+ * needs method POST with multipart/form-data, and a POST goes somewhere. Left alone it
+ * would go to this origin's server, which would mean the one thing this whole product
+ * exists to avoid: the file on the wire, in a request body, at a server.
+ *
+ * So it never leaves the browser. The guarantee has two halves and both are load-bearing:
+ *
+ *   1. This handler calls event.respondWith() SYNCHRONOUSLY, inside the dispatch, before
+ *      anything touches the body. Once respondWith is called the request is handled by
+ *      the worker and is never dispatched to the network: that is what respondWith means.
+ *      Everything after it runs on the Request object the browser already holds in this
+ *      process. There is no fetch() on this path, and there is nothing in this file that
+ *      could add one, so the bytes have nowhere to go but Cache Storage, which is
+ *      origin-private browser storage on the device.
+ *   2. The server has no counterpart. server/index.js answers every non-GET, non-HEAD
+ *      request with 405 before it reads a single byte of the body. There is no upload
+ *      route to reach even if the worker were missing, so the failure mode when the
+ *      worker is not installed is "the share is refused", never "the file is uploaded".
+ *
+ * WHY CACHE STORAGE AND NOT AN IN-MEMORY MAP
+ *
+ * The handoff spans a navigation: this handler answers the POST with a redirect, and the
+ * page that then loads is the one that wants the file. A worker may be terminated at any
+ * point in between, which would take an in-memory Map with it and lose the share. Cache
+ * Storage survives that. It is deleted the moment the page claims it (public/js/share.js)
+ * and swept by age here, so a share that is never claimed does not sit on the device.
+ */
+
+// Must match SHARE_ACTION in the manifest's share_target.action, and SHARE_CACHE and
+// SHARE_PREFIX must match public/js/share.js. A mismatch is silent: the OS posts here
+// and the page looks somewhere else, so tests/pwa.test.mjs asserts all three agree.
+const SHARE_ACTION = '/app/share';
+const SHARE_CACHE = 'wg-share-v1';
+const SHARE_PREFIX = '/wg-share/';
+// An unclaimed share is a file sitting in browser storage. Ten minutes is long enough to
+// cover a slow cold start of the gate and short enough that nothing lingers.
+const SHARE_TTL_MS = 10 * 60 * 1000;
+
+function shareToken() {
+  if (self.crypto && typeof self.crypto.randomUUID === 'function') return self.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  self.crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Drop anything older than the TTL, so an abandoned share does not outlive its purpose. */
+async function sweepShares(cache) {
+  const now = Date.now();
+  for (const request of await cache.keys()) {
+    const stored = await cache.match(request);
+    const at = Number(stored && stored.headers.get('x-wg-share-time'));
+    if (!Number.isFinite(at) || now - at > SHARE_TTL_MS) await cache.delete(request);
+  }
+}
+
+async function stashShare(files) {
+  const cache = await self.caches.open(SHARE_CACHE);
+  await sweepShares(cache);
+  const token = shareToken();
+  const at = String(Date.now());
+  for (let i = 0; i < files.length; i += 1) {
+    const file = files[i];
+    // The name and the type travel as headers rather than in the URL: a filename is
+    // arbitrary text, and a URL is the one place it would have to be escaped twice.
+    const headers = new Headers({
+      'content-type': file.type || 'application/octet-stream',
+      'x-wg-share-name': encodeURIComponent(file.name || 'shared-file'),
+      'x-wg-share-time': at,
+    });
+    // Zero-padded, because the page restores the order by sorting these keys as strings
+    // and an unpadded "10" sorts before "2".
+    await cache.put(
+      new Request(new URL(`${SHARE_PREFIX}${token}/${String(i).padStart(3, '0')}`, self.location.origin).href),
+      new Response(file, { headers }),
+    );
+  }
+  return files.length;
+}
+
+self.addEventListener('fetch', (event) => {
+  // A SECOND fetch listener, registered after the download one on purpose. Listeners run
+  // in registration order, so the download path is still the first thing consulted for
+  // every request and its behaviour is untouched. The two never overlap: that one answers
+  // only GETs under /wg-download/, this one only a POST to the share action. Neither can
+  // shadow the other, and this file must keep it that way.
+  const request = event.request;
+  if (request.method !== 'POST') return;
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch (err) {
+    void err;
+    return;
+  }
+  if (url.origin !== self.location.origin || url.pathname !== SHARE_ACTION) return;
+
+  // Synchronous, before the body is read. This is the line that keeps the file off the
+  // network: from here the request is the worker's and the browser will not send it.
+  event.respondWith(handleShare(request));
+});
+
+async function handleShare(request) {
+  // Where the browser goes next. The gate itself, with nothing appended: a share leaves
+  // no trace in the address bar, for the same reason the room secret does not live there.
+  // The page picks the file up from Cache Storage on load (public/js/share.js).
+  const landing = new URL('/app', self.location.origin).href;
+  try {
+    const form = await request.formData();
+    // Duck-typed rather than `instanceof File`: a File from another realm is still a file
+    // to everything this does with it, and an instanceof check would silently drop it.
+    const files = form.getAll('file').filter((v) => v && typeof v === 'object' && typeof v.arrayBuffer === 'function');
+    if (files.length) await stashShare(files);
+  } catch (err) {
+    // A share that cannot be parsed still has to land the user somewhere. Failing here
+    // must not leave respondWith with a rejected promise, which surfaces as a browser
+    // error page after the user has already left their gallery.
+    void err;
+  }
+  // 303 rather than 302: it forces the follow-up to be a GET. A 302 lets the browser
+  // repeat the POST at /app, which would put the file back on the wire.
+  return Response.redirect(landing, 303);
+}

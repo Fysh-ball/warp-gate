@@ -7,7 +7,7 @@
 // BEFORE the transfer starts, never at 90 percent (DESIGN.md 1.9).
 
 import { b64u } from './crypto.js';
-import { supportsStreamDownload, openStreamDownload } from './download.js';
+import { supportsStreamDownload } from './streamable.js';
 
 export const CHUNK_BYTES = 16 * 1024;
 export const MEMORY_LIMIT_BYTES = 500 * 1024 * 1024;
@@ -313,6 +313,10 @@ export async function createSink(meta, { preferMemory = false, handle = null, st
       // pickerNote is set only when a picker existed and failed to open. Carried through so
       // the explanation reaches the UI: without it this route fixes the failure and leaves
       // the user with no account of why the save dialog they were promised never appeared.
+      // download.js is fetched here, at the one point a stream is actually opened, rather
+      // than statically: 8.5 KB of service worker plumbing that a gate does not need to
+      // open and that most sessions never reach at all.
+      const { openStreamDownload } = await import('./download.js');
       return await openStreamDownload({
         name: sanitizeFilename(meta.name), size, mime: meta.mime, note: pickerNote,
       });
@@ -535,11 +539,41 @@ export function compareFingerprints(want, got) {
 // mean this app persisting the user's content on their device, which is precisely what it
 // promises not to do, so the memory-sink case is failed rather than persisted.
 //
-// The record is deleted when the transfer completes, fails, is refused, or the gate ends.
+// WHAT IS AT REST HERE IS MORE THAN "a handle is a reference". The stored meta is the
+// peer's FILE_START meta whole, and that includes the content fingerprint: a SHA-256 over
+// the file's first 64 KiB. Anyone who can read this origin's IndexedDB can therefore
+// CONFIRM a guess about which file was received, and can read the save location the user
+// chose, on a tool whose entire premise is that nothing outlives the session. That is why
+// the deletion rules below are not housekeeping.
+//
+// The record is deleted when the transfer completes, fails, is refused, or the gate ends
+// cleanly. None of those cover a crash or a closed tab, which used to leave the record
+// indefinitely with nothing anywhere that would ever sweep it: `clearAllResume` was
+// written for that job and, verified by full enumeration, had no caller at all. It has one
+// now, `sweepResume`, run at the start of every gate. So the honest statement of the rule
+// is: deleted on any orderly end, and otherwise no later than RESUME_MAX_AGE_MS after it
+// was last written, on the next gate this browser opens.
 const IDB_NAME = 'warp-gate';
 const IDB_STORE = 'inbound-resume';
 const IDB_VERSION = 1;
 const IDB_TIMEOUT_MS = 5000;
+
+// How long a record may sit unattended before the sweep takes it.
+//
+// Pinned to the room's own absolute ceiling rather than chosen: a gate cannot live longer
+// than 24 hours, so a record older than that can no longer belong to any gate that could
+// still be resumed, and deleting it can never destroy a transfer anybody is waiting on.
+const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The key one inbound transfer is stored under: room AND peer, never room alone.
+ *
+ * Keyed by room alone, every Link in a mesh wrote to the same key, so B's record silently
+ * overwrote A's and, after a reload, A's partial file was orphaned with the handle to it
+ * gone. Worse in the other direction: A completing its transfer called clearResume on the
+ * room key and destroyed B's record while B's transfer was still in flight.
+ */
+const resumeKey = (roomId, peerId) => `${roomId}:${peerId ?? ''}`;
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
@@ -600,25 +634,121 @@ function idbRun(mode, work) {
   });
 }
 
-/** Record where an interrupted incoming transfer had got to. Keyed by room. */
-export function saveResume(roomId, record) {
+/**
+ * Walk every record in the store, letting `visit` delete the ones it does not want.
+ *
+ * A cursor rather than getAll(): the sweep has to be able to delete what it is looking at,
+ * and the room-wide reads have to see records written by builds that keyed them
+ * differently, neither of which a single keyed get can do.
+ */
+function idbScan(mode, visit) {
+  return new Promise((resolve, reject) => {
+    idbOpen().then((db) => {
+      let tx;
+      try {
+        tx = db.transaction(IDB_STORE, mode);
+      } catch (err) {
+        db.close();
+        reject(new Error(`could not read the resume index: ${err.message}`));
+        return;
+      }
+      const kept = [];
+      let request;
+      try {
+        request = tx.objectStore(IDB_STORE).openCursor();
+      } catch (err) {
+        try { tx.abort(); } catch (abortErr) { void abortErr; }
+        db.close();
+        reject(new Error(`could not scan the resume index: ${err.message}`));
+        return;
+      }
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        // The visitor decides, may call cursor.delete(), and never throws, so there is no
+        // half-swept transaction to reason about. Records it returns true for are collected
+        // in arrival order and handed back, which is how the callers below report both what
+        // they found and what they removed.
+        if (visit(cursor, cursor.value ?? null)) kept.push(cursor.value);
+        cursor.continue();
+      };
+      tx.oncomplete = () => { db.close(); resolve(kept); };
+      tx.onabort = () => { db.close(); reject(new Error(`the resume index transaction was aborted: ${tx.error?.message ?? 'unknown error'}`)); };
+      tx.onerror = () => { db.close(); reject(new Error(`the resume index transaction failed: ${tx.error?.message ?? 'unknown error'}`)); };
+    }, reject);
+  });
+}
+
+/** Record where an interrupted incoming transfer had got to. Keyed by room AND peer. */
+export function saveResume(roomId, peerId, record) {
   if (!roomId) return Promise.reject(new Error('a resume record needs a room to belong to'));
-  return idbRun('readwrite', (store) => store.put(record, roomId));
+  if (!peerId) return Promise.reject(new Error('a resume record needs the participant it came from'));
+  return idbRun('readwrite', (store) => store.put(record, resumeKey(roomId, peerId)));
 }
 
-export function loadResume(roomId) {
-  if (!roomId) return Promise.resolve(null);
-  return idbRun('readonly', (store) => store.get(roomId)).then((v) => v ?? null);
+export function loadResume(roomId, peerId) {
+  if (!roomId || !peerId) return Promise.resolve(null);
+  return idbRun('readonly', (store) => store.get(resumeKey(roomId, peerId))).then((v) => v ?? null);
 }
 
-export function clearResume(roomId) {
-  if (!roomId) return Promise.resolve();
-  return idbRun('readwrite', (store) => store.delete(roomId));
+export function clearResume(roomId, peerId) {
+  if (!roomId || !peerId) return Promise.resolve();
+  return idbRun('readwrite', (store) => store.delete(resumeKey(roomId, peerId)));
 }
 
-/** Drop every stored record. Used when the user burns a gate from a clean page. */
+/**
+ * Every record belonging to one room, newest first.
+ *
+ * Matched on the record's OWN roomId field rather than on the key, so a record written by
+ * a build that keyed by room alone is still found and still offered back rather than
+ * orphaned by a deploy that happened mid-transfer.
+ */
+export function listResume(roomId) {
+  if (!roomId) return Promise.resolve([]);
+  return idbScan('readonly', (cursor, value) => value?.roomId === roomId)
+    .then((records) => records.sort((a, b) => (Number(b.savedAt) || 0) - (Number(a.savedAt) || 0)));
+}
+
+/** Drop every record belonging to one room. What burning a gate has to leave behind. */
+export function clearRoomResume(roomId) {
+  if (!roomId) return Promise.resolve(0);
+  return idbScan('readwrite', (cursor, value) => {
+    if (value?.roomId !== roomId) return false;
+    cursor.delete();
+    return true;
+  }).then((gone) => gone.length);
+}
+
+/** Drop every stored record, whatever room it belongs to. */
 export function clearAllResume() {
   return idbRun('readwrite', (store) => store.clear());
+}
+
+/**
+ * Delete records nothing can ever resume, and return how many went.
+ *
+ * The one thing this is NOT allowed to do is take a record for a transfer that is still
+ * live. The age bound is what guarantees that: a record is rewritten on every checkpoint
+ * of the transfer it describes, so a live one is seconds old, and RESUME_MAX_AGE_MS is the
+ * room's own absolute ceiling, past which no gate exists to resume into.
+ *
+ * An UNDATED record is swept too. savedAt has been written on every record this code has
+ * ever stored, so an undated one cannot be dated and therefore cannot ever be shown to be
+ * fresh; keeping it would mean keeping a fingerprint and a save-location handle for ever
+ * on the strength of a field that is missing. Absent has to mean something explicit here,
+ * not "assume the friendly value".
+ *
+ * Best effort and never fatal: a browser with no IndexedDB has nothing to sweep, and a
+ * failure to sweep must not stop a gate opening.
+ */
+export function sweepResume(maxAgeMs = RESUME_MAX_AGE_MS) {
+  const cutoff = Date.now() - maxAgeMs;
+  return idbScan('readwrite', (cursor, value) => {
+    const savedAt = Number(value?.savedAt);
+    if (Number.isFinite(savedAt) && savedAt > cutoff) return false;
+    cursor.delete();
+    return true;
+  }).then((gone) => gone.length);
 }
 
 // Object URLs handed out by saveBlob and not yet revoked. Each one keeps its blob (up to
@@ -627,6 +757,37 @@ export function clearAllResume() {
 const pendingObjectUrls = new Set();
 
 const MAX_FILENAME_CHARS = 120;
+
+/**
+ * Strip UNPAIRED surrogate code units, leaving well-formed pairs alone.
+ *
+ * WHY THIS IS HERE AT ALL. A lone surrogate is not a character: it cannot be encoded as
+ * UTF-8, so encodeURIComponent throws a URIError on it. The peer chooses the filename, the
+ * name reaches the service worker on the streaming download route, and the service worker
+ * encodes it there. One lone surrogate therefore made that request answer 500, the
+ * `wg-started` handshake never fired, and the page blamed a stalled connection ten seconds
+ * later. That route is the ONLY way Firefox and Safari receive a large file, so a
+ * peer-chosen name was a remote kill switch for large transfers on two of the three
+ * engines. Measured survivor before this: "a\ud800b.txt".
+ *
+ * PAIRS ARE KEPT. Deleting the whole \ud800-\udfff range would be shorter and would also
+ * silently delete every emoji and every astral-plane character from every filename, which
+ * is a real name a real person picked. The string iterator makes the distinction free: it
+ * yields one entry per CODE POINT, so a well-formed pair arrives as a single two-unit
+ * string and only an unpaired surrogate can arrive as a one-unit string in that range. No
+ * lookbehind, which Safari did not have before 16.4 and which would have made this module
+ * fail to PARSE there rather than fail to sanitise.
+ */
+function dropLoneSurrogates(text) {
+  if (!/[\ud800-\udfff]/.test(text)) return text; // the overwhelmingly common case
+  let out = '';
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (ch.length === 1 && code >= 0xd800 && code <= 0xdfff) continue;
+    out += ch;
+  }
+  return out;
+}
 
 /**
  * Make a peer-supplied filename safe to show and to save under.
@@ -638,18 +799,37 @@ const MAX_FILENAME_CHARS = 120;
  * is exported so the row title and the save dialog show the one name that gets used.
  */
 export function sanitizeFilename(name, fallback = 'warp-gate-file') {
-  const cleaned = String(name ?? '')
+  const cleaned = dropLoneSurrogates(String(name ?? ''))
     // C0 and C1 controls, plus the bidi marks and overrides that reorder what is drawn.
     .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
     .replace(/[\\/]+/g, '_')
+    // TRIM FIRST, THEN THE DOTS. The other order was defeated by a single leading space:
+    // /^\.+/ saw the space, matched nothing, and .trim() afterwards handed back exactly the
+    // leading dots the next line claims to have removed. Measured before the swap: " .."
+    // came out as "..", " .bashrc" as ".bashrc", "  ../../etc/passwd" as
+    // ".._.._etc_passwd". Separators are already replaced above and the download manager
+    // sanitises again, so nothing traversed a path, but ".." reached showSaveFilePicker as
+    // a suggestedName and the invariant stated on the next line was simply false.
+    .trim()
     .replace(/^\.+/, '') // no leading dots: neither ".." nor a hidden file
+    // Trimmed again AFTER the strip, because the strip can uncover new edge whitespace,
+    // and re-tested for empty below: "..", "..." and " .. " all reduce to nothing here,
+    // which is exactly what the fallback exists for.
     .trim();
   if (!cleaned) return fallback;
   if (cleaned.length <= MAX_FILENAME_CHARS) return cleaned;
   // Keep the extension when truncating, so the saved file still opens with the right app.
   const dot = cleaned.lastIndexOf('.');
   const ext = dot > 0 && cleaned.length - dot <= 12 ? cleaned.slice(dot) : '';
-  return cleaned.slice(0, MAX_FILENAME_CHARS - ext.length) + ext;
+  let cut = MAX_FILENAME_CHARS - ext.length;
+  // Never cut BETWEEN the two halves of a surrogate pair. MAX_FILENAME_CHARS counts UTF-16
+  // code units, so a name whose last kept unit is the high half of an emoji used to be
+  // sliced through the middle of it, and the result carried a lone surrogate that nothing
+  // after this point strips: the same URIError as above, from a name that was individually
+  // well-formed. Measured: 119 'A's, one emoji, then 50 'B's.
+  const last = cleaned.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  return cleaned.slice(0, cut) + ext;
 }
 
 /** Offer a received blob to the user. Revokes the object URL so nothing lingers. */

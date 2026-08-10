@@ -793,6 +793,121 @@ try {
     br.smallThrows.ok === true && br.smallThrows.kind === 'memory', branchRaw);
   check('negative control: the streaming route really does work at this size in this browser',
     br.reachable.ok === true && br.reachable.wrote === 1024, JSON.stringify(br.reachable));
+
+// ================================================================ the resume index
+//
+// Two findings about what this browser keeps between gates, both needing a real IndexedDB,
+// which is why they are here and not in the Node suite.
+//
+// W4: one record per ROOM. Every Link in a mesh wrote to that one key, so the second peer's
+// transfer overwrote the first peer's record, and the first peer's completion deleted the
+// second peer's record while its transfer was still running. Now keyed by room AND peer.
+//
+// W5: nothing ever swept. A record holds the fingerprint of the file's first 64 KiB and,
+// on the picker route, a FileSystemFileHandle: a confirmation oracle and a live handle to
+// somewhere on disk, kept for ever after any crash, because clearAllResume had no caller
+// at all. Now swept by age at the start of every gate.
+{
+  const idbTab = await browser.newTab(`http://127.0.0.1:${PORT}/`);
+  const raw = await idbTab.eval(`
+    const t = await import('/js/transfer.js');
+    await t.clearAllResume();
+
+    const rec = (roomId, peerId, name, savedAt) => ({
+      roomId, peerId, id: name, meta: { id: name, name, size: 1024, chunkSize: 256 },
+      received: 256, chunks: 1, sinkKind: 'memory', handle: null, savedAt,
+    });
+    const now = Date.now();
+    const out = {};
+
+    // W4. Two peers in ONE room, exactly as a mesh receive looks.
+    await t.saveResume('room-1', 'peer-a', rec('room-1', 'peer-a', 'from-a.bin', now));
+    await t.saveResume('room-1', 'peer-b', rec('room-1', 'peer-b', 'from-b.bin', now));
+    out.bothKept = [
+      (await t.loadResume('room-1', 'peer-a'))?.id ?? null,
+      (await t.loadResume('room-1', 'peer-b'))?.id ?? null,
+    ];
+    // A completes. B is still running and must not lose its record.
+    await t.clearResume('room-1', 'peer-a');
+    out.afterOneCompletes = [
+      (await t.loadResume('room-1', 'peer-a'))?.id ?? null,
+      (await t.loadResume('room-1', 'peer-b'))?.id ?? null,
+    ];
+    out.listed = (await t.listResume('room-1')).map((r) => r.id).sort();
+
+    // A record from a build that keyed by room alone: no peer in the key, but its own
+    // roomId field still names the room. It has to remain findable.
+    await t.saveResume('room-1', 'legacy', { ...rec('room-1', null, 'legacy.bin', now - 1000), peerId: null });
+    out.legacyFound = (await t.listResume('room-1')).some((r) => r.id === 'legacy.bin');
+    out.newestFirst = (await t.listResume('room-1'))[0]?.id ?? null;
+
+    // Burning a gate takes the whole room and nothing else.
+    await t.saveResume('room-2', 'peer-c', rec('room-2', 'peer-c', 'other-room.bin', now));
+    out.roomCleared = await t.clearRoomResume('room-1');
+    out.room1Left = (await t.listResume('room-1')).length;
+    out.room2Left = (await t.listResume('room-2')).length;
+
+    // W5. Two records: one from a live transfer, one abandoned by a crash a week ago, plus
+    // one with no date at all.
+    await t.clearAllResume();
+    await t.saveResume('room-3', 'live', rec('room-3', 'live', 'live.bin', now));
+    await t.saveResume('room-3', 'stale', rec('room-3', 'stale', 'stale.bin', now - 7 * 24 * 3600 * 1000));
+    await t.saveResume('room-3', 'undated', { ...rec('room-3', 'undated', 'undated.bin', now), savedAt: undefined });
+    out.beforeSweep = (await t.listResume('room-3')).length;
+    out.swept = await t.sweepResume();
+    out.survivors = (await t.listResume('room-3')).map((r) => r.id).sort();
+
+    // And the sweep is the thing a new gate runs, not something only a test calls.
+    await t.clearAllResume();
+    await t.saveResume('room-4', 'old', rec('room-4', 'old', 'ancient.bin', now - 7 * 24 * 3600 * 1000));
+    const { Session } = await import('/js/session.js');
+    const session = new Session({ secret: new Uint8Array(16), iceServers: [] });
+    const warnings = [];
+    session.addEventListener('warning', (e) => warnings.push(e.detail));
+    session.startResumeSweep();
+    // The sweep is deliberately not awaited by create/join: it must not delay a gate. Poll
+    // for it rather than guess a duration.
+    for (let i = 0; i < 100; i += 1) {
+      if ((await t.listResume('room-4')).length === 0) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    out.sweptOnStartup = (await t.listResume('room-4')).length;
+    out.sweepWarnings = warnings;
+
+    await t.clearAllResume();
+    out.clearedAll = (await t.listResume('room-3')).length + (await t.listResume('room-4')).length;
+    return JSON.stringify(out);
+  `);
+  const idb = JSON.parse(raw);
+  await idbTab.close?.();
+
+  check('two peers receiving into one room keep two separate resume records',
+    idb.bothKept[0] === 'from-a.bin' && idb.bothKept[1] === 'from-b.bin', raw);
+  check('one peer finishing does not delete the other peer\'s record out from under it',
+    idb.afterOneCompletes[0] === null && idb.afterOneCompletes[1] === 'from-b.bin', raw);
+  check('CONTROL: and the surviving record is still listed for the room, so it can be resumed',
+    JSON.stringify(idb.listed) === JSON.stringify(['from-b.bin']), raw);
+  check('a record written by a build that keyed by room alone is still found',
+    idb.legacyFound === true, raw);
+  check('records come back newest first, so a reload offers the live transfer and not an old one',
+    idb.newestFirst === 'from-b.bin', raw);
+  check('burning a gate drops every record for that room',
+    idb.roomCleared === 2 && idb.room1Left === 0, raw);
+  check('CONTROL: and leaves another room\'s record alone, so it is not just a wipe',
+    idb.room2Left === 1, raw);
+
+  check('CONTROL: all three records were there to be swept', idb.beforeSweep === 3, raw);
+  check('the sweep takes the record a crash abandoned', !idb.survivors.includes('stale.bin'), raw);
+  check('and the one with no date, which can never be shown to be fresh',
+    !idb.survivors.includes('undated.bin'), raw);
+  check('CONTROL: and leaves the live transfer alone, which is the whole risk of sweeping',
+    JSON.stringify(idb.survivors) === JSON.stringify(['live.bin']) && idb.swept === 2, raw);
+  check('opening a gate sweeps: the fingerprint and the handle do not outlive the day they were written',
+    idb.sweptOnStartup === 0, raw);
+  check('and a sweep that fails says why rather than being swallowed',
+    Array.isArray(idb.sweepWarnings) && idb.sweepWarnings.length === 0, JSON.stringify(idb.sweepWarnings));
+  check('clearAllResume leaves nothing behind', idb.clearedAll === 0, raw);
+}
 } finally {
   await browser.close();
   await server.stop();

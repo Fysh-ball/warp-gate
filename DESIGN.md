@@ -223,7 +223,7 @@ WebCrypto non extractable `CryptoKey` objects never expose key bytes to the JS h
 
 ### 1.12 Rate limiting (section 13) and no IP logs (section 15) need explicit reconciliation.
 
-Change: in memory token buckets keyed by `HMAC-SHA256(process_random_salt, client_ip)` truncated to 8 bytes. The salt is generated at boot and never persisted, so buckets are meaningless after a restart and unlinkable to an IP without the salt. Nothing is written to disk. Additionally, HTTP access logging must be off at the origin **and** `cloudflared` must be checked for its own request logging.
+Change: in memory token buckets keyed by `HMAC-SHA256(process_random_salt, client_ip)`, base64url encoded and truncated to **16 characters of that encoding, which is 96 bits, or 12 bytes**. (An earlier version of this line said 8 bytes. It was reading the `slice(0, 16)` in `server/limits.js` as bytes when the string it slices is base64url, at 6 bits per character. The unit is spelled out here so the next reader does not have to redo that.) The salt is generated at boot and never persisted, so buckets are meaningless after a restart and unlinkable to an IP without the salt. Nothing the limiter holds is written to disk. Additionally, HTTP access logging must be off at the origin **and** `cloudflared` must be checked for its own request logging.
 
 ### 1.13 A room-code guess is a denial of service, and the spec has no handling for it.
 
@@ -273,7 +273,7 @@ Change: `FILE_END` carries plaintext byte count and chunk count for reassembly s
    +---------------------------------------------------------------+
    |  warp-gate signalling process (Node, stdlib only)              |
    |    Map<roomId, room>                <- entire persistent state |
-   |    no disk, no logs, no db, dies on restart                    |
+   |    no db, no logs, dies on restart. Disk: suggestions only     |
    +---------------------------------------------------------------+
                                    |
    +---------------------------------------------------------------+
@@ -487,7 +487,12 @@ As built:
 GET  /api/config                                    -> { iceServers, sessionMinutes,
                                                          defaultSessionMinutes, unclaimedTtlMs,
                                                          heartbeatMs, maxRelayBytes,
-                                                         maxParticipants, sourceUrl }
+                                                         maxParticipants, sourceUrl,
+                                                         suggestions }
+                                                       `suggestions` is a boolean: whether this
+                                                       deployment accepts them at all. The page
+                                                       asks rather than assuming, because a box
+                                                       that posts into a 404 collects nothing
 GET  /api/health                                    -> { ok: true }        liveness only
 GET  /api/room?room=..&token=..                     -> { self, role, peers, peerPresent,
                                                          maxParticipants, expiresAt,
@@ -505,6 +510,20 @@ POST /api/relay  { roomId, token, to, envelope }    -> { delivered }   envelope 
                                                        | 413 envelope_too_large
                                                        | 429 relay_rate_limited
 POST /api/bye    { roomId, token }                  -> 200 { ok: true }
+                                                       destroys the ROOM, not the caller's seat
+POST /api/suggest { text }                          -> 204, with no body at all: an id or a
+                                                       count would let a stranger probe how many
+                                                       other people have written in
+                                                       | 404 not_found  when the box is off,
+                                                         which is the default
+                                                       | 429 rate_limited  3 per minute per key
+                                                       | 507 store_full
+                                                       | 400 for every other refusal: bad_body,
+                                                         empty, too_long, store_unwritable. The
+                                                         unwritable case logs its errno path to
+                                                         the operator's console and never to the
+                                                         client, because "EACCES /srv/wg/data"
+                                                         hands a stranger the deployment layout
 GET  /api/events?room=..&token=..                   -> text/event-stream
 ```
 
@@ -545,7 +564,7 @@ rooms: Map<roomId, {
 }>
 ```
 
-That, plus the rate limit buckets and the boot salt, is the entirety of server state. No database, no file writes, no logs. A restart destroys every room, as section 5 requires. A sweeper runs every 10 seconds; a room is deleted when every slot has been unattached for the grace period or a deadline fires. Rooms cap at `WG_MAX_PARTICIPANTS` slots (default 6; see the 1.7 amendment), and every slot beyond creation requires the join proof of 1.13.
+That, plus the rate limit buckets and the boot salt, is the entirety of server state. No database, no logs, and no file writes on any path a gate touches. There is exactly one file write in the process and it is on the other side of the wall: the suggestion box appends to `WG_SUGGESTIONS_PATH` (`server/suggestions.js`). It is off unless an operator sets that variable, `deploy/docker-compose.yml` sets it by default so the reference deployment runs with it on, and nothing from the signalling side reaches it: the record is the text and the hour, and there is deliberately no code path between the two halves. A restart destroys every room, as section 5 requires. A sweeper runs every 10 seconds; a room is deleted when every slot has been unattached for the grace period or a deadline fires. Rooms cap at `WG_MAX_PARTICIPANTS` slots (default 6; see the 1.7 amendment), and every slot beyond creation requires the join proof of 1.13.
 
 TTLs as built, which is finding 1.6 plus what was learned from running it:
 
@@ -559,7 +578,7 @@ TTLs as built, which is finding 1.6 plus what was learned from running it:
 
 ### 4.4 Abuse limits
 
-In memory token buckets keyed by `HMAC-SHA256(boot_salt, ip)[0..8]`, no persistence, no logging:
+In memory token buckets keyed by the first **16 base64url characters** of `HMAC-SHA256(boot_salt, ip)`, which is 96 bits of the digest and not 8 bytes: `server/limits.js` slices the encoded string, not the raw digest. No persistence, no logging:
 
 ```
 create   10 per 5 min per key      relay    200 per min per room, scaled by the number
@@ -605,7 +624,7 @@ The buckets themselves are capped at 10,000 entries with oldest-first eviction, 
 | Room guessing to read content | Guessing `room_id` yields nothing without `S`; key confirmation fails | A guess can confirm a room exists, rate limited. It can no longer take a slot: see the next row |
 | Unauthorized room joining | Joining requires the join proof `J = HKDF(S, "wg/v1/join")`, checked in constant time against the registered hash before occupancy is revealed (1.13, closed); per-participant capability tokens; slots cap at the configured limit; a failed confirmation is surfaced to the creator | Anyone holding the link holds `S`, so they can take a slot: they are a participant by construction |
 | Someone who obtains the link but not the room password | If a password was set, the key schedule needs it too: PBKDF2-HMAC-SHA256, 600,000 iterations, salted with `S`, appended to the HKDF salt (3.2a) | Only applies if a password was set and did not travel with the link. The `requiresPassword` flag the server holds is advisory metadata for the joining page; the server never sees the password and enforces nothing |
-| Persistent server-side storage | There is no storage layer to misconfigure | |
+| Persistent server-side storage | Nothing a gate carries is ever stored: no database, and no file the signalling side can reach | The suggestion box is a deliberate exception and the shipped compose file enables it. It is one append-only file holding the text and the hour, with no IP, no key and nothing from the signalling side, so there is a storage layer to misconfigure and its blast radius is suggestions |
 | Usage-pattern disclosure through the health endpoint | `/api/health` returns `{"ok":true}` and nothing else. It previously also published a live count of open gates, which was both a usage side channel and a progress meter for someone guessing room ids | |
 | Session reuse after expiry | Idle, hard and absolute deadlines plus sweeper plus room deletion on restart | |
 
@@ -624,13 +643,25 @@ Stated plainly, in the product, not just here.
   a slot (1.13 is closed: joining requires proof of knowledge of `S`), but anyone who
   obtains the link can, because the link is the credential. They fail key confirmation
   and read nothing, yet they hold the seat until the gate is re-created.
+- **Any one participant severing a shared gate.** `POST /api/bye` authorises the caller's
+  seat and then destroys the whole room, so the gate ends for everybody. When a gate held
+  exactly two devices this was symmetric and not worth naming. With `WG_MAX_PARTICIPANTS`
+  at 6 it is a unilateral kill: one of six, or anyone who has come by that participant's
+  capability token, ends the session for the other five. It stays this way on purpose. A
+  gate is one shared object behind one shared secret, there is no owner and no vote, and
+  anyone entitled to be in it is entitled to shut it. What follows is that the seat cap
+  does not make a gate more durable, only wider.
 - A compromised sender or receiver device, browser, or extension.
 - Screenshots, photographs of the screen, or a recipient who saves and forwards.
 - Malware or a keylogger on either endpoint.
 - A malicious participant. Anyone holding the link is a legitimate participant by construction.
 - Global passive traffic analysis. Warp Gate does not pad, delay, or cover traffic.
 - **Peer IP address disclosure between participants.** Direct P2P reveals each participant's address to every other participant in the gate, since every pair connects directly. This is inherent, and it is the property most at odds with the "identity separated" use case (finding 1.3).
-- Cloudflare metadata: client IPs, timing, room IDs, byte counts, session duration.
+- Cloudflare metadata: client IPs, timing, room IDs, byte counts, session duration, and
+  the per-seat capability token, which is a query parameter on `GET /api/events` because
+  `EventSource` cannot set request headers. It is therefore in reach of the TLS
+  terminator, any reverse proxy and any upstream access log. It decrypts nothing, since
+  no part of `S` is in it, but it authorises `/api/relay` and `/api/bye` for that seat.
 - Browser memory hygiene. The OS may page tab memory to disk. Nothing in a browser can promise otherwise.
 - Clipboard clearing. Best effort only, and impossible to guarantee across operating systems and browsers, as the brief already recognises.
 - Anonymity. Warp Gate is confidential, not anonymous.
@@ -835,12 +866,22 @@ sequenceDiagram
     A->>A: clear message list, file buffers, S, room_id, token
     A->>A: history.replaceState to strip the fragment from the URL
     A->>S: POST /bye {roomId, token}
-    S->>S: rooms.delete(roomId); close every SSE response
+    S->>S: authorise A's seat, then destroyRoom(): delete the<br/>room and close EVERY slot's SSE response, not just A's
     S-->>B: event: closed {reason:"severed"}
     B->>B: same teardown, state = TERMINAL
     Note over A,B: "Warp Gate severed. The session has ended."<br/>Reconnect is impossible: keys gone, room gone,<br/>fragment stripped, state machine terminal.
     Note over S: TTL path is identical minus the CONTROL frame:<br/>sweeper deletes the room and emits closed{reason:"ttl"}
 ```
+
+The diagram draws two devices because that was the only shape when it was written, and
+the step that matters is easy to skim past now that a gate is wider. **`/api/bye`
+authorises a seat and then ends the room.** It is not "A leaves"; there is no route that
+means that. So in a six-seat gate any one participant severs the session for all six, and
+so does anyone who has obtained that participant's capability token, which travels in a
+query string (see 5.2). This is deliberate rather than an oversight surviving from the
+two-party design: one shared secret admits everybody equally, so there is no owner to
+privilege and no meaningful vote to hold. It is recorded here because "any participant
+can sever" reads as unremarkable at two seats and as a real power at six.
 
 ---
 
@@ -859,6 +900,7 @@ sequenceDiagram
 | File plaintext, receiver | Reassembled | Stream to disk if the user picked a location, else memory | Explicit save or discard on sever | Only where the user chose to save |
 | Signaling envelopes | Both clients | Server RAM, in flight only | Immediately after relay, never queued | No |
 | Rate limit buckets | Server | RAM, salted HMAC of IP | Window expiry, boot salt is not persisted | No |
+| A submitted suggestion (the text, and the hour, rounded) | The landing's suggestion box, if an operator set `WG_SUGGESTIONS_PATH` | An append-only JSON Lines file, mode 0600 | Never, except by the operator deleting it. It is meant to outlive the visit | **Yes**, and it is the only server-side row in this table that says so. No IP, no rate-limit key, no header, and nothing from the signalling side |
 | IP addresses | The network | Cloudflare and kernel sockets | Origin access logs disabled; Cloudflare retains per its own policy | Not at the origin |
 | Slot record for a reload | Server, per join | Client `sessionStorage` as `wg.slot.<roomId>` | `forgetSlot()` on sever, auth failure or unreachable | Same crash-recovery caveat as `S` |
 | Outbound transfer intent (name, size, fingerprint; never bytes) | Sender's browser at FILE_START | Client `sessionStorage` as `wg.out.<roomId>` | On completion, failure or teardown; discarded with the tab | Same crash-recovery caveat as `S` |
@@ -909,15 +951,21 @@ produced. Both were cited by earlier versions of this section and have been remo
   server/
     index.js                   node:http, static serving, security headers, graceful shutdown
     rooms.js                   the Map, TTLs, sweeper, capacity and locking
-    signal.js                  config / health / room / create / join / relay / bye / SSE events
+    signal.js                  config / health / room / create / join / relay / bye /
+                               suggest / SSE events
     limits.js                  salted HMAC token buckets
+    suggestions.js             the suggestion box: the one file this process writes,
+                               off unless WG_SUGGESTIONS_PATH is set, and holding
+                               nothing from the signalling side
     stun.js                    RFC 5389 Binding responder, off unless WG_STUN_ENABLED=1
     config.js                  ports, TTLs, caps, ICE server list as data, WG_SOURCE_URL,
                                WG_AD_ORIGINS (landing-only CSP widening, empty by default)
   public/
     index.html                 the landing, served at /. No gate machinery, no keys, and
                                the only document WG_AD_ORIGINS can ever widen
-    app.html                   the gate, served at /app. default-src 'none', no exceptions
+    app.html                   the gate, served at /app. default-src 'none' with every
+                               exception 'self' (plus blob: for image preview), so no
+                               external origin at all and nothing an operator can widen
     faq.html
     terms.html                 filled: Alberta, Canada; contact warpgate@fysh.site
     privacy.html               filled, and audited against the code 2026-08-09
@@ -925,17 +973,45 @@ produced. Both were cited by earlier versions of this section and have been remo
     sw.js                      download worker: streams a received file to the browser's
                                own download manager (the 1.9 reversal)
     css/style.css
+    css/games.css              board palette, injected by gameui.js at first render
     js/app.js                  UI, onboarding, sever. Loaded by app.html only
     js/landing.js              the landing page. Loaded by index.html only, and imports
                                nothing that knows what a room is
+    js/legal.js                shared by the four legal documents and nothing else
     js/support.js              donation cards and the AGPL s13 link, shared by both
     js/session.js              the protocol state machine
+    js/link.js                 one peer link: pairwise handshake, message kinds, control
     js/crypto.js               HKDF, ECDH, PBKDF2, AEAD framing, counters, SAS
+    js/words.js                the gate-code alphabet, imported by crypto.js, so eager
     js/signal.js               EventSource client, envelope encrypt and decrypt
     js/peer.js                 RTCPeerConnection, DataChannel, backpressure, ICE restart
     js/transfer.js             chunking, sink selection, progress, caps
+    js/resume.js               per-chunk indices, so an interrupted transfer continues
     js/download.js             page side of the sw.js streamed download
+    js/vault.js                surviving a reload on a password gate
+    js/share.js                the PWA share target
     js/qr.js                   QR encoder written here against ISO/IEC 18004, not vendored
+
+  Loaded on demand only, never on the path to the verification screen. The six marked
+  ENFORCED are named in tests/size.test.mjs, which walks the STATIC import graph and
+  fails the build if any of them reappears in it. Each is paired there with an existence
+  control, so a check cannot pass because the file was renamed out from under it:
+
+    js/qrdecode.js   ENFORCED   the decoder, fetched when the camera button is pressed
+    js/saswords.js   ENFORCED   the two spoken words, fetched at gate creation, so the
+                                round trip is over long before any peer can connect
+    js/gameplay.js   ENFORCED   the games match layer
+    js/gameui.js     ENFORCED   board rendering, and the injector for css/games.css
+    js/games/chess.js        ENFORCED
+    js/games/battleships.js  ENFORCED
+    js/games/connect4.js, tictactoe.js, index.js
+                                the remaining engines, reached only through gameplay.js
+    js/qrscan.js                camera frames to a gate code, imported by app.js only
+                                inside the scan handler
+
+  js/qrscan.js is lazy by construction but is NOT in the enforced list, so nothing stops
+  a future edit making it eager. It is the one gap in this table: state it rather than
+  imply the whole set is covered.
   deploy/
     docker-compose.yml         node:22-alpine, source mounted read-only, no image build
     SELF-HOSTING.md            deployment guidance, minus anything machine-specific

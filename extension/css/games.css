@@ -1,0 +1,583 @@
+/* The boards.
+ *
+ * A separate stylesheet, injected by gameui.js the first time a board is drawn, for the
+ * same reason the engines are a separate module: a gate whose two people never open a
+ * board should not pay for one. This was ~7 KB that most sessions never fetch; the games
+ * shelf added to it on 2026-08-10 and it is 25.3 KB raw now, 9.2 KB gzipped, which is the
+ * figure that matters because gzipped is what the server sends. Most of the raw growth is
+ * the prose below rather than rules.
+ *
+ * That is still entirely off the eager graph: tests/size.test.mjs names gameui.js in its
+ * exclusion list and this file rides in behind it, injected by that module at render time.
+ * The number the budget actually guards, the bytes a gate costs to OPEN, has not moved.
+ *
+ * Loading it late is safe because nothing outside #game-area is styled here, and
+ * #game-area holds nothing until the games module has loaded. There is no flash of
+ * unstyled board: the board does not exist yet.
+ *
+ * ---- on the palette ----
+ *
+ * The rest of the site is dark, high-contrast and deliberately serious: it is holding
+ * somebody's keys. The games are the one place where that would be the wrong register, so
+ * they get pastels. The constraint that keeps this from becoming a second design system:
+ * every colour below is a GAME colour, scoped under .game-area, and no token defined here
+ * is used anywhere else in the product.
+ *
+ * The pastels are desaturated enough to sit on the dark panel without glowing, and the
+ * text on them is always the near-black --game-ink rather than the site's --text, because
+ * a pastel is a light background whichever theme you are in. That single rule is what
+ * makes one palette work in both themes.
+ */
+
+.game-area {
+  /* The pieces. Two per game, chosen to stay distinguishable for the most common colour
+     vision deficiencies: the pairs differ in lightness as well as hue, so red/green
+     confusion cannot make a board unreadable. */
+  --g-rose: #f2b8c6;
+  --g-sky: #a8d5e2;
+  --g-butter: #f5e3a3;
+  --g-mint: #b5e0c8;
+  --g-lilac: #cfc3e8;
+  --g-peach: #f7cdaa;
+
+  /* The board itself. */
+  --g-square-light: #e8e2d6;
+  --g-square-dark: #b9c7bd;
+  --g-sea: #cfe4ec;
+  --g-sea-line: #a9c6d2;
+  --g-ship: #9fb3ac;
+
+  /* One ink for everything that sits ON a pastel. Defined once so a new game cannot
+     quietly introduce a second, lower-contrast one. */
+  --g-ink: #23282e;
+  --g-ink-soft: #55606b;
+
+  /* The board's own frame, which does follow the site so a board does not look pasted on
+     top of the gate. */
+  --g-frame: var(--line);
+
+  display: block;
+}
+
+/* ---------------------------------------------- the lobby, before a game starts
+ *
+ * This section used to be called "the menu". It is a shelf of cards now (see the block
+ * below); what is left up here is the furniture around it: the notice line, the idle line
+ * for a gate with nobody else in it yet, and the partner picker for the rare gate with
+ * more than two devices in it. */
+
+.game-note {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+.game-idle { color: var(--muted); font-size: 13px; margin: 0; }
+
+.game-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.game-label { color: var(--muted); font-size: 13px; }
+
+.game-select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
+/* ---------------------------------------------- the shelf
+ *
+ * What was here until 2026-08-10: `.game-menu` (a flex row) and `.game-pick` (a small
+ * bordered button per game). It was replaced rather than tuned, because on a desktop it
+ * did not read as a row at all. The global `button { width: 100%; margin-bottom: 10px }`
+ * in style.css applies to every button in the product, so each `.game-pick` took the full
+ * 1220px of the drawer and the four games stacked into four identical grey bars 34px
+ * tall. Measured, not guessed: 1220x34 at 1920 wide, 328x34 at 390. Nothing on that
+ * screen said what any of the four games WAS, and the flex row was decorative.
+ *
+ * The replacement is a shelf of cards, one per game, each with its own art tile, its name,
+ * a line saying what it is, and a Play affordance. Three things it is deliberately NOT:
+ *
+ *  - it is not a nested-control layout. The CARD is the button. A Play button inside a
+ *    card would be a button inside a button, which is invalid HTML and which browsers
+ *    resolve by dropping one of them. `.game-card-cta` is a span that looks like a
+ *    control and is part of the card's own accessible name.
+ *  - it carries no media queries. `auto-fill` plus `min(220px, 46%)` is the whole
+ *    responsive story: the percentage is what forces two columns on a phone, where 220px
+ *    would give one column and a card per screenful, and the pixel value is what stops a
+ *    1220px drawer from stretching four cards to 300px each. Measured: 5 tracks at 1920
+ *    (cards 236px), 3 at 1366, 2 at 390 (cards 159px). Same rule, three screens.
+ *  - it introduces no new palette. Every colour below is one of the --g- tokens already
+ *    defined at the top of this file, which is also why the art tiles are drawn as
+ *    miniature BOARDS: the tile for connect four is made of the same rose and butter as
+ *    the discs, so the card and the game it opens are visibly the same object.
+ */
+
+.game-shelf {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(200px, 46%), 1fr));
+  /* Four cards wide, never five, stated as the arithmetic rather than as a magic number so
+     that changing the gap or the track size cannot silently make it five. Without it the
+     1220px drawer a 1920 screen gives this panel fits five tracks and holds four cards,
+     which reads as a shelf with a hole at the end of it. */
+  max-width: calc(4 * 220px + 3 * 10px);
+  /* Every card the same height, including across a wrap. Two rows of two on a phone
+     otherwise size independently and the second row sits 16px shorter than the first,
+     which was measured before this line went in: 247px then 231px at 390 wide. */
+  grid-auto-rows: 1fr;
+  gap: 10px;
+  margin: 0 0 4px;
+}
+
+.game-card {
+  /* The card's own accent, overridden per game below. Each one is the pastel that game
+     already uses on its board, so this is a pointer into the palette at the top of the
+     file rather than a sixth colour. */
+  --g-tint: var(--g-lilac);
+
+  /* The four overrides of the global button rule. width and margin are the two that broke
+     the old menu; text-align and font-weight are because a button centres and bolds its
+     text by default and a card is a paragraph, not a label. */
+  width: auto;
+  margin: 0;
+  text-align: left;
+  font-weight: 400;
+
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  /* Clips the art tile to the card's own top corners, so the art needs no radius of its
+     own and no second radius to keep in step with this one. */
+  overflow: hidden;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* Hover and keyboard focus are the SAME state on purpose: a card that only lifts under a
+   pointer tells a keyboard user less than everybody else, and this shelf is four controls
+   in a row where knowing which one you are on is the whole job.
+ *
+ * The lift is expressed as a quarter of --reveal-rise rather than a hard -2px, and that is
+ * the entire reduced-motion story for this file. style.css already rewrites --reveal-rise
+ * to 0px inside its `prefers-reduced-motion: reduce` branch, so under reduce this becomes
+ * translateY(0) and the card says it in colour instead, which is what the note at the foot
+ * of this file asks any new motion here to do. No new media query, and nothing that could
+ * fall out of step with the site's own token.
+ *
+ * The transition itself is inherited from the global `button` rule: transform, background,
+ * border and colour, all at --motion-micro. Nothing is added here, and nothing that costs
+ * a layout is touched. */
+.game-card:hover:not(:disabled),
+.game-card:focus-visible {
+  border-color: var(--g-tint);
+  background: var(--panel);
+  transform: translateY(calc(var(--reveal-rise, 8px) * -0.25));
+}
+
+/* The focus ring is drawn as well as the lift, not instead of it. The lift is a nicety;
+   the ring is the thing that satisfies 2.4.7, and a border colour change on a pastel is
+   nowhere near a 3:1 change against the panel behind it. */
+.game-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* style.css presses every button with scale(--press-scale). This selector is more specific
+   than that one, so without this rule the hover translate would simply swallow the press
+   and these four cards would be the only dead-feeling buttons in the product. Both
+   transforms, in one declaration, in the order that keeps the lift. */
+.game-card:active:not(:disabled) {
+  transform: translateY(calc(var(--reveal-rise, 8px) * -0.25)) scale(var(--press-scale, 1));
+}
+
+/* ---- the art tile
+ *
+ * 8:5 because that is the shape a card of this width wants at every one of the three
+ * measured viewports: at 159px wide it is 99px tall and the card is still under half a
+ * phone screen, and at 236px it is 148px and reads as art rather than as a thumbnail.
+ * aspect-ratio rather than a height, for the same reason the boards below use it.
+ *
+ * The wash is three layers over one token: a white highlight from the top left, a faint
+ * ink shade into the bottom right, and the tint itself. That is what gives a flat pastel
+ * depth without a second colour per game, and it is why --g-tint is a single value. */
+.game-card-art {
+  display: block;
+  aspect-ratio: 8 / 5;
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(158deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0) 54%),
+    linear-gradient(158deg, rgba(35, 40, 46, 0) 48%, rgba(35, 40, 46, 0.16)),
+    var(--g-tint);
+}
+
+.game-card-art svg { display: block; width: 100%; height: 100%; }
+
+/* The art vocabulary. These class names are set by gameui.js on the SVG shapes it builds,
+   and they exist so that the colours stay HERE with the rest of the palette: an SVG
+   presentation attribute (fill="...") cannot read a custom property, so hardcoding the
+   hexes into the renderer would have put a second copy of the palette in a JS file where
+   nobody editing this one would ever find it. */
+.game-card-art .a-hole { fill: #f4f8f9; }
+.game-card-art .a-rose { fill: var(--g-rose); }
+.game-card-art .a-butter { fill: var(--g-butter); }
+/* The water carries an edge as well as a fill. --g-sea and the lilac this card is tinted
+   with are within a few points of each other in lightness, so the sea rectangle drawn as a
+   flat fill had no visible boundary and the tile read as ships floating on nothing. The
+   outline is the sea's own grid ink, which is the colour the real board draws its lines
+   in. */
+.game-card-art .a-sea { fill: var(--g-sea); stroke: var(--g-sea-line); stroke-width: 1.4; }
+.game-card-art .a-ship { fill: var(--g-ship); }
+.game-card-art .a-hit { fill: #e59a8a; }
+.game-card-art .a-sq-l { fill: var(--g-square-light); }
+.game-card-art .a-sq-d { fill: var(--g-square-dark); }
+.game-card-art .a-frame { fill: rgba(35, 40, 46, 0.13); }
+.game-card-art .a-dot { fill: rgba(35, 40, 46, 0.30); }
+/* The two marks are the same two inks tic tac toe uses on the board itself. */
+.game-card-art .a-x { stroke: #b4576b; stroke-width: 3.2; stroke-linecap: round; }
+.game-card-art .a-o { stroke: #2f7d94; stroke-width: 3.2; fill: none; }
+.game-card-art .a-rule { stroke: rgba(35, 40, 46, 0.34); stroke-width: 1.6; stroke-linecap: round; }
+.game-card-art .a-rule-faint { stroke: rgba(35, 40, 46, 0.16); stroke-width: 0.8; }
+.game-card-art .a-piece {
+  fill: var(--g-ink);
+  font-size: 26px;
+  /* The glyph is a chess piece from the same solid set the board uses. Serif because the
+     hollow-vs-solid distinction in the Unicode chess block is only reliable in a serif
+     face, and this is one glyph, not running text. */
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+/* ---- the text and the call to action */
+
+.game-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  padding: 9px 11px 11px;
+}
+
+.game-card-name { font-size: 14px; font-weight: 600; line-height: 1.25; }
+
+/* The 10px bottom margin is the MINIMUM gap to the pill; margin-top:auto on the pill
+   absorbs whatever else is going, which is what keeps the four pills on one line even
+   when one blurb wraps to two lines and the others do not. */
+.game-card-desc {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+  margin: 3px 0 10px;
+}
+
+.game-card-cta {
+  margin-top: auto;
+  padding: 5px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  /* Its own transition rather than the button's, because the button's list is on the CARD
+     and does not cascade to a child's own property changes. Same token, same properties,
+     nothing that costs a layout. */
+  transition: background-color var(--motion-micro) linear,
+              border-color var(--motion-micro) linear,
+              color var(--motion-micro) linear;
+}
+
+.game-card:hover:not(:disabled) .game-card-cta,
+.game-card:focus-visible .game-card-cta {
+  background: var(--g-tint);
+  border-color: var(--g-tint);
+  /* --g-ink, never --text: the pill has just become a pastel, and a pastel is a light
+     surface in both themes. This is the one rule at the top of this file. */
+  color: var(--g-ink);
+}
+
+/* ---- the picked card
+ *
+ * The lobby has three states and one shelf. While an invitation is in the air, or while
+ * theirs is waiting for an answer, every card is disabled (the global button rule takes
+ * them to 0.5 opacity, which is the "these are out of play" half of the message) and the
+ * one game in question is pulled back to full strength with a ring in its own tint. The
+ * result is a shelf with exactly one lit card, which is the state that has to be readable
+ * from across a desk. */
+.game-card.is-active {
+  border-color: var(--g-tint);
+  box-shadow: inset 0 0 0 2px var(--g-tint);
+}
+
+.game-card.is-active:disabled { opacity: 1; cursor: default; }
+
+.game-card.is-active .game-card-cta {
+  background: var(--g-tint);
+  border-color: var(--g-tint);
+  color: var(--g-ink);
+}
+
+/* Per game tints. Each is the pastel that game already puts on its own board, so a card
+   and the board it opens are the same colour: sky is the connect four cell the discs sit
+   in, mint stands for the chess board's green-grey squares, and tic tac toe keeps the rose
+   its X is drawn in. Attribute selectors rather than four more class names, because
+   gameui.js already has to write the id onto the element for its click handler.
+ *
+ * Battleships gets lilac, which is the one tint that is NOT taken from its own board, and
+ * the reason is worth recording. Its board is --g-sea, which is a hair off --g-sky, so a
+ * sea-tinted battleships card sat next to a sky-tinted connect four card and the two were
+ * indistinguishable at a glance. Connect four was tried on butter first, which had a worse
+ * version of the same fault: butter is one of the two DISC colours, so half the discs in
+ * the tile vanished into the tile's own background. Four cards in a row have to be four
+ * colours before they are the right colours, and lilac was the unused pastel. */
+.game-card[data-game="tictactoe"] { --g-tint: var(--g-rose); }
+.game-card[data-game="connect4"] { --g-tint: var(--g-sky); }
+.game-card[data-game="battleships"] { --g-tint: var(--g-lilac); }
+.game-card[data-game="chess"] { --g-tint: var(--g-mint); }
+
+/* The lobby's one line of status, sitting above the shelf: "waiting for them to accept",
+   or "they want to play chess", with its answer next to it. flex-wrap so the buttons drop
+   under the sentence on a phone rather than squeezing it. */
+.game-status {
+  align-items: center;
+  gap: 8px 10px;
+  margin: 0 0 10px;
+}
+
+/* The sentence keeps its natural width and the answer sits directly after it. `flex: 1 1
+   auto` was tried on the sentence first, to push Cancel to the far right the way a dialog
+   would; at 1920 that put 300px of nothing between "waiting for them to accept Chess" and
+   the button that takes it back, and the two stopped reading as one statement. */
+.game-status .game-idle { flex: 0 1 auto; }
+
+/* ---- the .btn class the renderer has always passed, which until now styled nothing
+ *
+ * gameui.js writes `btn`, `btn ghost` and `btn small` on every control it draws: Cancel,
+ * Play, No thanks, Resign, Play again, Close, Shuffle, Ready. `.small` is the only one of
+ * those three that exists in style.css, so all of them fell through to the bare global
+ * `button` rule and inherited `width: 100%` from it. Measured before this rule: the Cancel
+ * under "waiting for them to accept" was a 1220px slab at 1920 wide, and the pair of
+ * buttons on an incoming invitation were two slabs of equal width regardless of whether
+ * the label was "Play" or "No thanks".
+ *
+ * Defining .btn in style.css would have been the tidier home for it, but style.css is
+ * global and a `.btn` there would silently restyle anything else that ever uses the name.
+ * Scoped under .game-area it can only reach the eight controls listed above, which are
+ * exactly the ones that asked for it. */
+.game-area .btn {
+  width: auto;
+  margin: 0;
+  padding: 7px 14px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: transparent;
+}
+
+.game-area .btn.ghost {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.game-area .btn:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* The press has to be restated because the hover above took the property it lands on.
+   style.css says the press twice: scale(--press-scale) normally, and brightness(0.92)
+   inside its reduced-motion branch, because --press-scale collapses to 1 there and a press
+   with nothing to say is not a press. This selector is more specific than that second one,
+   so without this line these eight controls would be the only buttons in the product that
+   go completely dead under prefers-reduced-motion: the hover brightness would still be
+   winning at the moment of the click. Both states keep their scale from style.css; this
+   only puts the luminance back. */
+.game-area .btn:active:not(:disabled) { filter: brightness(0.92); }
+
+.game-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.game-name { font-weight: 600; font-size: 14px; }
+.game-turn { color: var(--muted); font-size: 13px; }
+
+.game-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+/* ---------------------------------------------- the grid
+ *
+ * One grid rule for four games. The column and row counts come in as --game-cols and
+ * --game-rows, written by gameui.js through the CSSOM: `style-src 'self'` blocks a style
+ * ATTRIBUTE in markup but not an element.style write, which is why the renderer sets them
+ * that way and not by emitting inline styles.
+ *
+ * aspect-ratio rather than a fixed pixel size, so one rule covers a 3x3 and a 10x10 and
+ * neither needs a media query. The board is as wide as the column it is in and as tall as
+ * that makes it, which is what "sizes must match the screen" means here. */
+
+.game-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--game-cols, 3), 1fr);
+  grid-template-rows: repeat(var(--game-rows, 3), 1fr);
+  aspect-ratio: var(--game-cols, 3) / var(--game-rows, 3);
+  width: 100%;
+  max-width: min(420px, 100%);
+  gap: 2px;
+  padding: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--g-frame);
+  border-radius: var(--radius);
+}
+
+.game-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--g-square-light);
+  color: var(--g-ink);
+  /* Scales with the cell rather than the page: a 10x10 battleships grid and a 3x3 tic
+     tac toe board are the same width, so a fixed font size fits one and overflows the
+     other. cqw would be cleaner; this works without a container query. */
+  font-size: clamp(11px, 4vw, 26px);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.game-cell:disabled { cursor: default; }
+
+/* Focus is drawn INSIDE the cell. A ring drawn outside would be clipped by the
+   neighbouring cell at a 2px gap and would read as a broken half-outline. */
+.game-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+/* ---------------------------------------------- tic tac toe */
+
+.game-ttt .game-cell { background: var(--g-square-light); }
+.game-ttt .mark-x { color: #b4576b; }   /* the rose and sky hues at ink strength: a */
+.game-ttt .mark-o { color: #2f7d94; }   /* pastel mark on a pastel square is invisible */
+
+/* The winning line, stated by colour AND by weight. Colour alone would be the one place
+   on these boards where a colour-blind player is told less than everybody else. */
+.game-ttt .game-win,
+.game-c4 .game-win {
+  background: var(--g-butter);
+  box-shadow: inset 0 0 0 2px #c9a227;
+}
+
+/* ---------------------------------------------- connect four */
+
+.game-c4 .game-cell {
+  background: var(--g-sky);
+  border-radius: 50%;
+}
+
+.game-c4 .disc {
+  display: block;
+  width: 78%;
+  height: 78%;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+.game-c4 .disc-r { background: var(--g-rose); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.10); }
+.game-c4 .disc-y { background: var(--g-butter); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.10); }
+
+/* ---------------------------------------------- chess */
+
+.game-chess { max-width: min(440px, 100%); gap: 0; padding: 6px; }
+
+.game-chess .sq { border-radius: 0; font-size: clamp(16px, 5.6vw, 34px); }
+.game-chess .sq-light { background: var(--g-square-light); }
+.game-chess .sq-dark { background: var(--g-square-dark); }
+
+/* White and black pieces are drawn with the same glyphs, so the FILL has to carry the
+   difference. Both sit on both square colours, so both need contrast against both. */
+.game-chess .piece-w { color: #fbfbf7; text-shadow: 0 0 2px rgba(0, 0, 0, 0.55); }
+.game-chess .piece-b { color: #23282e; }
+
+/* The picked square and its legal destinations. The destination marker is a dot rather
+   than a fill, so it does not hide the piece that would be captured. */
+.game-chess .sq-picked { box-shadow: inset 0 0 0 3px #c9a227; }
+.game-chess .sq-target { position: relative; }
+.game-chess .sq-target::after {
+  content: "";
+  position: absolute;
+  width: 26%;
+  height: 26%;
+  border-radius: 50%;
+  background: rgba(41, 46, 52, 0.35);
+}
+
+/* ---------------------------------------------- battleships
+ *
+ * Two grids: your own fleet, and what you have learned about theirs. They are deliberately
+ * NOT symmetrical in appearance, because confusing the two is the one mistake this game
+ * makes easy and it costs a turn. */
+
+.game-seas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.game-side { flex: 1 1 220px; min-width: 0; }
+
+.game-side-title {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.game-sea { max-width: 100%; }
+.game-sea .sea { background: var(--g-sea); border-radius: 2px; font-size: clamp(8px, 2.2vw, 14px); }
+.game-sea .ship { background: var(--g-ship); }
+
+.game-sea .shot-none { background: var(--g-sea); }
+.game-sea .shot-miss { background: var(--g-sea); color: var(--g-ink-soft); }
+.game-sea .shot-hit { background: var(--g-peach); color: var(--g-ink); }
+/* Sunk is the one state that must be unmistakable at a glance, so it is the only one that
+   changes both the fill and the border. */
+.game-sea .shot-sunk {
+  background: #e59a8a;
+  box-shadow: inset 0 0 0 2px #b3564a;
+  color: #2a1512;
+}
+
+/* ---------------------------------------------- reduced motion
+ *
+ * There is no motion in this file to remove, and deliberately no blanket rule to remove it
+ * with. This block used to read
+ *
+ *   .game-area * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+ *
+ * which looks like diligence and is the opposite. Reduced motion means REDUCED, not
+ * removed: MDN's wording is "removed, reduced, or replaced", and Apple's HIG spells out the
+ * replacement as fades instead of travel across axes. A 0.01ms blanket does not reduce a
+ * piece drop, it deletes it, and with !important it deletes it in a way the animation's own
+ * author cannot override. The first person to add a drop would ship a board that silently
+ * does nothing for reduced-motion players, and would have no way to tell from this file.
+ *
+ * So the rule to follow when adding one, rather than a rule that pre-empts it: animate
+ * transform and opacity only, and put the travel behind the site's --reveal-rise token,
+ * which the reduced branch in style.css already collapses to 0px while leaving the fade
+ * alone. That gives a reduced-motion player a piece that appears rather than one that
+ * teleports, and it needs no new media query here at all. */

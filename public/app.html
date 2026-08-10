@@ -7,6 +7,15 @@
 <meta name="color-scheme" content="dark light">
 <title>Warp Gate</title>
 <link rel="stylesheet" href="/css/style.css">
+<!-- Installable, and a share target. start_url is /app, so an install from either page
+     opens the gate rather than the pitch. The theme colours are the two backgrounds from
+     style.css: an installed window paints its own chrome with these, and a light-theme
+     phone showing a dark bar around a light page is the tell that this was forgotten. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
 </head>
 <body>
 
@@ -62,6 +71,28 @@
     <span id="ttl" class="ttl" hidden></span>
   </div>
 </header>
+
+<!-- Shown when the page is not a secure context. Browsers expose crypto.subtle on TLS or
+     a loopback address only, so on http://<lan-ip> this document loads and renders exactly
+     as it does anywhere else while the primitive the whole product is built on is simply
+     absent. Before this existed the symptom was an uncaught TypeError inside crypto.js and
+     a gate that appeared to hang, which is the worst possible failure for a tool whose
+     claim is that it encrypts.
+
+     Deliberately NOT dismissable, unlike the two banners below it. Those report a
+     limitation somebody may reasonably decide to work around; this one reports that
+     nothing on the page can function, and the create and join buttons are disabled to
+     match. A close button here would only hide the explanation for a screen that stays
+     broken. -->
+<div id="insecure-warning" class="banner" hidden>
+  <strong>This page is not running in a secure context, so it cannot encrypt.</strong>
+  <span id="insecure-warning-text"></span>
+  <p class="muted small">Browsers only provide the Web Crypto API over HTTPS, or on
+  <code>localhost</code>, <code>127.0.0.1</code> and <code>[::1]</code>. Reaching a
+  self-hosted gate at a plain <code>http://</code> LAN address gives you this page without
+  the cryptography underneath it, so opening a gate here is disabled rather than left to
+  fail halfway through.</p>
+</div>
 
 <div id="webrtc-warning" class="banner" hidden>
   <strong id="webrtc-warning-title">This browser cannot make direct connections.</strong>
@@ -322,6 +353,20 @@
           <input id="join-password" type="password" autocomplete="current-password"
                  placeholder="Room password, if the gate has one">
           <button id="join-btn" class="secondary">Join gate</button>
+          <!-- Hidden until the page has checked that this browser can open a camera at
+               all. A button that is always there and fails on press is worse than no
+               button: it reads as the site being broken rather than the device lacking
+               a camera or the page not being on HTTPS. -->
+          <button id="scan-btn" class="link" hidden>Scan the code with the camera</button>
+          <div id="scan-panel" class="scan-panel" hidden>
+            <!-- muted and playsinline are set here as well as in JS: iOS takes an
+                 un-attributed video fullscreen on play(), and the attribute is read
+                 before the script runs. -->
+            <video id="scan-video" class="scan-video" muted playsinline></video>
+            <p class="muted small" id="scan-note">Point the camera at the other screen. Nothing
+               leaves this device: the picture is read here and thrown away.</p>
+            <button id="scan-cancel" class="secondary">Stop the camera</button>
+          </div>
         </div>
         <p id="home-error" class="error" hidden></p>
       </section>
@@ -438,6 +483,26 @@
       <div class="disc-body"><pre id="conn-detail" class="diag">gathering...</pre></div>
     </details>
 
+    <!-- Games. Closed by default and in the same shape as the connection disclosure,
+         because this is the least important thing on the screen and must not compete
+         with the transcript for attention.
+
+         It sits inside the gate rather than being a page of its own for the same reason
+         everything else does: a game is played over the pair's own encrypted channel and
+         has no server side at all. Moves are control messages. Nothing about a game is
+         stored, and it dies with the gate like everything else here.
+
+         The board and the controls are rendered by js/gameui.js into #game-area. The
+         markup is empty on purpose: there are four games with four different boards, and
+         a shell that described one of them would be wrong for the other three. -->
+    <details class="disc compact" id="games-disc">
+      <summary><span class="disc-title">Games</span>
+        <span class="disc-hint" id="games-hint">something to do while you wait</span></summary>
+      <div class="disc-body">
+        <div id="game-area" class="game-area"></div>
+      </div>
+    </details>
+
     <!-- The rail: the things you consult rather than read, and the one control that
          destroys the gate.
 
@@ -456,9 +521,14 @@
       <div class="sas-box">
         <p class="rail-k">Verification code</p>
         <p class="sas-v"><strong id="sas">-----</strong></p>
-        <p class="rail-note">Both devices should show the same five digits. If you read them
-        aloud and they match, nothing has been substituted between you. If they differ, burn
-        the gate.</p>
+        <!-- The same number as two words. Five digits read aloud over a phone are five
+             chances to hear a six as a nine; two words are one comparison, and a listener
+             who does not speak the language of the digits can still match them. It carries
+             exactly the bits the digits do, no more: see js/saswords.js. -->
+        <p class="sas-words" id="sas-words" aria-live="polite"></p>
+        <p class="rail-note">Both devices should show the same five digits, and the same two
+        words. If you read them aloud and they match, nothing has been substituted between
+        you. If they differ, burn the gate.</p>
       </div>
 
       <button id="sever" class="danger">Burn the gate</button>
@@ -551,7 +621,38 @@
 
 </div><!-- /.page -->
 
-<div id="log" class="log" aria-live="polite"></div>
+<!-- The status log, docked and CLOSED.
+
+     It used to be an always-open panel up to --log-max tall, and on a connection that was
+     retrying it filled a quarter of the window with the same three sentences repeated
+     nine times. Worse, it outlived what it was describing: after Burn the gate is gone,
+     every screen behind it has been replaced, and the log was still sitting across the
+     bottom of the page reciting the reconnect attempts of a session that no longer
+     exists.
+
+     So: one line, the most recent one, and a control to open the history. The dock is
+     hidden outright until there is something to say, and severing empties it.
+
+     Why not move it inside Connection details, which is where the user suggested it could
+     go if it had to live somewhere. Because that disclosure only exists on the connected
+     screen, and the log's whole value is on the screens where the connection has NOT
+     happened yet: creating, joining, waiting, reconnecting, failed. Putting it there
+     would have hidden it precisely when it is the only thing explaining what is going on.
+
+     A button and a div, not <details>/<summary>. This file already carries a comment
+     about the chevron work that a summary needs, and none of it is wanted here: this is
+     a one line status readout, not a section heading.
+
+     aria-live rides on the visible line, not on the history. A live region inside a
+     hidden container announces nothing, so putting it on #log was announcing the newest
+     message only while the history happened to be open. -->
+<div id="log-dock" class="log-dock" hidden>
+  <button type="button" id="log-toggle" class="log-toggle" aria-expanded="false" aria-controls="log">
+    <span class="log-latest" id="log-latest" aria-live="polite"></span>
+    <span class="log-more" id="log-more" aria-hidden="true"></span>
+  </button>
+  <div id="log" class="log"></div>
+</div>
 
 <!-- the ask ------------------------------------------------------------
      Shown ONLY after a gate that actually connected and then ended. It is wired in app.js

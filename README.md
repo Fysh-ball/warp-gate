@@ -5,6 +5,83 @@ need, close it. Nothing is left behind.
 
 No accounts. No installation. No database. No dependencies.
 
+## Quickstart
+
+```sh
+git clone https://github.com/Fysh-ball/warp-gate
+cd warp-gate
+docker compose up -d
+```
+
+Open **<http://localhost:3095>**. That is a working gate: create one, paste the link into
+a second tab, and send something.
+
+A second *device* needs two more things, and both are covered below: the port has to leave
+loopback, which means TLS has to be in front of it first, and cross-network connections
+need a STUN server you have chosen.
+
+There is no configuration step and nothing to edit first, and no `--build` flag either:
+`compose.yaml` declares the build, so the first `up` builds it. The image is a stock
+`node:22-alpine` plus this source tree. Nothing is compiled, so once the base image is
+local the build is four `COPY`s and finishes in about a second; the first run also pulls
+that ~163 MB base, and that pull is the only part you will wait for. It runs as uid 1000
+with a read-only root filesystem and every capability dropped. Stop it with
+`docker compose down`.
+
+Without Docker it is one command and no install step, because there are no dependencies:
+
+```sh
+node server/index.js        # Node 22.7 or later, then open http://localhost:3095
+```
+
+**Two things are true of that gate and both matter before you show anyone else.**
+
+**It works on your network only, until you choose a STUN server.** `WG_STUN_URL` is unset
+out of the box, so browsers gather host candidates only and two devices can find each
+other on one LAN and nowhere else. That is deliberate: naming a STUN server tells a third
+party who is connecting, and inheriting that silently is not a decision you made. The
+interface says so rather than just failing. `WG_STUN_URL=stun:stun.cloudflare.com:3478
+docker compose up -d` is what the public instance uses, and
+[deploy/SELF-HOSTING.md](deploy/SELF-HOSTING.md) explains why that particular choice does
+not transfer automatically to a deployment that is not already behind Cloudflare.
+
+**`http://localhost` works and `http://<your-lan-ip>` does not.** This is the trap, so it
+is worth being exact about. Warp Gate encrypts with the Web Crypto API
+(`crypto.subtle`), which browsers expose in a *secure context* only, and the W3C rule for
+what counts is TLS **or** a loopback address: `localhost`, `127.0.0.1` and `[::1]` are
+secure over plain HTTP, and `192.168.1.20` is not. So moving the published port from
+`127.0.0.1:3095:3095` to `3095:3095` and browsing to the machine's LAN address gives you
+a page that loads perfectly, a landing that looks right, and a gate that cannot derive a
+key.
+
+Measured 2026-08-10 in headless Chromium 147.0.7727.15 against **one** container built by
+the quickstart, loading `/app` from two origins that reach the same process, so the only
+variable is the address in the bar:
+
+| Origin | `isSecureContext` | `crypto.subtle` | `navigator.serviceWorker` | `getUserMedia` |
+|---|---|---|---|---|
+| `http://127.0.0.1:3095` | `true` | `object` | present | `function` |
+| `http://172.16.34.2:3095` | `false` | **`undefined`** | absent | `undefined` |
+
+Both served an identical `/app` with the title "Warp Gate", which is the point: the page
+renders and the primitives underneath it are gone. Nothing in `public/js` tests for
+`crypto.subtle` before using it, so on the second row the failure is an uncaught
+`TypeError` and not a message. The camera scanner and the streamed-download service worker
+*do* check `isSecureContext`, so those two disappear quietly rather than breaking, which
+is the more confusing half of the symptom.
+
+**Put TLS in front of it before you move it off loopback.** `compose.yaml` is set up for
+exactly that: it binds `127.0.0.1` and leaves the proxy to you.
+
+Everything else, including the environment variables, the suggestion box and the
+Cloudflare and STUN reasoning, is in [deploy/SELF-HOSTING.md](deploy/SELF-HOSTING.md).
+The repository ships two compose files and they are not interchangeable:
+
+| File | For |
+|---|---|
+| `compose.yaml` | The quickstart above. Works unedited, builds the image, binds loopback, writes nothing to disk. |
+| `deploy/docker-compose.yml` | The fuller reference: what the public instance runs. Bind-mounted source instead of a built image, a Cloudflare tunnel, and the suggestion box on a host directory. |
+
 ## What it does
 
 Devices open a link. A gate seats up to six devices (`WG_MAX_PARTICIPANTS`; two is
@@ -58,23 +135,42 @@ conclusions:
 
 ## Running it
 
+The quickstart at the top of this file is the short path. This section is the detail
+behind it.
+
 ```sh
 node server/index.js
 ```
 
-That is the whole thing. Node 22 or later, no install step, no build step, no package
-manager. Open `http://127.0.0.1:3095`.
+That is the whole thing. No install step, no build step, no package manager. Open
+`http://127.0.0.1:3095`.
+
+**Node 22.7 or later**, and the floor is not arbitrary: `server/*.js` are ES modules and
+there is no `package.json` to declare it, so they load only on a Node that detects module
+syntax on its own, which has been the default since 22.7.0. An older 22.x exits at start
+with `ERR_REQUIRE_ESM`. The container has no such trap, because the image pins the `22`
+tag and that always resolves above the floor.
 
 ### Self-hosting
 
 ```sh
 git clone https://github.com/Fysh-ball/warp-gate && cd warp-gate
+
+# the quickstart, again: builds the image, binds loopback, keeps nothing on disk
+docker compose up -d
+
+# or without a container at all
 node server/index.js                     # http on 3095
 
 # behind TLS, with a STUN server so it works across networks:
 WG_STUN_URL=stun:stun.cloudflare.com:3478 \
 WG_TRUST_PROXY=1 WG_HSTS=1 node server/index.js
 ```
+
+`WG_TRUST_PROXY=1` belongs in that last line and nowhere near a directly reachable
+instance: it makes the server believe a forwarding header, which anyone who can reach the
+port can then write. It also fails closed in a way that looks like working. Read the
+section on it in [deploy/SELF-HOSTING.md](deploy/SELF-HOSTING.md) before setting it.
 
 **STUN is opt-in, and that is deliberate.** Out of the box `WG_STUN_URL` is unset and
 `WG_STUN_ENABLED` is off, so Warp Gate advertises no STUN server to browsers and opens
@@ -91,10 +187,12 @@ Cloudflare and does not transfer automatically to yours. `deploy/SELF-HOSTING.md
 explains it, including why self-hosting the built-in responder in `server/stun.js`
 turned out to be the more exposing option rather than the more private one.
 
-Put any TLS terminator in front of it. `deploy/docker-compose.yml` is a working example
-using a stock node image with the source mounted read-only, and `deploy/SELF-HOSTING.md`
-explains the STUN and proxy choices. Every option is an environment variable in
-`server/config.js`.
+Put any TLS terminator in front of it. `compose.yaml` at the repository root is the
+working starting point and `deploy/docker-compose.yml` is the fuller reference that the
+public instance runs; `deploy/SELF-HOSTING.md` explains the STUN and proxy choices and
+tabulates all 43 environment variables against their defaults. `server/config.js` is the
+authority for every one of them, and it refuses to start rather than fall back to a
+default on a value it cannot parse.
 
 ### Capacity
 
@@ -117,20 +215,42 @@ Handshake relays were still delivered at every load, and every gate was released
 teardown. A seat costs roughly 33-39 KB whichever way the gates are shaped, so cost tracks
 seats rather than gates.
 
+**Every figure above is idle cost**, measured with gates seated and streams attached but
+nothing backing up. Read them as the floor a deployment sits at, not as a bound on what
+it can reach.
+
 **Watch the interaction between the two defaults.** The shipped `deploy/docker-compose.yml` caps
 the container at 128 MB, and the shipped `WG_MAX_ROOMS` is 200. Two hundred *full*
-six-seat gates measured 114 MB, which is 89% of that limit before counting rate-limit
-state. Two hundred two-seat gates is a comfortable 90 MB. If you expect large gates, either
+six-seat gates measured 114 MB idle, which is 89% of that limit before counting rate-limit
+state. Two hundred two-seat gates is a comfortable 90 MB idle. If you expect large gates, either
 raise `mem_limit` or lower `WG_MAX_ROOMS`: the two defaults were chosen when a gate held
 exactly two devices and they have not been retuned for six.
 
-Within a 128 MB container the practical ceiling is roughly 850 two-seat gates or 270
-six-seat ones. A Raspberry Pi is still more than enough, which was the design target.
+Within a 128 MB container the practical *idle* ceiling is roughly 850 two-seat gates or
+270 six-seat ones. A Raspberry Pi is still more than enough for that, which was the design
+target.
 
-Configuration is environment variables, all optional: see `server/config.js`.
+**The idle numbers are not the worst case**, and the gap used to be enormous. A slow or
+wedged reader makes the server queue bytes it cannot flush, and the per-stream cap was
+1 MiB with no ceiling on the sum: 200 gates of six seats is 1,200 streams, so the
+allowance in aggregate was about 1.2 GB against a 128 MB container.
 
-For real deployment, including the Cloudflare and STUN decisions, read
-[deploy/SELF-HOSTING.md](deploy/SELF-HOSTING.md).
+That is now bounded at both levels. Each stream may hold
+`WG_MAX_STREAM_BACKLOG_BYTES` of queued-but-unflushed data, **256 KiB** by default, before
+`server/rooms.js` calls it a dead reader and destroys it. The sum across every stream in
+the process is bounded separately by `WG_MAX_TOTAL_BACKLOG_BYTES`, 8 MiB by default: once
+that is spent, the next stream that is *itself* holding queued bytes is dropped, so 1,200
+stalled readers cost 8 MiB rather than 1.2 GB. A stream draining normally holds nothing and
+is never dropped for somebody else's backlog, which is the property that makes an
+aggregate bound safe to have at all: without it, one slow reader could evict healthy ones.
+
+**Do not size a box from the idle table alone**, and do keep `mem_limit` set: it is the
+backstop for everything this bound does not cover.
+
+Configuration is environment variables, all optional. The complete table, every variable
+against the default `server/config.js` actually applies, is in
+[deploy/SELF-HOSTING.md](deploy/SELF-HOSTING.md), which also covers the Cloudflare and
+STUN decisions and the one feature that touches disk.
 
 ## How it is put together
 
@@ -138,24 +258,48 @@ For real deployment, including the Cloudflare and STUN decisions, read
 server/           the signalling process, Node standard library only
   index.js        HTTP, static files, security headers, shutdown
   rooms.js        the in-memory room map, idle / hard / absolute deadlines, sweeper
-  signal.js       config / health / room / create / join / relay / bye / SSE event stream
+  signal.js       config / health / room / create / join / relay / bye / suggest / SSE
   stun.js         an RFC 5389 binding responder, off unless WG_STUN_ENABLED=1
   limits.js       rate limiting that does not retain IP addresses
+  suggestions.js  the suggestion box, off unless WG_SUGGESTIONS_PATH is set. The one
+                  thing this server writes to disk
 public/           the client, plain ES modules, no framework
   js/crypto.js    key schedule, AEAD framing
   js/session.js   the protocol state machine
+  js/link.js      one peer link: the pairwise handshake and its message types
   js/peer.js      WebRTC and backpressure
   js/transfer.js  chunking and receive-sink selection
+  js/resume.js    picking a transfer back up where it stopped
   js/download.js  streamed downloads through the browser's own download manager
   sw.js           the service worker that makes those streamed downloads possible
+  js/vault.js     surviving a reload on a password gate
   js/qr.js        a QR encoder written here against ISO/IEC 18004, not a vendored library
+  js/qrdecode.js  the matching decoder, loaded only when the camera is used
+  js/qrscan.js    camera frames to a gate code, loaded only when scanning starts
+  js/saswords.js  the two spoken words, loaded at gate creation
+  js/gameplay.js  the game engines, loaded only when a board is opened
+  js/gameui.js    board rendering, and the one stylesheet that comes with it
   js/app.js       the interface
 tools/            operational probes
-tests/            six suites, all runnable offline
+tests/            every suite runnable offline, with no network and no fixtures
 ```
 
-The server holds one `Map` of rooms, plus in-memory rate counters, and nothing else.
-Restarting it destroys every live gate, which is the intended behaviour.
+That `public/js` list is a guide to the interesting files, not the full directory:
+several of them are deliberately loaded late, which is why the gate's eager weight is
+smaller than the tree suggests and why `tests/size.test.mjs` fails the build if that
+stops being true. For the authoritative list of suites, read `tests/run-all.sh` rather
+than a count written here: a number in prose drifts the moment a suite is added, and
+this one already had.
+
+The server holds one `Map` of rooms, plus in-memory rate counters, and nothing else on
+any path a gate touches. Restarting it destroys every live gate, which is the intended
+behaviour.
+
+The one exception is the suggestion box. If `WG_SUGGESTIONS_PATH` is set, `POST
+/api/suggest` appends what somebody typed to a file: the text and the hour it arrived,
+and deliberately no IP, no header, and nothing from the signalling side. It is off in a
+bare checkout and **on in `deploy/docker-compose.yml`**, so the reference deployment does
+write to disk. `deploy/SELF-HOSTING.md` says what that commits you to.
 
 ## Security
 

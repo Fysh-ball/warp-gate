@@ -7,6 +7,13 @@
 <meta name="color-scheme" content="dark light">
 <title>Warp Gate</title>
 <link rel="stylesheet" href="/css/style.css">
+<!-- The same install metadata as the gate. A visitor who never leaves the front page can
+     still install it, and start_url takes them to /app when they open it. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
 </head>
 <body>
 
@@ -50,7 +57,10 @@
   </symbol>
 </svg>
 
-<header class="bar">
+<!-- lp-bar is what carries the sweeping rule under the masthead. It is landing-only, and
+     the class is how the stylesheet knows: the gate uses the same .bar and must not get a
+     perpetual animation in peripheral vision above the SAS words. -->
+<header class="bar lp-bar">
   <div class="brand">WARP GATE</div>
   <div class="bar-right">
     <!-- No status readout here. Nothing on this document can be in a state, so "idle"
@@ -167,6 +177,13 @@
           <li>nothing stored</li>
           <li>runs in the browser</li>
         </ul>
+        <!-- WCAG SC 2.2.2 (Pause, Stop, Hide) is level A, and two things on this page
+             need it: the hero word tumbles every 2.4 seconds forever, and the gate
+             preview auto-updates, which has no five-second grace at all. Both already
+             skip while the tab is hidden, which is a good instinct and is NOT a 2.2.2
+             mechanism: it is not reachable by the user and does nothing while the tab is
+             on screen. One button answers both, plus the header sweep. -->
+        <button type="button" class="link" id="motion-toggle" aria-pressed="false">Pause motion</button>
       </div>
 
       <!-- Where the working controls used to be. They are on /app now: this document
@@ -253,60 +270,99 @@
     </section>
 
     <section class="lp-section">
-      <p class="lp-eyebrow">Candidates</p>
-      <h2 class="lp-h2">What is missing, and what would be nice.</h2>
-      <p class="lp-lede">Marked by whether it is a real gap in what the product already claims,
-      or an addition worth considering.</p>
+      <p class="lp-eyebrow">Features we have</p>
+      <h2 class="lp-h2">Everything below is built and live.</h2>
+      <p class="lp-lede">This list used to be a roadmap. It is not one any more: every item on
+      it shipped. What replaces it is the box at the end, which is where the next one comes
+      from.</p>
       <div class="lp-road">
         <div class="lp-card">
-          <span class="lp-tag lp-tag-live">Shipped</span>
+          <span class="lp-tag lp-tag-live">Live</span>
           <h3>More than two people</h3>
-          <p>A gate is a small full mesh now. Every pair runs its own connection and its own
-          keys, so nobody relays anybody else's traffic. Capped deliberately: the number of
+          <p>A gate is a small full mesh. Every pair runs its own connection and its own keys,
+          so nobody relays anybody else's traffic. Capped deliberately: the number of
           connections grows with the square of the group.</p>
         </div>
         <div class="lp-card">
-          <span class="lp-tag lp-tag-live">Shipped</span>
+          <span class="lp-tag lp-tag-live">Live</span>
           <h3>Survive a phone reload on a password gate</h3>
           <p>A refresh no longer drops you out. The stretched password key is held for the
           tab, so the page comes back into the same gate without asking again.</p>
         </div>
         <div class="lp-card">
-          <span class="lp-tag lp-tag-live">Shipped</span>
+          <span class="lp-tag lp-tag-live">Live</span>
           <h3>Resume a big transfer</h3>
           <p>A dropped connection costs the chunks that were in flight, not the file. The
           receiver says which chunks it holds and the sender sends only those.</p>
         </div>
         <div class="lp-card">
-          <span class="lp-tag">Nice to have</span>
+          <span class="lp-tag lp-tag-live">Live</span>
           <h3>Install it, and share into it</h3>
-          <p>A PWA with a share target: hold a photo in the gallery, share to Warp Gate, gate
-          opens with it already attached.</p>
+          <p>A PWA with a share target: hold a photo in the gallery, share to Warp Gate, and
+          the gate opens with it already attached.</p>
         </div>
         <div class="lp-card">
-          <span class="lp-tag">Nice to have</span>
+          <span class="lp-tag lp-tag-live">Live</span>
           <h3>Scan a code with the camera</h3>
-          <p>Today the phone shows the QR and the laptop reads it. The reverse direction needs
-          the camera.</p>
+          <p>The phone can now read the laptop's QR as well as show its own. The frames are
+          decoded on the device and thrown away; the camera is only ever open while the
+          scanner is.</p>
         </div>
         <div class="lp-card">
-          <span class="lp-tag">Nice to have</span>
+          <span class="lp-tag lp-tag-live">Live</span>
           <h3>Say the same two words</h3>
-          <p>A short pair of words derived from the live key. If both screens match, nobody is
-          sitting in the middle.</p>
+          <p>Two words derived from the live key, beside the five digits. Read them out. If
+          both screens agree, nobody is sitting in the middle.</p>
         </div>
         <div class="lp-card">
-          <span class="lp-tag lp-tag-live">Already true</span>
+          <span class="lp-tag lp-tag-live">Live</span>
+          <h3>Something to do while you wait</h3>
+          <p>Chess, connect four, tic tac toe and battleships, played over the same
+          encrypted channel as everything else. The moves are not sent to a server, and in
+          battleships not even to the other player: each device only ever knows where its own
+          ships are.</p>
+        </div>
+        <div class="lp-card">
+          <span class="lp-tag lp-tag-live">Live</span>
           <h3>Works when both of you are behind the same router</h3>
           <p>The awkward case that breaks most tools. It was broken here too, and is fixed.</p>
         </div>
         <div class="lp-card">
-          <span class="lp-tag">Nice to have</span>
+          <span class="lp-tag lp-tag-live">Live</span>
           <h3>Run your own</h3>
           <p>One container, no build step, no dependencies. The trust question is who serves
           the page, so self-hosting is the honest answer to it.</p>
         </div>
       </div>
+    </section>
+
+    <!-- The suggestion box. Deliberately not an email address: an address is a mailbox to
+         keep clean, an inbox to log into, and a piece of the operator's identity on a page
+         that asks nobody else for theirs.
+
+         What this posts is the text and nothing else. No name, no address, no reply path,
+         and the server records the hour rather than the minute. That is stated on the page
+         because a box that quietly kept more would be the one dishonest thing on the site.
+
+         Hidden until /api/config says this deployment accepts suggestions: a self-hosted
+         copy has no reason to collect them, and a box that silently drops what it is given
+         is worse than no box. -->
+    <section class="lp-section lp-suggest" id="suggest-section" hidden>
+      <p class="lp-eyebrow">What next</p>
+      <h2 class="lp-h2">Tell us what is missing.</h2>
+      <p class="lp-lede">No email, no account, no reply. Type it, send it, and it lands in a
+      text file the person who runs this reads. We keep what you wrote and the hour you wrote
+      it, and nothing else: not your address, not your browser, not which gate you had open.</p>
+      <form class="lp-suggest-form" id="suggest-form">
+        <label class="sr-only" for="suggest-text">Your suggestion</label>
+        <textarea id="suggest-text" rows="4" maxlength="600"
+                  placeholder="It would be good if..."></textarea>
+        <div class="lp-suggest-row">
+          <span class="muted small" id="suggest-count"></span>
+          <button type="submit" class="primary" id="suggest-send">Send it</button>
+        </div>
+        <p class="muted small" id="suggest-said" role="status" aria-live="polite"></p>
+      </form>
     </section>
 
     <section class="lp-section lp-pledge">

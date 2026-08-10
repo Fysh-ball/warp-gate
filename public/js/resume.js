@@ -34,12 +34,18 @@
 //     learns that the resume was refused and learns nothing else from which one it got.
 
 import { b64u } from './crypto.js';
+// The frame layout and the chunk arithmetic live in chunkwire.js, which is a fifth the size
+// of this file and is the only part of chunk-level resume that link.js needs before a
+// transfer exists. Splitting them is what lets everything below be fetched on demand. See
+// the header of chunkwire.js for the reasoning; there is one definition of the frame and
+// this file is downstream of it.
+import {
+  CHUNK_INDEX_BYTES, MAX_CHUNK_INDEX, chunkCount, expectedChunkBytes,
+} from './chunkwire.js';
 
-// Chunk index on the wire, big endian, in front of the chunk's plaintext and therefore
-// inside the AEAD ciphertext and covered by its tag. 32 bits is 4.29e9 chunks: 64 TiB at
-// the 16 KiB floor and far more at the sizes a real connection negotiates.
-export const CHUNK_INDEX_BYTES = 4;
-const MAX_CHUNK_INDEX = 0xffffffff;
+// Re-exported so a caller that already holds this module does not need a second import for
+// the two primitives that pair with the ledger. Nothing here redefines them.
+export { CHUNK_INDEX_BYTES, chunkCount, expectedChunkBytes, frameChunk, unframeChunk } from './chunkwire.js';
 
 // How many ranges a resume message may carry. A ledger with more holes than this reports
 // only its first ranges, which under-reports what is held: the sender then re-sends chunks
@@ -64,31 +70,6 @@ export const RESUME_REFUSED = Object.freeze({
 });
 
 // ---------------------------------------------------------------- chunk arithmetic
-
-/** How many chunks a file of `size` bytes is cut into at `chunkSize`. */
-export function chunkCount(size, chunkSize) {
-  const total = Number(size);
-  const each = Number(chunkSize);
-  if (!Number.isSafeInteger(total) || total < 0) throw new Error(`a file size of ${size} is not a byte count`);
-  if (!Number.isSafeInteger(each) || each <= 0) throw new Error(`a chunk size of ${chunkSize} is not usable`);
-  return Math.ceil(total / each);
-}
-
-/**
- * How long the chunk at `index` must be.
- *
- * Checked on arrival rather than assumed. A peer that sends a SHORT chunk at index k would
- * otherwise shift every byte after it while both sides still agree on the chunk count, and
- * the per-chunk AEAD cannot catch that: the chunk is perfectly authentic, it is just the
- * wrong length. This is the check that keeps index arithmetic and byte arithmetic in step.
- */
-export function expectedChunkBytes(index, chunkSize, size) {
-  const total = Number(size);
-  const each = Number(chunkSize);
-  const start = index * each;
-  if (start >= total) return 0;
-  return Math.min(each, total - start);
-}
 
 /** Byte range [from, to) covered by a chunk range [fromIndex, toIndex). */
 export function bytesInRanges(ranges, chunkSize, size) {
@@ -257,30 +238,6 @@ export class ChunkLedger {
  * not another read. The index goes INSIDE the sealed plaintext, never in the cleartext
  * frame header, so it is covered by the AEAD tag and the server never sees it.
  */
-export function frameChunk(index, bytes) {
-  if (!Number.isSafeInteger(index) || index < 0 || index > MAX_CHUNK_INDEX) {
-    throw new Error(`chunk index ${index} cannot be sent`);
-  }
-  const out = new Uint8Array(CHUNK_INDEX_BYTES + bytes.byteLength);
-  new DataView(out.buffer).setUint32(0, index, false);
-  out.set(bytes, CHUNK_INDEX_BYTES);
-  return out;
-}
-
-/** Split a received chunk frame back into its index and its bytes. */
-export function unframeChunk(plaintext) {
-  if (!(plaintext instanceof Uint8Array)) throw new Error('a file chunk arrived that was not bytes');
-  if (plaintext.byteLength < CHUNK_INDEX_BYTES) {
-    throw new Error(`a file chunk arrived with only ${plaintext.byteLength} bytes, too short to carry its index`);
-  }
-  const view = new DataView(plaintext.buffer, plaintext.byteOffset, plaintext.byteLength);
-  return {
-    index: view.getUint32(0, false),
-    // subarray, not slice: a view over the same buffer, so nothing is copied on the way in.
-    bytes: plaintext.subarray(CHUNK_INDEX_BYTES),
-  };
-}
-
 // ---------------------------------------------------------------- the indexed sink
 
 /**
@@ -308,6 +265,18 @@ export function createIndexedSink(sink, { chunkSize, size, ledger = null, writte
   if (!Number.isSafeInteger(each) || each <= 0) throw new Error(`a chunk size of ${chunkSize} is not usable`);
   if (!Number.isSafeInteger(total) || total < 0) throw new Error(`a file size of ${size} is not a byte count`);
   const totalChunks = chunkCount(total, each);
+  // A declared size that needs more chunks than a 32-bit index can name. The index on the
+  // wire is four bytes (CHUNK_INDEX_BYTES), and that ceiling was enforced only at the two
+  // ends, in ChunkLedger.mark and frameChunk, so a transfer whose upper chunks are simply
+  // unaddressable used to be set up happily and then fail somewhere in the middle of the
+  // file with a message about one chunk index. Refused here instead, before a sink is
+  // opened and before the user is asked where to save it, and naming the real limit.
+  if (totalChunks > MAX_CHUNK_INDEX + 1) {
+    throw new Error(
+      `a ${total}-byte file at ${each} bytes per chunk needs ${totalChunks} chunks, more than the `
+      + `${MAX_CHUNK_INDEX + 1} a 32-bit chunk index can name`,
+    );
+  }
   const book = ledger ?? new ChunkLedger(totalChunks);
   if (book.total !== totalChunks) {
     throw new Error(`the ledger counts ${book.total} chunks but the file is ${totalChunks}`);

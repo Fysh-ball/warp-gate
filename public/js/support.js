@@ -11,9 +11,21 @@
 // Nothing in this file touches a room, a key or a peer connection. Keep it that way:
 // it is the one module the ad-bearing document is allowed to load.
 
-import { encodeQr, drawQr } from './qr.js';
-
 const $ = (id) => document.getElementById(id);
+
+/**
+ * Fetch the QR encoder the first time a donation address is shown.
+ *
+ * Reached by import() so that qr.js is not among the files a browser fetches before the
+ * gate is usable: opening the donation modal is a decision nobody has made at load, and
+ * this file is also loaded by the landing document, which never draws a QR unless asked.
+ * Cached, so the second address is drawn without a second fetch.
+ */
+let qrMod = null;
+async function loadQr() {
+  if (!qrMod) qrMod = await import('./qr.js');
+  return qrMod;
+}
 
 /**
  * Write to the clipboard, reporting rather than throwing when the browser refuses.
@@ -51,7 +63,11 @@ export function wireSupport(report = () => {}) {
       const which = btn.dataset.qr;
       const address = $(`addr-${which}`)?.textContent.trim();
       if (!address) return;
-      openQr(btn.dataset.qrLabel || which.toUpperCase(), address, btn);
+      // open() is async now that the encoder is fetched on first use, and it reports its
+      // own failures. This catch is for anything it does NOT expect: without it a throw
+      // past its internal try becomes an unhandled rejection with no message anywhere.
+      openQr(btn.dataset.qrLabel || which.toUpperCase(), address, btn)
+        .catch((err) => report(`could not open the QR code: ${err.message}`, 'warn'));
     });
   }
 }
@@ -74,7 +90,10 @@ function wireQrModal(report) {
   const addrEl = $('qr-modal-addr');
   const closeBtn = $('qr-modal-close');
   const scrim = $('qr-modal-scrim');
-  if (!modal || !canvas || !titleEl || !addrEl || !closeBtn || !scrim) return () => {};
+  // async, so that the no-op returns a promise exactly as the real open() does. A bare
+  // () => {} here would make the caller's .catch() throw on any document without the
+  // modal markup, which is every document this file is loaded by except the landing.
+  if (!modal || !canvas || !titleEl || !addrEl || !closeBtn || !scrim) return async () => {};
 
   // Whatever was focused when the dialog opened, so focus goes back where the reader
   // left it rather than to the top of the document.
@@ -98,8 +117,13 @@ function wireQrModal(report) {
     back?.focus();
   }
 
-  function open(name, address, from) {
+  // Async only because the encoder is fetched on first use. The modal is still not shown
+  // until the code is actually on the canvas, which is the behaviour that matters here: a
+  // donation panel that appears with a blank white square where the address should be is
+  // worse than one that appears a frame later.
+  async function open(name, address, from) {
     try {
+      const { encodeQr, drawQr } = await loadQr();
       drawQr(canvas, encodeQr(address));
     } catch (err) {
       // Never show a blank white square implying a scannable code.

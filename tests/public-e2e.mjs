@@ -44,17 +44,29 @@ for (const url of dohProviders) {
     const ip = (dns.Answer || []).filter((a) => a.type === 1).map((a) => a.data)[0];
     if (ip) {
       pin = [`--host-resolver-rules=MAP ${host} ${ip}`];
-      check(`resolved ${host} over DNS-over-HTTPS and pinned it for the browser`,
-        pin.length === 1 && /MAP \S+ (\d{1,3}\.){3}\d{1,3}$/.test(pin[0]), pin[0]);
       break;
     }
   } catch (err) {
     void err;
   }
 }
-if (!pin.length) {
-  process.stdout.write(`note  DoH lookup unavailable; falling back to system DNS for ${host}\n`);
-}
+
+// Emitted on BOTH paths, deliberately.
+//
+// This check used to live inside the `if (ip)` above, so a run where neither DoH provider
+// answered simply did not emit it: the suite printed 17 checks instead of 18, exited 0,
+// and nothing said which run had measured what. Observed on 2026-08-10, one run of 17
+// between two runs of 18. A check that silently does not run is the same failure as a
+// check that cannot fail, and it is harder to spot, because the evidence is a number in a
+// summary line nobody diffs.
+//
+// Falling back to system DNS is a legitimate outcome and not a failure, so this does not
+// go red for it. What it does is make the choice VISIBLE and the count STABLE.
+check(pin.length
+  ? `resolved ${host} over DNS-over-HTTPS and pinned it for the browser`
+  : `no DoH answer for ${host}: falling back to system DNS, which this network answers stale`,
+  pin.length === 0 || /^--host-resolver-rules=MAP \S+ (\d{1,3}\.){3}\d{1,3}$/.test(pin[0]),
+  pin[0] || '(unpinned)');
 
 // Wait for the deployment to actually be serving before judging it. Running straight
 // after a container restart otherwise fails on a cold start rather than a defect.

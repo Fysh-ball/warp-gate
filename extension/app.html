@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>Warp Gate</title>
+<!-- EXTENSION COPY of public/app.html. Every change is marked with an EXTENSION PATCH
+     comment and listed in extension/README.md. Produced by extension/sync-from-public.mjs
+     and checked by extension/drift-check.mjs. -->
+<link rel="stylesheet" href="/css/style.css">
+<!-- Installable, and a share target. start_url is /app, so an install from either page
+     opens the gate rather than the pitch. The theme colours are the two backgrounds from
+     style.css: an installed window paints its own chrome with these, and a light-theme
+     phone showing a dark bar around a light page is the tell that this was forgotten. -->
+<!-- EXTENSION PATCH: the <link rel="manifest"> is gone. A web app manifest names a
+     start_url, a scope and a share target on a SERVER, and this document is served out of
+     an extension package, so it only produced a console 404. The share target went with it:
+     that was delivered by public/sw.js, and Chromium refuses to let an extension page
+     register a service worker at all. See js/download.js. -->
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
+</head>
+<body>
+
+<!-- Everything except the status log lives inside .page, which is the scroll container
+     on engines with :has(). That is what stops the fixed status panel painting over the
+     page: instead of floating above the document it becomes the bottom row of a viewport
+     sized flex column, so the scrollable area is the viewport MINUS the panel and the two
+     can never intersect. Engines without :has() keep the old overlay, which is the safe
+     direction to fail in, and the legal pages have no .page so they scroll normally. -->
+<div class="page">
+
+<!-- Icon sprite. Drawn here rather than fetched, because the CSP is `default-src 'none'`
+     and the whole claim of the page is that it loads nothing from anywhere else: a logo
+     is not worth being the one exception. `fill`/`stroke` are presentation ATTRIBUTES,
+     not a style attribute, so they do not trip the inline-style ban either. The sprite is
+     display:none in CSS; a <use> still clones out of it. -->
+<svg class="icon-sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-github" viewBox="0 0 16 16">
+    <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+  </symbol>
+  <symbol id="i-kofi" viewBox="0 0 24 24">
+    <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 8.5h12v5.5a4.5 4.5 0 0 1-4.5 4.5h-3A4.5 4.5 0 0 1 4 14z"/>
+      <path d="M16 10h1.8a2.6 2.6 0 0 1 0 5.2H16"/>
+      <path d="M8 3.6c-.9 1.1.9 1.7 0 2.8M12 3.6c-.9 1.1.9 1.7 0 2.8"/>
+    </g>
+  </symbol>
+  <symbol id="i-btc" viewBox="0 0 24 24">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9.4"/>
+      <path d="M9 7.6h4.3a2.2 2.2 0 0 1 0 4.4H9zM9 12h4.8a2.2 2.2 0 0 1 0 4.4H9zM9 7.6v8.8"/>
+      <path d="M11.2 6.1v1.5M14 6.1v1.5M11.2 16.4v1.5M14 16.4v1.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-xmr" viewBox="0 0 24 24">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9.4"/>
+      <path d="M4.4 16.6V7.9l4.4 4.4L12 9.1l3.2 3.2 4.4-4.4v8.7"/>
+      <path d="M9.4 13.2 12 15.8l2.6-2.6v3.4H9.4z"/>
+    </g>
+  </symbol>
+</svg>
+
+<header class="bar">
+  <!-- The way back to the landing, which is a different document now. Every legal page
+       already does this; before the split there was nowhere for it to go. -->
+  <div class="brand"><a href="/index.html">WARP GATE</a></div>
+  <div class="bar-right">
+    <!-- Hidden on the screens that are not a gate. "idle" in the corner of a landing
+         page is a status for a thing the visitor has not started yet, so it reads as
+         chrome; app.js shows it from the moment a gate exists. -->
+    <span id="status-badge" class="badge badge-idle" hidden>idle</span>
+    <span id="ttl" class="ttl" hidden></span>
+  </div>
+</header>
+
+<!-- Shown when the page is not a secure context. Browsers expose crypto.subtle on TLS or
+     a loopback address only, so on http://<lan-ip> this document loads and renders exactly
+     as it does anywhere else while the primitive the whole product is built on is simply
+     absent. Before this existed the symptom was an uncaught TypeError inside crypto.js and
+     a gate that appeared to hang, which is the worst possible failure for a tool whose
+     claim is that it encrypts.
+
+     Deliberately NOT dismissable, unlike the two banners below it. Those report a
+     limitation somebody may reasonably decide to work around; this one reports that
+     nothing on the page can function, and the create and join buttons are disabled to
+     match. A close button here would only hide the explanation for a screen that stays
+     broken. -->
+<div id="insecure-warning" class="banner" hidden>
+  <strong>This page is not running in a secure context, so it cannot encrypt.</strong>
+  <span id="insecure-warning-text"></span>
+  <p class="muted small">Browsers only provide the Web Crypto API over HTTPS, or on
+  <code>localhost</code>, <code>127.0.0.1</code> and <code>[::1]</code>. Reaching a
+  self-hosted gate at a plain <code>http://</code> LAN address gives you this page without
+  the cryptography underneath it, so opening a gate here is disabled rather than left to
+  fail halfway through.</p>
+</div>
+
+<div id="webrtc-warning" class="banner" hidden>
+  <strong id="webrtc-warning-title">This browser cannot make direct connections.</strong>
+  <span id="webrtc-warning-text"></span>
+  <ol id="webrtc-steps" class="banner-steps"></ol>
+  <div id="webrtc-path-row" class="path-row" hidden>
+    <code id="webrtc-settings-path"></code>
+    <button id="webrtc-copy-path" class="secondary">Copy</button>
+  </div>
+  <p id="webrtc-path-note" class="muted small" hidden>Browsers do not allow a web page to
+  link to their own settings, so this has to be pasted into the address bar yourself.</p>
+  <p id="webrtc-reassurance" class="muted small"></p>
+  <button id="webrtc-recheck" class="secondary">Re-check</button>
+  <!-- Dismissable, because this banner reports a standing property of the browser and
+       re-states it on every screen: somebody who has read it and decided to carry on
+       anyway should not have to read it again for the rest of the tab's life. The
+       dismissal is per tab (sessionStorage), so a fresh visit tells them again rather
+       than silently hiding a real limitation forever. -->
+  <button class="banner-close" data-dismiss="webrtc-warning" type="button">
+    <span aria-hidden="true">&#215;</span><span class="sr-only">Dismiss this notice</span>
+  </button>
+</div>
+
+<!-- What this browser can RECEIVE. A standing fact about the browser, not an event, so
+     it belongs in the page rather than in the transient status log at the bottom: on any
+     browser without showSaveFilePicker the log was permanently non-empty and permanently
+     covering the last 60px of every screen. app.js fills this in from describeLimit(),
+     which is still the only place that knows the answer. -->
+<div id="receive-note" class="banner note" hidden>
+  <strong id="receive-note-title">What this browser can receive</strong>
+  <span id="receive-note-text"></span>
+  <button class="banner-close" data-dismiss="receive-note" type="button">
+    <span aria-hidden="true">&#215;</span><span class="sr-only">Dismiss this notice</span>
+  </button>
+</div>
+
+<main id="main">
+
+  <!-- onboarding ------------------------------------------------------->
+  <!-- The consent gate, and the first thing a new visitor sees.
+
+       Three blocks: the headline, the five disclosures, and the agreement. On a phone
+       they stack in that order, which is the order you read them in. From 1024px up the
+       agreement becomes a sticky rail beside the disclosures, so the primary action is
+       above the fold on a normal desktop WITHOUT hiding anything: the disclosures ship
+       open and get two columns at 1440px, which shows more of the informed part of
+       informed consent on a wide screen, not less. app.js collapses them on a narrow
+       viewport, so the failure mode with no script is "everything is shown".
+
+       The five disclosures are a RULED LIST, not five identical cards. They are still
+       <details>, because a phone cannot show five open panels without burying the
+       agreement, but they carry no panel of their own: a hairline rule and a number.
+       That takes this screen from eight boxes to one, and the one that is left is the
+       agreement, which is the only thing on the page you have to do. The severe
+       disclosure breaks the numbering with "!" instead of a number, so it is findable
+       without reading. Both marks are drawn from a CSS counter in style.css.
+
+       The button stays disabled until the box is ticked, and the agreement text is not
+       abbreviated for either layout. -->
+  <section id="screen-onboarding" class="screen" hidden>
+   <div class="ob-grid">
+    <div class="ob-head">
+    <p class="eyebrow">Before you open a gate</p>
+    <h1 class="wg-h1">A temporary encrypted bridge between your devices.</h1>
+    <p class="lede">Open a gate, send what you need, close it. Nothing is stored anywhere.</p>
+    </div>
+
+    <div class="ob-notes">
+    <p class="eyebrow ob-notes-brow">Five things worth knowing first</p>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">Your messages and files are encrypted here, in this browser</span>
+        <span class="disc-hint">what the server can and cannot see</span></summary>
+      <div class="disc-body">
+        <p>Everything is encrypted before it leaves your device. The server relays an
+        encrypted handshake and then steps out of the way entirely. It never receives
+        the keys, the file contents, the messages, or even the file names.</p>
+        <p>The secret that unlocks the gate lives after the <code>#</code> in the link,
+        which browsers never send to a server.</p>
+      </div>
+    </details>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">Anyone with the link can join</span>
+        <span class="disc-hint">treat it like a password</span></summary>
+      <div class="disc-body">
+        <p>There are no accounts and no identity checks. The link is the only credential.
+        Send it the way you would send a password, and only to the person you mean to.</p>
+        <p id="cap-note">A gate holds a small group of devices. Once it is full, any further
+        device is refused.</p>
+      </div>
+    </details>
+
+    <details class="disc warn" open>
+      <summary><span class="disc-title">Everyone in a gate sees everyone else's IP address</span>
+        <span class="disc-hint">Warp Gate is confidential, not anonymous</span></summary>
+      <div class="disc-body">
+        <p>Warp Gate connects your devices directly to each other. That is what keeps the
+        server out of the data path, but it means every device in a gate learns the network
+        address of every other device in it.</p>
+        <p>This applies even if you loaded this page through a proxy. If hiding your
+        network address matters, use a VPN or Tor that you trust.</p>
+      </div>
+    </details>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">What this does not protect you from</span>
+        <span class="disc-hint">the honest limits</span></summary>
+      <div class="disc-body">
+        <ul>
+          <li>A compromised device, browser or extension on either end.</li>
+          <li>Screenshots, or a recipient who saves and forwards what you sent.</li>
+          <li>Anyone you choose to give the link to.</li>
+          <li>Traffic analysis: sizes and timings are visible to the network.</li>
+        </ul>
+        <p>For something extremely sensitive, encrypt it yourself before sending it as
+        well. Full detail is in the <a href="/privacy.html">Privacy Policy</a>.</p>
+      </div>
+    </details>
+
+    <details class="disc" id="instance-disc" open>
+      <summary><span class="disc-title" id="instance-title">Who is serving you this page</span>
+        <span class="disc-hint">worth knowing</span></summary>
+      <!-- EXTENSION PATCH. Upstream this says "whoever serves this page controls the code
+           that does the encryption", which is the right thing to tell someone visiting a
+           website and the wrong thing to tell someone running this package: the code did not
+           come over the network at all. What replaces it splits the sentence into the two
+           questions that now have different answers, and is deliberately blunt about the
+           half that installing something does NOT fix. -->
+      <div class="disc-body">
+        <p id="instance-body"><strong>The code you are running came from this extension.</strong>
+        It was installed once and it changes only when the browser applies a signed update
+        from the store you installed it from. Nothing on this page was fetched over the
+        network, so a server, a CDN, or anyone able to terminate TLS in front of one, cannot
+        hand this device a modified copy the way they can hand one to a browser visiting a
+        website. That is the single thing installing this fixes, and it is the thing the
+        website version cannot fix for itself.</p>
+        <p><strong>It signals to <span id="instance-origin">https://warpgate.fysh.site</span>,
+        and that server is still not trusted.</strong>
+        <span id="instance-origin-note" hidden>You have pointed this at an origin of your own
+        choosing.</span>
+        It never holds a key and every payload it relays is ciphertext, but it does see the
+        metadata: your address, the timing, the room id, request sizes, how long the gate
+        lasted, and your per-seat capability token. Installing an extension changes none of
+        that. Nor does it protect you from a compromised device, from a browser extension
+        with more privilege than this one, or from the other people in the gate, who are
+        legitimate participants and can keep anything you send them.</p>
+        <p>You can point this at your own server on the
+        <a href="/index.html">extension's own page</a>.</p>
+        <p><strong>Whoever serves this page controls the code that does the
+        encryption.</strong> That is true of every website that encrypts in the browser.
+        A hostile operator could serve a modified page and nothing here would reveal it.
+        If you need certainty, host it yourself from source you have read: there are no
+        dependencies and no build step, so the files served are the files in the
+        repository. Full detail in the <a href="/faq.html">FAQ</a>.</p>
+      </div>
+    </details>
+
+    </div><!-- /.ob-notes -->
+
+    <!-- The same assurance strip the home hero carries, in the same monospace, saying
+         the same four things. It is the product's summary of itself, so the consent
+         gate and the front page should not be making it in two different voices. -->
+    <ul class="lp-assurances ob-assurances">
+      <li>no account</li>
+      <li>no upload</li>
+      <li>nothing stored</li>
+      <li>runs in the browser</li>
+    </ul>
+   </div><!-- /.ob-grid -->
+
+   <!-- The close of the consent screen, and its own segment: the picture of the thing
+        the five disclosures just described, and then the single action they lead to.
+
+        The agreement used to be a sticky rail beside the list. That put the button above
+        the fold, but it also left a column of empty page under it for the whole height of
+        the disclosures, and it made agreeing something you could do while the reading was
+        still off to one side. Full width, after the diagram, the list is read and then
+        signed. The button is below the fold on a laptop, which is the honest shape of
+        informed consent rather than a defect. -->
+   <div class="ob-close">
+    <div class="bridge" aria-hidden="true">
+      <svg viewBox="0 0 420 74" preserveAspectRatio="xMidYMid meet">
+        <rect class="node" x="12" y="19" width="52" height="36" rx="6"/>
+        <rect class="screen-glow" x="20" y="27" width="36" height="16" rx="2"/>
+        <rect class="node" x="356" y="19" width="52" height="36" rx="6"/>
+        <rect class="screen-glow" x="364" y="27" width="36" height="16" rx="2"/>
+        <line class="wire" x1="70" y1="37" x2="350" y2="37"/>
+        <line class="flow" x1="70" y1="37" x2="350" y2="37"/>
+        <g class="lock" transform="translate(198 22)">
+          <rect x="0" y="10" width="24" height="18" rx="3"/>
+          <path d="M5 10 V6 a7 7 0 0 1 14 0 v4" fill="none"/>
+        </g>
+      </svg>
+      <p class="bridge-cap">Encrypted here. Decrypted there. Nothing in between keeps a copy.</p>
+    </div>
+
+    <div class="ob-agree">
+    <div class="agreement">
+      <p class="eyebrow">The agreement</p>
+      <label class="check">
+        <input type="checkbox" id="agree-check">
+        <span>I have read and agree to the <a href="/terms.html" target="_blank" rel="noopener">Terms of Use</a>,
+        the <a href="/acceptable-use.html" target="_blank" rel="noopener">Acceptable Use Policy</a> and the
+        <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>. I understand that
+        <strong>I am solely responsible and liable for everything I send, receive or do using Warp Gate</strong>,
+        that the service is provided with no warranty of any kind, and that I will not use it for
+        any unlawful purpose.</span>
+      </label>
+      <button id="onboarding-done" class="primary" disabled>Agree and continue</button>
+      <p id="agree-hint" class="muted small">Tick the box above to continue.</p>
+    </div>
+    </div><!-- /.ob-agree -->
+   </div><!-- /.ob-close -->
+  </section>
+
+  <!-- home ------------------------------------------------------------->
+  <!-- The two controls, and nothing else. Everything that used to sit around them
+       here -- the hero, how it works, the pledge -- is on the landing document now,
+       which is the page you came from. This one is reached deliberately: either by
+       pressing "Open a gate" on the landing or by following an invite link, so it
+       opens with the cursor near the thing you came to do rather than a pitch. -->
+  <section id="screen-home" class="screen" hidden>
+
+      <section class="lp-actions" id="gate-controls">
+        <div class="lp-action lp-action-lead">
+          <h2>Open a gate</h2>
+          <p class="muted small">You get a link and a QR code to give to the other devices.</p>
+
+          <!-- Expiry and room password are settings with working defaults, so they are
+               one line of plain text saying what the defaults currently are, plus a
+               change link. They used to be a disclosure panel that had to be opened
+               before it could be understood, on a screen whose problem was too many
+               panels. The line is written by app.js from the live values, so it cannot
+               drift from what pressing Create will actually do.
+
+               #create-options is a plain container now, not a <details>. landing.js
+               still opens it on a wide viewport, which is a no-op on a div and is
+               deliberately left alone: this file does not own landing.js, and the dead
+               block there should be deleted by whoever does. -->
+          <div id="create-options" class="gate-opts">
+            <p class="gate-opts-line">
+              <span id="gate-opts-summary">30 minutes &middot; no password</span>
+              <button type="button" id="gate-opts-toggle" class="link"
+                      aria-expanded="false" aria-controls="gate-opts-panel">change</button>
+            </p>
+            <div id="gate-opts-panel" class="gate-opts-panel" hidden>
+              <!-- Not "destroy the gate after". The server treats this as an IDLE timeout
+                   and pushes the deadline forward on every sweep while either side still
+                   has the page open (server/rooms.js extendIfActive), so a live gate does
+                   not die on this clock. What it actually bounds is how long the gate
+                   survives with nobody there. -->
+              <label for="ttl-select">Close the gate after this long with nobody on it</label>
+              <select id="ttl-select"></select>
+              <p class="muted small">While either device has the page open the gate stays up,
+              however long that is. This is the idle limit, not a countdown on the
+              conversation.</p>
+              <label for="room-password">Room password (optional)</label>
+              <input id="room-password" type="password" autocomplete="new-password"
+                     placeholder="Leave blank for none">
+              <p class="muted small">A second factor on top of the link. Useful if the link might be
+              seen by someone else, for example in a group chat. Tell it to the other person
+              separately.</p>
+            </div>
+          </div>
+
+          <button id="create-btn" class="primary">Create gate</button>
+        </div>
+
+        <div class="lp-action">
+          <h2>Join one</h2>
+          <p class="muted small">Paste the link, or type the eight words shown on the other
+             device. Capitals, spaces and hyphens all work.</p>
+          <label class="sr-only" for="join-input">Gate link or gate code</label>
+          <input id="join-input" type="text" inputmode="latin" autocomplete="off"
+                 autocapitalize="characters" spellcheck="false"
+                 placeholder="WARP-WORD-WORD-WORD-...">
+          <label class="sr-only" for="join-password">Room password, if the gate has one</label>
+          <input id="join-password" type="password" autocomplete="current-password"
+                 placeholder="Room password, if the gate has one">
+          <button id="join-btn" class="secondary">Join gate</button>
+          <!-- Hidden until the page has checked that this browser can open a camera at
+               all. A button that is always there and fails on press is worse than no
+               button: it reads as the site being broken rather than the device lacking
+               a camera or the page not being on HTTPS. -->
+          <button id="scan-btn" class="link" hidden>Scan the code with the camera</button>
+          <div id="scan-panel" class="scan-panel" hidden>
+            <!-- muted and playsinline are set here as well as in JS: iOS takes an
+                 un-attributed video fullscreen on play(), and the attribute is read
+                 before the script runs. -->
+            <video id="scan-video" class="scan-video" muted playsinline></video>
+            <p class="muted small" id="scan-note">Point the camera at the other screen. Nothing
+               leaves this device: the picture is read here and thrown away.</p>
+            <button id="scan-cancel" class="secondary">Stop the camera</button>
+          </div>
+        </div>
+        <p id="home-error" class="error" hidden></p>
+      </section>
+
+    <!-- The "How this works" disclosure and the "Read the security notes again" link used
+         to sit here. Both were re-reading, not doing: the security notes are shown in full
+         before anyone gets this far, and the paragraph repeated them a third time. The
+         screen is now the two things you came to do. -->
+  </section>
+
+  <!-- password prompt -------------------------------------------------->
+  <section id="screen-password" class="screen" hidden>
+    <div class="pane">
+    <p class="eyebrow">Locked gate</p>
+    <h1 class="wg-h1">This gate needs a password</h1>
+    <p class="lede">The person who created it set one. Ask them for it: it is not in the
+    link, and the server does not have it.</p>
+    <label class="sr-only" for="password-input">Room password</label>
+    <input id="password-input" type="password" autocomplete="current-password"
+           placeholder="Room password">
+    <button id="password-submit" class="primary">Continue</button>
+    <p id="password-error" class="error" hidden></p>
+    <button id="password-cancel" class="danger">Cancel</button>
+    </div>
+  </section>
+
+  <!-- waiting ---------------------------------------------------------->
+  <section id="screen-waiting" class="screen" hidden>
+    <div class="pane">
+    <p class="eyebrow">Gate open</p>
+    <h1 id="waiting-title" class="wg-h1">Waiting for the other device</h1>
+    <p class="lede">Scan this with the other device's camera, or send it the link.</p>
+
+    <div id="share-hidden">
+      <p class="muted">The gate code is hidden until you choose to show it, so it is not
+      sitting on your screen for anyone nearby to read.</p>
+      <button id="reveal-share" class="primary">Show the code and QR</button>
+      <div class="row">
+        <button id="copy-link" class="secondary">Copy link</button>
+        <button id="copy-code" class="secondary">Copy code</button>
+      </div>
+      <p class="muted small">Copying does not put it on screen.</p>
+    </div>
+
+    <div id="share-shown" hidden>
+      <div class="qr-wrap" id="qr-wrap">
+        <canvas id="qr" width="320" height="320" aria-label="QR code containing the gate link"></canvas>
+      </div>
+
+      <div class="code-block">
+        <div class="label">Gate code</div>
+        <div id="room-code" class="code"></div>
+      </div>
+
+      <div class="row">
+        <button id="hide-share" class="secondary">Hide again</button>
+        <button id="copy-link-2" class="secondary">Copy link</button>
+      </div>
+
+      <p class="muted small">Anyone who can read this, including over your shoulder or in a
+      photograph, can join this gate until it is full. Add a room password if that worries
+      you.</p>
+    </div>
+
+    <button id="waiting-sever" class="danger">Cancel</button>
+    </div>
+  </section>
+
+  <!-- connected -------------------------------------------------------->
+  <section id="screen-connected" class="screen" hidden>
+    <div class="route-line">
+      <span id="route-badge" class="badge">connecting</span>
+      <!-- Who is in this gate, this device included. Each participant's name is DERIVED
+           from the room secret and that participant's server-assigned slot id, so every
+           device computes the same name for the same person and no name is ever typed,
+           stored or sent. There is deliberately no way to choose one: the easy path has
+           to be the private one on a tool whose premise is that it does not know who you
+           are. Names last exactly as long as the gate does. -->
+      <span id="roster" class="roster" aria-label="Who is in this gate" hidden></span>
+    </div>
+
+    <div id="messages" class="messages" aria-live="polite"></div>
+
+    <form id="chat-form" class="composer-box">
+      <label class="sr-only" for="chat-input">Message to send</label>
+      <!-- maxlength is the cheap half of the limit: it clamps a paste in the browser
+           before any layout happens. app.js enforces the same number for programmatic
+           input and explains it. The number is bounded by what a single data channel
+           message can actually carry, so anything longer could never have been sent. -->
+      <textarea id="chat-input" rows="3" maxlength="16000"
+                placeholder="Write a message, paste an image, or drop files here"></textarea>
+      <div class="composer-actions">
+        <button type="button" id="attach-btn" class="secondary" title="Attach files">Attach</button>
+        <label class="toggle" title="Hide the message until the other side chooses to reveal it">
+          <input type="checkbox" id="secret-toggle">
+          <span>Secret</span>
+        </label>
+        <span id="compose-hint" class="muted small"></span>
+        <button type="submit" class="primary">Send</button>
+      </div>
+      <input type="file" id="file-input" multiple hidden>
+    </form>
+    <div id="drop-veil" class="drop-veil" hidden>Drop to send</div>
+
+    <!-- Connection details belong to the conversation, not to the rail. The rail is for
+         the two things you act on: the code you read aloud, and the control that destroys
+         the gate. How the bytes are routed is something you consult while looking at the
+         messages, so it sits under them, closed, and does not take a slot next to a
+         destructive button. On a phone this lands in exactly the position it had before,
+         between the composer and Burn. -->
+    <details class="disc compact" id="conn-disc">
+      <summary><span class="disc-title">Connection details</span>
+        <span class="disc-hint" id="conn-hint">how your data is routed</span></summary>
+      <div class="disc-body"><pre id="conn-detail" class="diag">gathering...</pre></div>
+    </details>
+
+    <!-- Games. Closed by default and in the same shape as the connection disclosure,
+         because this is the least important thing on the screen and must not compete
+         with the transcript for attention.
+
+         It sits inside the gate rather than being a page of its own for the same reason
+         everything else does: a game is played over the pair's own encrypted channel and
+         has no server side at all. Moves are control messages. Nothing about a game is
+         stored, and it dies with the gate like everything else here.
+
+         The board and the controls are rendered by js/gameui.js into #game-area. The
+         markup is empty on purpose: there are four games with four different boards, and
+         a shell that described one of them would be wrong for the other three. -->
+    <details class="disc compact" id="games-disc">
+      <summary><span class="disc-title">Games</span>
+        <span class="disc-hint" id="games-hint">something to do while you wait</span></summary>
+      <div class="disc-body">
+        <div id="game-area" class="game-area"></div>
+      </div>
+    </details>
+
+    <!-- The rail: the things you consult rather than read, and the one control that
+         destroys the gate.
+
+         `display: contents` below 1024px, so on a phone these three are laid out as
+         siblings of the transcript and `order` puts the verification code above it and
+         the burn control at the very bottom. From 1024px up the wrapper becomes the
+         rail itself, a flex column in the grid's second track, and Burn is pushed to
+         its foot by `margin-top: auto`. One element, two layouts, no duplication.
+
+         Reading the verification code aloud is the only security check this interface
+         asks a person to make, so it is the largest thing in the rail rather than a
+         small grey run of text sharing a line with a badge, and the instruction for it
+         is printed underneath rather than folded behind a disclosure nobody opens. The
+         wording is unchanged; only its size and its position are. -->
+    <div class="conn-rail">
+      <div class="sas-box">
+        <p class="rail-k">Verification code</p>
+        <p class="sas-v"><strong id="sas">-----</strong></p>
+        <!-- The same number as two words. Five digits read aloud over a phone are five
+             chances to hear a six as a nine; two words are one comparison, and a listener
+             who does not speak the language of the digits can still match them. It carries
+             exactly the bits the digits do, no more: see js/saswords.js. -->
+        <p class="sas-words" id="sas-words" aria-live="polite"></p>
+        <p class="rail-note">Both devices should show the same five digits, and the same two
+        words. If you read them aloud and they match, nothing has been substituted between
+        you. If they differ, burn the gate.</p>
+      </div>
+
+      <button id="sever" class="danger">Burn the gate</button>
+    </div>
+  </section>
+
+  <!-- severed ---------------------------------------------------------->
+  <section id="screen-severed" class="screen" hidden>
+    <div class="pane">
+    <p class="eyebrow">Gate closed</p>
+    <h1 class="wg-h1">Gate burned.</h1>
+    <p id="severed-reason" class="lede"></p>
+    <p class="muted small">The gate, the room and the keys are gone. Nothing further can be
+    sent or received.</p>
+
+    <div id="transcript-holder" hidden>
+      <p class="eyebrow">Kept in this tab</p>
+      <h2 class="wg-h3">What was exchanged</h2>
+      <p class="muted small">Kept so you do not have to run the whole thing again if the
+      connection dropped mid-way. This is held in this tab only: it was never written to
+      disk, never sent anywhere, and it disappears when you close or reload this page.</p>
+      <div id="transcript-mount"></div>
+      <button id="clear-transcript" class="danger">Clear this now</button>
+    </div>
+
+    <button id="restart" class="primary">Open a new gate</button>
+    </div>
+  </section>
+
+  <!-- failure ---------------------------------------------------------->
+  <section id="screen-failed" class="screen" hidden>
+    <div class="pane">
+    <p class="eyebrow">Connection failed</p>
+    <h1 id="failed-title" class="wg-h1">Unable to establish a direct connection</h1>
+    <!-- Two lines, because there are two different things to say and one sentence cannot
+         say both: what happened in plain words, then the specific reason the code found.
+         The plain-words line is set per cause in app.js and is deliberately NOT shared
+         between a network stall and a failed key confirmation: one is bad luck, the other
+         is a security result, and the same friendly sentence in front of both would be a
+         wrong cause on one of them. -->
+    <p id="failed-oops" class="lede"></p>
+    <p id="failed-detail" class="muted small"></p>
+
+    <details class="disc" open>
+      <summary><span class="disc-title">What to try</span><span class="disc-hint">most likely fixes</span></summary>
+      <div class="disc-body">
+        <ul>
+          <li>Put both devices on the same network, which almost always works.</li>
+          <li>Try a different network on either device: mobile data instead of WiFi, or the reverse.</li>
+          <li>Turn off a VPN on either device, or turn one on.</li>
+          <li>Corporate and public guest networks frequently block peer-to-peer traffic outright.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="disc compact">
+      <summary><span class="disc-title">Technical detail</span><span class="disc-hint">for diagnosing</span></summary>
+      <div class="disc-body"><pre id="failed-diag" class="diag"></pre></div>
+    </details>
+
+    <button id="failed-restart" class="primary">Start again</button>
+    </div>
+  </section>
+
+</main>
+
+<section id="extras" class="extras" hidden>
+
+  <ol class="steps">
+    <li class="step"><span class="step-n">1</span><b>Create</b><span>Open a gate on one device.</span></li>
+    <li class="step"><span class="step-n">2</span><b>Share</b><span>Scan the code, or send the link.</span></li>
+    <li class="step"><span class="step-n">3</span><b>Send</b><span>Chat, secrets and files, directly.</span></li>
+    <li class="step"><span class="step-n">4</span><b>Burn it</b><span>The gate and its keys are gone.</span></li>
+  </ol>
+</section>
+
+<footer class="foot">
+  <a href="/faq.html">FAQ</a>
+  <a href="/terms.html">Terms</a>
+  <a href="/acceptable-use.html">Acceptable use</a>
+  <a href="/privacy.html">Privacy</a>
+  <a href="https://ko-fi.com/fysh_yum" target="_blank" rel="noopener noreferrer">Support</a>
+  <a class="foot-gh" href="https://github.com/Fysh-ball/warp-gate" target="_blank" rel="noopener noreferrer">
+    <svg class="ico" aria-hidden="true"><use href="#i-github"></use></svg>GitHub</a>
+  <!-- The AGPL section 13 link, filled from /api/config. It stays separate from the
+       GitHub link above: this one has to name whatever source THIS instance is running,
+       which for somebody else's deployment is not our repository. -->
+  <a id="source-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Source</a>
+</footer>
+
+</div><!-- /.page -->
+
+<!-- The status log, docked and CLOSED.
+
+     It used to be an always-open panel up to --log-max tall, and on a connection that was
+     retrying it filled a quarter of the window with the same three sentences repeated
+     nine times. Worse, it outlived what it was describing: after Burn the gate is gone,
+     every screen behind it has been replaced, and the log was still sitting across the
+     bottom of the page reciting the reconnect attempts of a session that no longer
+     exists.
+
+     So: one line, the most recent one, and a control to open the history. The dock is
+     hidden outright until there is something to say, and severing empties it.
+
+     Why not move it inside Connection details, which is where the user suggested it could
+     go if it had to live somewhere. Because that disclosure only exists on the connected
+     screen, and the log's whole value is on the screens where the connection has NOT
+     happened yet: creating, joining, waiting, reconnecting, failed. Putting it there
+     would have hidden it precisely when it is the only thing explaining what is going on.
+
+     A button and a div, not <details>/<summary>. This file already carries a comment
+     about the chevron work that a summary needs, and none of it is wanted here: this is
+     a one line status readout, not a section heading.
+
+     aria-live rides on the visible line, not on the history. A live region inside a
+     hidden container announces nothing, so putting it on #log was announcing the newest
+     message only while the history happened to be open. -->
+<div id="log-dock" class="log-dock" hidden>
+  <button type="button" id="log-toggle" class="log-toggle" aria-expanded="false" aria-controls="log">
+    <span class="log-latest" id="log-latest" aria-live="polite"></span>
+    <span class="log-more" id="log-more" aria-hidden="true"></span>
+  </button>
+  <div id="log" class="log"></div>
+</div>
+
+<!-- the ask ------------------------------------------------------------
+     Shown ONLY after a gate that actually connected and then ended. It is wired in app.js
+     against a flag set on STATE.CONNECTED and nowhere else, because asking somebody for
+     money straight after the thing failed to work for them is the fastest way to make them
+     never come back. The failure screen has no path to this markup at all: that is the
+     point, not an oversight.
+
+     Outside `.page` on purpose, like the QR lightbox on the landing: `.page` is the scroll
+     container, and a fixed overlay inside it inherits its clipping. -->
+<div id="donate-modal" class="wg-modal" hidden>
+  <div id="donate-scrim" class="wg-modal-scrim"></div>
+  <div class="wg-modal-panel" role="dialog" aria-modal="true" aria-labelledby="donate-title">
+    <div class="wg-modal-head">
+      <h2 id="donate-title" class="wg-modal-title">Found this useful?</h2>
+      <button id="donate-close" class="wg-modal-close" type="button">
+        <span aria-hidden="true">&#215;</span><span class="sr-only">Close</span>
+      </button>
+    </div>
+    <p class="muted small">Warp Gate has no accounts, no tracking and nothing to sell, so
+    there is nothing to charge for either. If it saved you a trip, a one-off tip keeps the
+    server running.</p>
+    <div class="donate-row">
+      <a class="donate-link" href="https://ko-fi.com/fysh_yum" target="_blank" rel="noopener noreferrer">
+        <svg class="ico" aria-hidden="true"><use href="#i-kofi"></use></svg>Ko-fi
+      </a>
+      <a class="donate-link" href="/index.html#support" target="_blank" rel="noopener noreferrer">
+        <svg class="ico" aria-hidden="true"><use href="#i-xmr"></use></svg>Monero or Bitcoin
+      </a>
+      <a class="donate-link" href="https://github.com/Fysh-ball/warp-gate" target="_blank" rel="noopener noreferrer">
+        <svg class="ico" aria-hidden="true"><use href="#i-github"></use></svg>Star the repo
+      </a>
+    </div>
+    <p class="muted small">Not now is a fine answer. Nothing here changes either way.</p>
+  </div>
+</div>
+
+<!-- network exposure, before the first gate of the tab -----------------
+     A direct WebRTC connection is the product, and it is also the one thing about it a
+     person can be surprised by: the two devices learn each other's IP address, because
+     that is what "direct" means. This says so once, before the first gate, and lets the
+     user go and turn a VPN on first.
+
+     It is a WARNING, not a detection, and the wording is careful not to imply otherwise.
+     Genuinely detecting a VPN from the browser needs a third-party IP-intelligence
+     lookup, and the gate's CSP is `default-src 'none'` precisely so that this document
+     can never talk to a third party. The honest version is the one that admits it cannot
+     tell and hands the decision to the person who can. -->
+<div id="net-modal" class="wg-modal" hidden>
+  <div id="net-scrim" class="wg-modal-scrim"></div>
+  <div class="wg-modal-panel" role="dialog" aria-modal="true" aria-labelledby="net-title">
+    <div class="wg-modal-head">
+      <h2 id="net-title" class="wg-modal-title">Before you open a gate</h2>
+    </div>
+    <p class="muted small">This connection is direct, device to device, which is what keeps
+    the server out of your data. The trade is that the two devices see each other's IP
+    address, and an IP address is roughly your city and your internet provider.</p>
+    <p class="muted small">If that matters for what you are about to send, turn on a VPN on
+    both devices first. We cannot see whether you have one: this page is not allowed to ask
+    anyone, which is the same rule that stops it talking about you.</p>
+    <div class="net-actions">
+      <button id="net-continue" class="primary" type="button">Continue anyway</button>
+      <button id="net-cancel" class="secondary" type="button">Not yet</button>
+    </div>
+    <p class="muted small">Shown once per tab.</p>
+  </div>
+</div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

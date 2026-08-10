@@ -1,0 +1,114 @@
+# Warp Gate, self-hosted. This file is meant to work unedited:
+#
+#     docker compose up -d      # then open http://localhost:3095
+#
+# It is the QUICKSTART file. `deploy/docker-compose.yml` is the fuller reference: it is
+# the configuration the public instance actually runs, with a Cloudflare tunnel, a
+# suggestion box on disk, and a bind-mounted source tree instead of a built image. Read
+# that one when you are putting this behind a real domain. Read this one to get a gate
+# open in the next minute.
+#
+# Two deliberate defaults, both of which exist to stop a first run failing in a way that
+# is hard to read:
+#
+#   - The suggestion box is OFF, so there is no bind mount, so there is no directory to
+#     get the ownership of wrong. It is the only thing Warp Gate writes to disk and it is
+#     the operator's own inbox: a fresh self-hosted copy has nobody to write to it.
+#     `deploy/SELF-HOSTING.md` says how to turn it on, and what to chown.
+#   - The port binds to 127.0.0.1, not to every interface. That is not only hardening. A
+#     browser exposes the Web Crypto API and the camera to a "secure context" only, and
+#     http://localhost qualifies while http://192.168.x.x does not, so publishing this on
+#     a LAN address over plain HTTP produces a page that loads and a gate that cannot
+#     encrypt. Put TLS in front of it before you move it off loopback. README.md has the
+#     measurement.
+
+services:
+  warp-gate:
+    build: .
+    # A local tag so `docker images` and `docker compose down --rmi local` can find it.
+    # To run the published image instead of building, delete the `build:` line above and
+    # use: image: ghcr.io/fysh-ball/warp-gate:latest
+    image: warp-gate:local
+    container_name: warp-gate
+    restart: unless-stopped
+
+    environment:
+      # Bind inside the container. The publish below is what decides who can reach it.
+      WG_HTTP_HOST: "0.0.0.0"
+      WG_HTTP_PORT: "3095"
+
+      # AGPL-3.0 section 13: anyone using this over a network must be offered the
+      # corresponding source. The default points at upstream so the offer is real out of
+      # the box and the boot warning does not fire. CHANGE IT IF YOU MODIFY ANYTHING:
+      # upstream is then not the corresponding source of what you are running, and a URL
+      # that does not lead to your version is worse than an empty one, because it silences
+      # the warning while still leaving your users unable to get the source.
+      WG_SOURCE_URL: "${WG_SOURCE_URL:-https://github.com/Fysh-ball/warp-gate}"
+
+      # Unset on purpose. With no STUN server advertised, browsers gather host candidates
+      # only and a gate works between two devices on the same network and nowhere else.
+      # The interface says so rather than just failing. Turning it on means telling your
+      # users about a third party, so it is your decision to make and not a default you
+      # inherit: `WG_STUN_URL=stun:stun.cloudflare.com:3478 docker compose up -d` is the
+      # one the public instance uses, and deploy/SELF-HOSTING.md explains why that choice
+      # does not automatically transfer to a deployment that is not already behind
+      # Cloudflare.
+      WG_STUN_URL: "${WG_STUN_URL:-}"
+
+      # The bundled RFC 5389 responder stays off. Turning it on needs a published UDP
+      # port, a router forward and a public DNS record pointing at your home address,
+      # which for a privacy tool is a real cost. See deploy/NOTES.md.
+      WG_STUN_ENABLED: "${WG_STUN_ENABLED:-0}"
+
+      # Off by default because they are only correct behind a proxy that terminates TLS.
+      # WG_HSTS on a plain-HTTP instance is ignored by browsers; WG_TRUST_PROXY on an
+      # instance reachable directly lets anyone forge their own rate-limit identity.
+      # Read the WG_TRUST_PROXY section of deploy/SELF-HOSTING.md before setting it: it
+      # fails CLOSED, and closed is indistinguishable from working until one user trips a
+      # limit for everybody.
+      WG_HSTS: "${WG_HSTS:-0}"
+      WG_TRUST_PROXY: "${WG_TRUST_PROXY:-0}"
+
+    ports:
+      # Loopback only. See the secure-context note at the top of this file before
+      # changing this to "3095:3095": the result of that change is a gate that loads and
+      # then fails to encrypt, which is worse than one that does not load.
+      - "127.0.0.1:3095:3095"
+
+    # Nothing in this list is exotic and all of it is testable, which is why it is on by
+    # default rather than offered as a hardening appendix nobody applies.
+    read_only: true
+    tmpfs:
+      # Warp Gate puts nothing here. It exists so that read_only: true cannot break a
+      # library that assumes a writable /tmp. In RAM, discarded on restart.
+      - /tmp:size=8m
+    cap_drop:
+      # A process that binds 3095 as uid 1000 needs no capability at all. Note the
+      # consequence, because it is the single most expensive thing learned running this:
+      # dropping ALL removes CAP_DAC_OVERRIDE, so if you later add a bind mount for the
+      # suggestion box, even container-root cannot write it unless the host directory is
+      # owned by the container's uid. The image runs as uid 1000.
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Room state is memory, plus per-boot rate-limit counters, and both are bounded in
+    # the server (WG_MAX_ROOMS, WG_MAX_TOTAL_BACKLOG_BYTES, WG_MAX_BUCKET_ENTRIES).
+    # 128 MB is the backstop for everything those bounds do not cover. Measured idle
+    # cost is in README.md: 200 two-seat gates is 90 MB, 200 six-seat gates is 114 MB,
+    # so raise this before raising WG_MAX_ROOMS or WG_MAX_PARTICIPANTS.
+    mem_limit: 128m
+    memswap_limit: 128m
+
+    # The image already carries a HEALTHCHECK that fetches /api/health and parses it.
+    # Not repeated here: two copies of a probe drift, and the one in the Dockerfile is
+    # the one that applies to a plain `docker run` as well.
+
+    logging:
+      # Warp Gate writes no access log by design, so this only ever holds startup lines
+      # and the occasional warning. Capped anyway: an unbounded json-file driver is how a
+      # disk fills up months after a deployment stops being interesting.
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"

@@ -19,8 +19,11 @@ import {
 } from './crypto.js';
 import { Signal } from './signal.js';
 import { savePasswordKey, recallPasswordKey, forgetPasswordKey } from './vault.js';
-import { Link, STATE, readInboundRecord, dropInboundRecord } from './link.js';
-import { formatBytes, fingerprintFile } from './transfer.js';
+// Deliberately one line. tests/size.test.mjs walks the eager module graph with a matcher
+// that cannot see across a newline, so wrapping this import makes link.js and everything
+// under it vanish from the measured graph and the page-weight ceiling stops covering it.
+import { Link, STATE, readInboundRecord, dropInboundRecord, dropRoomInboundRecords } from './link.js';
+import { formatBytes, fingerprintFile, sweepResume } from './transfer.js';
 
 export { STATE };
 
@@ -53,6 +56,10 @@ const OBJECT_EVENTS = [
   'file-offered', 'file-refused', 'file-accepted', 'file-accepted-local',
   'file-failed', 'file-stalled', 'file-resumed', 'file-reselect-needed',
   'file-reselect-refused', 'file-received', 'file-incoming', 'file-complete',
+  // A game message from one peer. Forwarded with the peer id the relay adds, because a
+  // game is played with ONE person in the gate and the UI has to know which board a move
+  // belongs to when three people are connected.
+  'game',
 ];
 
 // Events a link raises that carry a bare string. Forwarded unchanged: app.js writes them
@@ -304,6 +311,36 @@ export class Session extends EventTarget {
     // Set by resume(): every peer still holds a connection to the page we navigated away
     // from and has to be told to start over.
     this.needsRestart = false;
+    // Latch for startResumeSweep, so create/join/resume can each ask for it and only the
+    // first one costs an IndexedDB transaction.
+    this.sweeping = false;
+  }
+
+  /**
+   * Delete resume records nothing can ever continue. Runs once, when a gate opens.
+   *
+   * A record is deleted when its transfer completes, fails, is refused, or the gate is
+   * burned cleanly. None of those happen when the tab is closed or the browser crashes,
+   * and until now nothing anywhere ever swept one, so a crashed transfer left its record
+   * indefinitely. What sits there is not nothing: the record holds the peer's FILE_START
+   * meta whole, which includes the content fingerprint (a SHA-256 over the file's first
+   * 64 KiB, so a confirmation oracle for a guessed file) and a FileSystemFileHandle naming
+   * where on this disk the user saved it. On a tool whose premise is that nothing outlives
+   * the session, that is the wrong thing to leave at rest.
+   *
+   * Opening a gate is the moment to do it: it is the only point this app is reliably
+   * reached, and it happens before any record for THIS gate exists. Only records past the
+   * room's own 24h ceiling go, so a live transfer is never at risk.
+   *
+   * Never fatal, and never awaited by the caller: a browser with no IndexedDB has nothing
+   * to sweep, and a failed sweep must not stop a gate opening. The reason is kept and
+   * reported rather than dropped, because a sweep that has silently failed for months
+   * looks exactly like a sweep that is working.
+   */
+  startResumeSweep() {
+    if (this.sweeping) return;
+    this.sweeping = true;
+    sweepResume().catch((err) => this.emit('warning', `could not tidy up old transfer records: ${err.message}`));
   }
 
   emit(name, detail) { this.dispatchEvent(new CustomEvent(name, { detail })); }
@@ -324,6 +361,7 @@ export class Session extends EventTarget {
   // ------------------------------------------------------------ lifecycle
 
   async create(sessionMinutes) {
+    this.startResumeSweep();
     this.setState(STATE.CREATING);
     this.roomId = await deriveRoomId(this.secret);
     // H, not J. The server stores the hash and can only ever check a J presented to it.
@@ -346,6 +384,7 @@ export class Session extends EventTarget {
   }
 
   async join() {
+    this.startResumeSweep();
     this.setState(STATE.CREATING);
     this.roomId = await deriveRoomId(this.secret);
     // J proves we hold the room secret. Without it the room id alone would take a slot,
@@ -394,6 +433,7 @@ export class Session extends EventTarget {
    * ahead and deriving a key that can only fail confirmation.
    */
   async resume({ token, role = null, expiresAt, password = null, requiresPassword = false }) {
+    this.startResumeSweep();
     this.role = role;
     if (password) {
       this.password = password;
@@ -575,6 +615,14 @@ export class Session extends EventTarget {
       this.emit('intruder', event.detail);
     });
 
+    this.signal.addEventListener('impersonation-refused', (event) => {
+      // A seated participant wrote another participant's name on a message. It never
+      // reached a link, so nothing here has to be undone; it is reported for the same
+      // reason 'undecryptable' is, because a device behaving like that in the room is
+      // something the user should be told about rather than have silently absorbed.
+      this.emit('intruder', event.detail);
+    });
+
     this.signal.addEventListener('message', (event) => this.onSignalMessage(event.detail));
     this.signal.addEventListener('reconnecting', () => this.emit('warning', 'Signalling connection interrupted, retrying.'));
     this.signal.connect();
@@ -655,7 +703,16 @@ export class Session extends EventTarget {
     for (const fan of this.fanouts.values()) fan.targets.delete(peerId);
   }
 
-  /** Route a decrypted signalling message to the link it belongs to. */
+  /**
+   * Route a decrypted signalling message to the link it belongs to.
+   *
+   * `from` is safe to route on, and only because Signal.checkSender has already compared it
+   * against the server's token-authenticated `sfrom` and dropped the message if they
+   * disagree. Before that check this method was the whole of the impersonation bug: it
+   * routes on a field every seated participant can seal, and it will CREATE a link for an
+   * id it has never seen. Do not move the check, and do not add a second entry point that
+   * skips it.
+   */
   async onSignalMessage(message) {
     if (!message || typeof message.t !== 'string') return;
     const from = typeof message.from === 'string' ? message.from : null;
@@ -868,6 +925,21 @@ export class Session extends EventTarget {
     return [...this.links.values()].filter((l) => l.connected);
   }
 
+  /**
+   * The tab is in front of the user again. Give every link that is not connected an
+   * immediate retry instead of leaving it in its backoff. See Link#wake for the failure
+   * this exists for: a phone that froze the tab behind the file picker.
+   *
+   * Returns how many links were actually woken, so the caller can tell "nothing needed
+   * doing" apart from "there was nothing to do it to".
+   */
+  wakeAll(reason) {
+    if (this.severed || this.state === STATE.SEVERED) return 0;
+    let woken = 0;
+    for (const link of this.links.values()) if (link.wake(reason)) woken += 1;
+    return woken;
+  }
+
   requireConnected() {
     if (!this.connectedLinks().length) throw new Error('the gate is not connected');
   }
@@ -901,6 +973,25 @@ export class Session extends EventTarget {
   async sendSecret(text) {
     await this.fanOut('a secret', (link) => link.sendSecret(text));
     this.emit('secret', { from: 'me', text });
+  }
+
+  /**
+   * Send one game message to ONE participant.
+   *
+   * Deliberately not a fan-out. Chat and files are addressed to the gate, but a game is
+   * played against a person: sending a move to everyone would put the same board in front
+   * of three people and let any of them answer it. Returns false when that peer is not
+   * reachable right now, so the caller can hold the move rather than lose it.
+   */
+  async sendGameTo(peerId, payload) {
+    const link = this.links.get(peerId);
+    if (!link) return false;
+    return link.sendGame(payload);
+  }
+
+  /** Who can be invited to a game right now: connected, and not this device. */
+  gamePartners() {
+    return this.connectedLinks().map((link) => ({ peer: link.peerId, label: this.labelFor(link) }));
   }
 
   /**
@@ -1024,7 +1115,10 @@ export class Session extends EventTarget {
     if (!record) return null;
 
     if (!record.handle) {
-      await this.forgetInboundRecord();
+      // THAT record, not the room's. Another peer in the same gate may have left a
+      // perfectly resumable record of its own, and clearing the room here would destroy it
+      // for the sake of tidying up an unrelated memory-sink transfer.
+      await this.forgetInboundRecord(record.peerId ?? null);
       // Kept only so the sender can be told, so it stops holding a file open for a
       // receiver that can never take it.
       this.lostInbound = { id: record.id, peerId: record.peerId ?? null };
@@ -1064,9 +1158,21 @@ export class Session extends EventTarget {
     return link.adoptInbound(record);
   }
 
-  async forgetInboundRecord() {
+  /**
+   * Forget a resume record. One participant's when given a peer id, the whole room's when
+   * not.
+   *
+   * The two callers want genuinely different things, and collapsing them is what the
+   * room-keyed store used to force: recoverInbound is discarding ONE unresumable transfer
+   * and must leave every other participant's record alone, while teardown is burning the
+   * gate and must leave nothing at all behind.
+   */
+  async forgetInboundRecord(peerId = null) {
     if (!this.roomId) return;
-    try { await dropInboundRecord(this.roomId); } catch (err) { this.emit('warning', `could not clear the resume record: ${err.message}`); }
+    try {
+      if (peerId) await dropInboundRecord(this.roomId, peerId);
+      else await dropRoomInboundRecords(this.roomId);
+    } catch (err) { this.emit('warning', `could not clear the resume record: ${err.message}`); }
   }
 
   // ------------------------------------------------------------ teardown

@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Warp Gate",
+  "version": "0.1.0",
+  "description": "Runs the Warp Gate client from this package instead of downloading it, so the server that signals cannot also change the code.",
+  "homepage_url": "https://github.com/Fysh-ball/warp-gate",
+  "icons": {
+    "192": "icons/icon-192.png",
+    "512": "icons/icon-512.png"
+  },
+  "action": {
+    "default_title": "Open a Warp Gate",
+    "default_icon": {
+      "192": "icons/icon-192.png"
+    }
+  },
+  "background": {
+    "service_worker": "js/background.js",
+    "type": "module",
+    "scripts": [
+      "js/background.js"
+    ]
+  },
+  "options_ui": {
+    "page": "index.html",
+    "open_in_tab": true
+  },
+  "host_permissions": [
+    "https://warpgate.fysh.site/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src https: http://localhost:* http://127.0.0.1:*; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "warp-gate@fysh.site",
+      "strict_min_version": "128.0"
+    }
+  }
+}
