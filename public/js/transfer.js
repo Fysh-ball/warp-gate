@@ -273,17 +273,22 @@ export async function createSink(meta, { preferMemory = false, handle = null, st
       // A dismissed dialog and a broken dialog are not the same answer and must not get the
       // same handling.
       //
-      // AbortError is the user saying no. canAccept() promises that dismissing the dialog
-      // cancels the transfer, so it still does: quietly starting a download somebody just
-      // declined would be worse than failing.
+      // AbortError is the user saying no, and it means the same thing at every size.
+      // canAccept() promises that dismissing the dialog cancels the transfer, with no size
+      // attached to the promise, so this cancels before any route is chosen. It used to be
+      // consulted only above the memory limit, which meant a smaller file fell through to a
+      // memory sink: the transfer the user had just declined completed anyway, and the note
+      // blamed a dialog that was working perfectly.
       //
       // Anything else, a TypeError from the options, a missing user activation, a sandboxed
       // context, is a dialog the user never got to answer, and that is no reason to give up.
       // Every browser that HAS the picker also has the streaming download, so throwing here
       // jumped over a working route and left a Chromium desktop with FEWER ways to receive a
       // large file than the Firefox and Safari the fallback was written for.
-      const cancelled = err.name === 'AbortError';
-      if (meta.size > MEMORY_LIMIT_BYTES && (cancelled || !supportsStreamDownload())) {
+      if (err.name === 'AbortError') {
+        throw new Error('you dismissed the save dialog, so the transfer was cancelled and nothing was saved');
+      }
+      if (meta.size > MEMORY_LIMIT_BYTES && !supportsStreamDownload()) {
         throw new Error(
           `could not open a save location (${err.name}: ${err.message}), and ${formatBytes(meta.size)} `
           + `is too large to hold in memory (limit ${formatBytes(MEMORY_LIMIT_BYTES)})`,

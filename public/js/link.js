@@ -1643,8 +1643,9 @@ export class Link extends EventTarget {
     if (!this.incoming) throw new Error('no incoming file to accept');
     const inbound = this.incoming;
     const { meta } = inbound;
+    let sink = null;
     try {
-      this.adoptSink(inbound, await createSink(meta));
+      sink = await createSink(meta);
     } catch (err) {
       // Cancelling the save dialog lands here and is an ordinary path, not an anomaly.
       // Leaving this.incoming set with a null sink and saying nothing left the sender
@@ -1655,6 +1656,23 @@ export class Link extends EventTarget {
       this.emit('file-refused', { ...meta, reason: err.message });
       throw err;
     }
+    // The save dialog is modal and can stand open for as long as the user likes. A channel
+    // drop during that time discards a transfer that has no sink yet (resetForRenegotiation
+    // only keeps the ones already writing somewhere), so by the time a location is chosen
+    // this may no longer be the transfer in progress. Adopting the sink anyway left a live
+    // writable nobody would ever close, holding a lock on the file the user had just picked,
+    // and a row that sat at 0% for the rest of the session.
+    if (this.incoming !== inbound) {
+      const reason = 'the connection dropped while the save dialog was open';
+      try {
+        await sink.abort(reason);
+      } catch (abortErr) {
+        this.emit('warning', `could not close the file that was being saved: ${abortErr.message}`);
+      }
+      this.emit('file-refused', { ...meta, reason });
+      throw new Error(reason);
+    }
+    this.adoptSink(inbound, sink);
     await this.rememberInboundRecord(inbound);
     await this.control({ kind: 'file-accept', id: meta.id, token: inbound.token });
     // From here on this side is waiting on the sender, so the quiet clock starts. Armed
@@ -1746,13 +1764,33 @@ export class Link extends EventTarget {
     const chunkSize = Number(record.meta.chunkSize) || CHUNK_BYTES;
     const size = Number(record.meta.size);
     const raw = await createSink(record.meta, { handle: record.handle, startOffset: record.received });
+    // Re-granting write permission on a stored handle prompts, and that prompt can stand
+    // open while a FILE_START arrives: anything under AUTO_ACCEPT_BYTES accepts itself,
+    // builds a sink and arms a quiet timer. Overwriting this.incoming below would strand
+    // that sink open and that timer armed, with the sender never told. The recovered
+    // transfer is the one that gives way, because it can still be continued later.
+    if (this.incoming) {
+      const clash = 'another transfer started while this file was being re-opened';
+      try {
+        await raw.abort(clash);
+      } catch (err) {
+        this.emit('warning', `could not close the recovered file: ${err.message}`);
+      }
+      throw new Error(`${clash}, so it was not continued`);
+    }
     // FLOOR, not the ceil this used to do. A committed file can end part way through a
     // chunk, and rounding that up claims a chunk this side holds only part of: the sender
     // skips it and the hole is permanent, silent, and invisible to every length check,
     // because the missing tail is never counted by either side. Rewinding to the last whole
     // chunk costs at most one chunk of re-sent data.
     const whole = chunksOnDisk(raw.position, chunkSize, size);
-    if (raw.position !== whole * chunkSize) {
+    // Clamped, because a complete file reports every chunk including the short last one:
+    // whole * chunkSize then overshoots the file by the length of that chunk's padding.
+    // Unclamped it was handed to the sink as `written`, and requestResume went on to claim
+    // more bytes than the file has, which the sender refuses outright: a transfer that
+    // could never be continued, explained by a number that cannot exist.
+    const wholeBytes = Math.min(whole * chunkSize, size);
+    if (raw.position !== wholeBytes) {
       if (typeof raw.seekTo !== 'function') {
         // Nothing may be appended onto a partial chunk that cannot be rewound: the next
         // chunk would be spliced into the middle of the file and every length check on both
@@ -1765,7 +1803,7 @@ export class Link extends EventTarget {
           + 'so the transfer has to start again from the beginning',
         );
       }
-      await raw.seekTo(whole * chunkSize);
+      await raw.seekTo(wholeBytes);
     }
     const ledger = new ChunkLedger(chunkCount(size, chunkSize));
     for (let i = 0; i < whole; i += 1) ledger.mark(i);
@@ -1779,7 +1817,7 @@ export class Link extends EventTarget {
       resumes: 0,
       token: null,
     };
-    this.adoptSink(this.incoming, raw, { written: whole * chunkSize, ledger });
+    this.adoptSink(this.incoming, raw, { written: wholeBytes, ledger });
     const at = this.incoming.sink.position;
     await this.rememberInboundRecord(this.incoming);
     this.emit('file-incoming', record.meta);
@@ -1905,18 +1943,35 @@ export class Link extends EventTarget {
     if (!Number.isFinite(declared) || inbound.received !== declared) {
       failures.push(`the file was announced as ${inbound.meta?.size} bytes but ${inbound.received} arrived`);
     }
+    // Through failInbound rather than inline, because abort() can itself reject and this
+    // is the one path where this.incoming is already null: an unguarded rejection here
+    // reached handleFrame's generic catch, which has no transfer left to fail, so the
+    // resume record survived and the row never moved again.
     if (failures.length) {
-      await inbound.sink.abort('length mismatch');
-      await this.forgetInboundRecord();
-      this.emit('file-failed', { ...inbound.meta, reason: failures.join('; ') });
+      await this.failInbound(inbound, failures.join('; '));
       return;
     }
 
-    const blob = await inbound.sink.finish();
+    let blob;
+    try {
+      blob = await inbound.sink.finish();
+    } catch (err) {
+      // finish() bottoms out in close(), which is exactly where a browser reports a full
+      // disk or an exhausted quota: the swap file is only renamed over the real one there.
+      // The bytes are not saved, so this is a failed transfer and has to be said out loud.
+      await this.failInbound(inbound, `the file could not be finished: ${err.message}`);
+      return;
+    }
     // The file is whole and closed, so there is nothing left to resume and the record must
     // not outlive it: a stale handle would offer to continue a transfer that is finished.
     await this.forgetInboundRecord();
-    await this.control({ kind: 'file-complete', id: inbound.meta.id, bytes: inbound.received });
+    // The file is already on disk at this point, so failing to tell the sender is a
+    // reporting problem on their end, not a failed transfer on this one.
+    try {
+      await this.control({ kind: 'file-complete', id: inbound.meta.id, bytes: inbound.received });
+    } catch (err) {
+      this.emit('warning', `the file was saved but the other device could not be told: ${err.message}`);
+    }
     this.emit('file-received', { ...inbound.meta, blob, sink: inbound.sink.kind, human: formatBytes(inbound.received) });
   }
 

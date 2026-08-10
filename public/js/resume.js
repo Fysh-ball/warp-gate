@@ -324,9 +324,13 @@ export function createIndexedSink(sink, { chunkSize, size, ledger = null, writte
     for (;;) {
       const chunk = ahead.get(next);
       if (!chunk) return;
+      // Write BEFORE dropping it. The ledger already records this chunk, so if the write
+      // rejects the buffer has to keep holding it, or the ledger would claim a chunk that
+      // exists nowhere and the next resume would skip it. aheadBytes moves with the buffer,
+      // in the same step, so it stays accurate whether the write succeeds or throws.
+      await sink.write(chunk);
       ahead.delete(next);
       aheadBytes -= chunk.byteLength;
-      await sink.write(chunk);
       position += chunk.byteLength;
       next += 1;
     }
@@ -372,9 +376,10 @@ export function createIndexedSink(sink, { chunkSize, size, ledger = null, writte
         next += 1;
         book.mark(index);
         // Whatever was waiting on this chunk can go now. Buffered chunks were recorded when
-        // they were buffered, so the drain moves bytes and never touches the ledger: a
-        // failure part way through leaves the ledger describing chunks this side still
-        // holds, in the buffer, rather than chunks it has lost.
+        // they were buffered, so the drain moves bytes and never touches the ledger, and it
+        // drops each chunk from the buffer only once that chunk's write has resolved. A
+        // failure part way through therefore leaves the ledger describing chunks this side
+        // still holds, in the buffer, rather than chunks it has lost.
         await drainAhead();
         return { written: true, duplicate: false, dropped: false };
       }

@@ -665,6 +665,7 @@ try {
       pickerCancelled: await ask(BIGSIZE, cancels),
       pickerWorks: await ask(BIGSIZE, works),
       smallThrows: await ask(SMALLSIZE, throws),
+      smallCancelled: await ask(SMALLSIZE, cancels),
       reachable,
     });
   `.replace(/BIGSIZE/g, String(BIG)).replace(/SMALLSIZE/g, String(SMALL)));
@@ -684,10 +685,16 @@ try {
   // The one case that must still fail. canAccept promises that dismissing the dialog
   // cancels the transfer, so a cancel may not quietly start a download instead.
   check('dismissing the save dialog still cancels, rather than downloading it anyway',
-    br.pickerCancelled.ok === false && /could not open a save location/.test(br.pickerCancelled.message),
+    br.pickerCancelled.ok === false && /dismissed the save dialog/.test(br.pickerCancelled.message),
     branchRaw);
   check('negative control: a working picker still wins, so this did not just disable the picker',
     br.pickerWorks.ok === true && br.pickerWorks.kind === 'disk', branchRaw);
+  // The size-independent half of the same promise. Under the limit a cancel used to fall
+  // through to a memory sink, so the file arrived after the user had declined to save it
+  // and the note blamed a dialog that had worked perfectly.
+  check('dismissing the dialog cancels under the memory limit as well, not just over it',
+    br.smallCancelled.ok === false && /dismissed the save dialog/.test(br.smallCancelled.message),
+    branchRaw);
   check('negative control: under the limit a failed picker still falls back to memory',
     br.smallThrows.ok === true && br.smallThrows.kind === 'memory', branchRaw);
   check('negative control: the streaming route really does work at this size in this browser',
