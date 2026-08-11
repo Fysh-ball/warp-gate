@@ -121,9 +121,31 @@
      browser without showSaveFilePicker the log was permanently non-empty and permanently
      covering the last 60px of every screen. app.js fills this in from describeLimit(),
      which is still the only place that knows the answer. -->
+<!-- 2026-08-10: FOLDED. Measured at 390x844 before this change, on the home screen, the
+     note was 183px of an 844px viewport (21.7%) and nine lines of prose: the largest
+     single object on the screen, shown before anybody had sent anything, describing what
+     the browser would do IF a file arrived. Dismissible is not the same as proportionate
+     before it is dismissed. It is now three clamped lines on a phone and two from 900px
+     up (~80px, 9.5%), with the rest one press away. Nothing is deleted and nothing is
+     summarised by hand: the summary shows the REAL first sentence app.js wrote, so all
+     three branches of describeLimit() stay accurate.
+
+     2026-08-10, later the same day: THE BODY IS NO LONGER EMPTY. It was, because
+     describeLimit() returned ONE text node with no seam in it for markup to split, and an
+     empty body is not a cosmetic wart: a line clamp hides PIXELS, NOT TEXT, so the whole
+     paragraph stayed in the summary and an assistive technology user was read every word of
+     it at all times regardless of what the control said. Pressing the control changed only
+     what was painted. describeLimit() now returns a lede and a detail as two strings, so the
+     summary carries the answer and the body carries the rest, and `details` genuinely takes
+     the body out of the accessibility tree while it is closed. -->
 <div id="receive-note" class="banner note" hidden>
-  <strong id="receive-note-title">What this browser can receive</strong>
-  <span id="receive-note-text"></span>
+  <details class="note-fold">
+    <summary>
+      <span class="note-fold-text"><strong id="receive-note-title">What this browser can receive</strong>
+      <span id="receive-note-text"></span></span>
+    </summary>
+    <p id="receive-note-detail" class="note-fold-body"></p>
+  </details>
   <button class="banner-close" data-dismiss="receive-note" type="button">
     <span aria-hidden="true">&#215;</span><span class="sr-only">Dismiss this notice</span>
   </button>
@@ -293,7 +315,14 @@
        here -- the hero, how it works, the pledge -- is on the landing document now,
        which is the page you came from. This one is reached deliberately: either by
        pressing "Open a gate" on the landing or by following an invite link, so it
-       opens with the cursor near the thing you came to do rather than a pitch. -->
+       opens with the cursor near the thing you came to do rather than a pitch.
+
+       ONE composition, not three bands. #gate-controls is a two-column grid from 700px
+       up: "Open a gate" is a single rectangle spanning both rows of the left column, and
+       the right column stacks "Join one" over the four numbered steps. The steps moved
+       INTO it from a page-level <section> that used to sit under <main> as a third band
+       of its own; the geometry that motivated the move is recorded on the grid rule in
+       style.css. -->
   <section id="screen-home" class="screen" hidden>
 
       <section class="lp-actions" id="gate-controls">
@@ -338,6 +367,40 @@
             </div>
           </div>
 
+          <!-- The picture of the thing the button does, and the reason the rectangle is
+               not an empty box.
+
+               Stretching the lead card to the height of the column beside it is what
+               makes the composition balance, and it also hands this card ~250px of slack
+               that its four lines of copy cannot fill: measured at 1920x1080, the card is
+               539px tall and the heading, the lede, the options line and the button come
+               to 289px of it. A void inside the primary action is the same defect as a
+               void beside it, one level down.
+
+               This is the same diagram the consent screen closes with, saying the same
+               sentence. It is aria-hidden and decorative, so it adds nothing to read, and
+               it is drawn rather than fetched for the same reason as the icon sprite: the
+               CSP is `default-src 'none'`.
+
+               Only from 700px up, where the card actually stretches (see style.css). On a
+               phone the card is shrink-wrapped, there is no slack to fill, and this would
+               be 115px of picture pushing Create further down the screen. -->
+          <div class="bridge" aria-hidden="true">
+            <svg viewBox="0 0 420 74" preserveAspectRatio="xMidYMid meet">
+              <rect class="node" x="12" y="19" width="52" height="36" rx="6"/>
+              <rect class="screen-glow" x="20" y="27" width="36" height="16" rx="2"/>
+              <rect class="node" x="356" y="19" width="52" height="36" rx="6"/>
+              <rect class="screen-glow" x="364" y="27" width="36" height="16" rx="2"/>
+              <line class="wire" x1="70" y1="37" x2="350" y2="37"/>
+              <line class="flow" x1="70" y1="37" x2="350" y2="37"/>
+              <g class="lock" transform="translate(198 22)">
+                <rect x="0" y="10" width="24" height="18" rx="3"/>
+                <path d="M5 10 V6 a7 7 0 0 1 14 0 v4" fill="none"/>
+              </g>
+            </svg>
+            <p class="bridge-cap">Encrypted here. Decrypted there. Nothing in between keeps a copy.</p>
+          </div>
+
           <button id="create-btn" class="primary">Create gate</button>
         </div>
 
@@ -368,6 +431,29 @@
             <button id="scan-cancel" class="secondary">Stop the camera</button>
           </div>
         </div>
+
+        <!-- The legend, and the third cell of the grid.
+
+             It kept its id because it is still the same block: `#extras` used to be a
+             page-level <section> sitting between <main> and the footer, which made the
+             four steps a band of their own with nothing tying them to the two cards
+             100px above them. It is the lower half of the RIGHT column now, under
+             "Join one", so the composition is one rectangle beside one stack rather
+             than three unrelated strips.
+
+             It reads lighter than the two cards on purpose: hairline rules instead of
+             filled panels (see `#gate-controls .step` in style.css). These are a legend
+             for what happens next, not a third thing to press, and giving them a card
+             each would have made the right column look like three peers. -->
+        <section id="extras">
+          <ol class="steps">
+            <li class="step"><span class="step-n">1</span><b>Create</b><span>Open a gate on one device.</span></li>
+            <li class="step"><span class="step-n">2</span><b>Share</b><span>Scan the code, or send the link.</span></li>
+            <li class="step"><span class="step-n">3</span><b>Send</b><span>Chat, secrets and files, directly.</span></li>
+            <li class="step"><span class="step-n">4</span><b>Burn it</b><span>The gate and its keys are gone.</span></li>
+          </ol>
+        </section>
+
         <p id="home-error" class="error" hidden></p>
       </section>
 
@@ -464,7 +550,31 @@
           <input type="checkbox" id="secret-toggle">
           <span>Secret</span>
         </label>
-        <span id="compose-hint" class="muted small"></span>
+        <!-- The same capability sentence again, and on a phone it was the largest thing in
+             the composer: measured at 390x844 in a connected gate, #chat-form was 342px of
+             an 844px viewport and 160px of that was these eight lines, which pushed the
+             composer's own bottom edge 27px BELOW the fold. It is the same fold as the
+             banner above, so it gets the same treatment: three clamped lines on a phone
+             with the rest one press away. Measured after, off a real browser rather than
+             off the draft: the hint is 98px, #chat-form is 280px, and the composer's
+             bottom edge is at y=685 against a scroller that ends at 811. An earlier draft
+             of this comment said two lines, 39px and 213px; the clamp resolves to three
+             below 900px, so those numbers were never on screen.
+
+             app.js used to write TWO different things into #compose-hint: this standing note
+             at connect, and a transient "Trimmed to 16,000 characters" if something sets the
+             textarea's value past the cap programmatically. The trim message is 65
+             characters, so it fitted inside the clamp with nothing hidden, and what it got
+             anyway was a "Read the rest" control that revealed nothing. A control that does
+             nothing is worse than no control: it teaches the user that the control does
+             nothing, and they stop pressing it on the note where it matters. Two messages,
+             two elements, fixed 2026-08-10. #compose-trim sits OUTSIDE the fold because it is
+             not a long standing fact, it is one short line about what just happened. -->
+        <details class="note-fold hint-fold">
+          <summary><span class="note-fold-text"><span id="compose-hint" class="muted small"></span></span></summary>
+          <p id="compose-hint-detail" class="note-fold-body muted small"></p>
+        </details>
+        <p id="compose-trim" class="compose-trim muted small" hidden></p>
         <button type="submit" class="primary">Send</button>
       </div>
       <input type="file" id="file-input" multiple hidden>
@@ -601,16 +711,6 @@
   </section>
 
 </main>
-
-<section id="extras" class="extras" hidden>
-
-  <ol class="steps">
-    <li class="step"><span class="step-n">1</span><b>Create</b><span>Open a gate on one device.</span></li>
-    <li class="step"><span class="step-n">2</span><b>Share</b><span>Scan the code, or send the link.</span></li>
-    <li class="step"><span class="step-n">3</span><b>Send</b><span>Chat, secrets and files, directly.</span></li>
-    <li class="step"><span class="step-n">4</span><b>Burn it</b><span>The gate and its keys are gone.</span></li>
-  </ol>
-</section>
 
 <footer class="foot">
   <a href="/faq.html">FAQ</a>

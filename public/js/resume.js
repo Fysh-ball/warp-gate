@@ -42,6 +42,10 @@ import { b64u } from './crypto.js';
 import {
   CHUNK_INDEX_BYTES, MAX_CHUNK_INDEX, chunkCount, expectedChunkBytes,
 } from './chunkwire.js';
+// The fingerprint pair, for serveResume at the bottom of this file. transfer.js is eager
+// anyway (link.js cannot take a file without it), so importing it here adds nothing to the
+// boot path, and it imports only crypto.js and streamable.js so there is no cycle back.
+import { compareFingerprints, fingerprintFile, createSink, CHUNK_BYTES } from './transfer.js';
 
 // Re-exported so a caller that already holds this module does not need a second import for
 // the two primitives that pair with the ledger. Nothing here redefines them.
@@ -524,4 +528,255 @@ export function judgeResumeResponse(inbound, control) {
     };
   }
   return { ok: true, offset };
+}
+
+/**
+ * SENDER side. Prove the file is still the same file, then continue from `offset`.
+ *
+ * Moved here from link.js on 2026-08-10 with nothing else changed: `this` became the `link`
+ * argument and that is the whole diff. It sat on the boot path of every gate while being
+ * unreachable until a peer asked to continue an interrupted transfer, which is the same
+ * gate everything else in this file is behind.
+ *
+ * The fingerprint is recomputed from the live File EVERY time, not read from our own cached
+ * copy, and it is checked against what the RECEIVER recorded at FILE_START rather than only
+ * against our own record. A sender comparing its cache to its cache proves nothing; a sender
+ * that reloaded and was handed the wrong file has a cache that agrees with itself perfectly.
+ * Recomputing is one 64 KiB read, so there is no reason to skip it on the cheap resumes.
+ *
+ * @param {object} link the Link serving the resume. Called through link.serveResume(), which
+ *   is kept as a method because tests/outbound.test.mjs drives it by that name.
+ * @returns {Promise<boolean>} whether the transfer was resumed. False means this has already
+ *   denied, told the peer and settled the send: the caller must not also report it.
+ */
+export async function serveResume(link, out, offset, ranges, remaining) {
+  let fresh;
+  try {
+    fresh = await fingerprintFile(out.file);
+  } catch (err) {
+    await link.control({
+      kind: 'file-resume-deny', id: out.id, code: 'unreadable',
+      reason: `the file could not be read to check it is the same one: ${err.message}`,
+    });
+    link.abandonOutbound(out, `could not re-read ${out.name}: ${err.message}`);
+    return false;
+  }
+
+  const against = out.peerFingerprint ?? out.fingerprint;
+  const verdict = compareFingerprints(against, fresh);
+  if (!verdict.ok) {
+    // Never splice. Resuming a different file at an offset produces a corrupt result that
+    // passes every length check on both sides, so this refuses rather than repairs.
+    await link.control({
+      kind: 'file-resume-deny', id: out.id, code: 'fingerprint_mismatch',
+      reason: `${verdict.reason}. The transfer has to start again from the beginning rather than `
+        + 'joining two different files together.',
+    });
+    link.emit('file-reselect-refused', { id: out.id, name: out.name, reason: verdict.reason });
+    link.abandonOutbound(out, verdict.reason);
+    return false;
+  }
+
+  // What the receiver already holds, so the running total still ends at the file's size.
+  // Nothing is adopted from the peer's own counter: `remaining` came from ranges the sending
+  // side validated, and FILE_END's chunk count is derived from the size and chunk size fixed
+  // at FILE_START. Be honest about what the seeded slots are: for a chunk this run never
+  // reads, the length written here comes from the declared size, not from the disk. It is the
+  // only figure available, the receiver's own size check is the independent guard, and the
+  // receiver's indexed sink refuses a wrong-length chunk on arrival, so it can never report
+  // holding one that is short.
+  //
+  // Seeded into the coverage map rather than assigned to the total. The old line set
+  // `out.sent` directly, which was correct only if nothing was still sending: this runs
+  // BEFORE driveOutbound consults its `streaming` latch, so a resume arriving while the
+  // previous run was still unwinding rebased the figure and then let that run keep adding to
+  // it. Marking the chunks the receiver already has as covered gets the same starting total
+  // and stays right no matter how the two runs overlap, because every chunk can only ever
+  // contribute its own length once.
+  //
+  // Seeding ADDS what the receiver reports it already holds. It never takes coverage away,
+  // and that distinction cost a test: replacing the map wholesale also erased the chunks the
+  // still-running send had already pushed, so a resume asking for a range the old loop had
+  // passed under-declared by exactly those chunks. Coverage is a record of what was actually
+  // read and sent; only a read can write it, and only upwards.
+  const total = chunkCount(out.size, out.chunkSize);
+  if (!out.coverage || out.coverage.length !== total) out.coverage = new Uint32Array(total);
+  const wanted = new Uint8Array(total);
+  for (const [from, to] of ranges) {
+    for (let i = from; i < to && i < total; i += 1) wanted[i] = 1;
+  }
+  let covered = 0;
+  for (let i = 0; i < total; i += 1) {
+    // Outside the requested ranges the receiver has the chunk, so it counts at its full
+    // length. Inside them it counts only for what this side has actually read, which is how
+    // a truncating read still shows up as a shortfall at FILE_END.
+    if (!wanted[i]) out.coverage[i] = expectedChunkBytes(i, out.chunkSize, out.size);
+    covered += out.coverage[i];
+  }
+  out.sent = covered;
+  // A per-run counter now, used only to throttle progress events. The count that goes on the
+  // wire at FILE_END is derived from the file, not counted from this run.
+  out.chunks = 0;
+  out.stalled = false;
+  out.fingerprint = fresh;
+  await link.control({
+    kind: 'file-resume-ok', id: out.id, token: out.resumeToken ?? null, offset, ranges, fingerprint: fresh,
+  });
+  link.emit('file-resumed', {
+    direction: 'out', id: out.id, name: out.name, offset, total: out.size,
+  });
+  link.driveOutbound(ranges);
+  return true;
+}
+
+/**
+ * RECEIVER side. Adopt a transfer recovered from storage into a live link.
+ *
+ * The body lives here rather than in link.js for the reason serveResume's does: none of it
+ * can be reached until a page reload interrupted a transfer, and a gate that never lost a
+ * connection was carrying the chunk-boundary arithmetic and the ledger replay on its boot
+ * path for nothing. Split out on 2026-08-10 to buy the eager graph back under its ceiling,
+ * which is the rule this project applies instead of raising the ceiling for a feature.
+ *
+ * `link.adoptInbound` stays as the method: session.js calls it by that name and so do the
+ * tests, and a split that renames the surface it is verified through is a split nobody can
+ * check. The caller keeps two things that cannot move: `primeSink()` must be awaited in the
+ * same user gesture as this (re-granting write permission on a stored handle PROMPTS, and a
+ * prompt outside a live activation is refused outright), and the requestResume at the end
+ * needs STATE, which lives in link.js and would make this module import its own importer.
+ *
+ * @param {object} link the Link adopting the record.
+ * @param {object} record what readInboundRecord returned: meta, handle and byte count.
+ * @returns {Promise<number>} the offset the sink is positioned at, in bytes.
+ */
+export async function adoptInbound(link, record) {
+  // startOffset is a request; the sink clamps it to what the file actually contains,
+  // because everything written and not committed before the reload was discarded.
+  const chunkSize = Number(record.meta.chunkSize) || CHUNK_BYTES;
+  const size = Number(record.meta.size);
+  const raw = await createSink(record.meta, { handle: record.handle, startOffset: record.received });
+  // Re-granting write permission on a stored handle prompts, and that prompt can stand
+  // open while a FILE_START arrives: anything under AUTO_ACCEPT_BYTES accepts itself,
+  // builds a sink and arms a quiet timer. Overwriting link.incoming below would strand
+  // that sink open and that timer armed, with the sender never told. The recovered
+  // transfer is the one that gives way, because it can still be continued later.
+  if (link.incoming) {
+    const clash = 'another transfer started while this file was being re-opened';
+    try {
+      await raw.abort(clash);
+    } catch (err) {
+      link.emit('warning', `could not close the recovered file: ${err.message}`);
+    }
+    throw new Error(`${clash}, so it was not continued`);
+  }
+  // FLOOR, not the ceil this used to do. A committed file can end part way through a
+  // chunk, and rounding that up claims a chunk this side holds only part of: the sender
+  // skips it and the hole is permanent, silent, and invisible to every length check,
+  // because the missing tail is never counted by either side. Rewinding to the last whole
+  // chunk costs at most one chunk of re-sent data.
+  const whole = chunksOnDisk(raw.position, chunkSize, size);
+  // Clamped, because a complete file reports every chunk including the short last one:
+  // whole * chunkSize then overshoots the file by the length of that chunk's padding.
+  // Unclamped it was handed to the sink as `written`, and requestResume went on to claim
+  // more bytes than the file has, which the sender refuses outright: a transfer that
+  // could never be continued, explained by a number that cannot exist.
+  const wholeBytes = Math.min(whole * chunkSize, size);
+  if (raw.position !== wholeBytes) {
+    if (typeof raw.seekTo !== 'function') {
+      // Nothing may be appended onto a partial chunk that cannot be rewound: the next
+      // chunk would be spliced into the middle of the file and every length check on both
+      // sides would still come out right. Only the disk sink can seek, and only the disk
+      // sink stores a handle, so this is unreachable today and says so loudly if that
+      // stops being true rather than quietly writing at the wrong offset.
+      await raw.abort('the recovered file cannot be rewound to a chunk boundary');
+      throw new Error(
+        `${record.meta.name} was recovered part way through a chunk and this browser cannot rewind it, `
+        + 'so the transfer has to start again from the beginning',
+      );
+    }
+    await raw.seekTo(wholeBytes);
+  }
+  const ledger = new ChunkLedger(chunkCount(size, chunkSize));
+  for (let i = 0; i < whole; i += 1) ledger.mark(i);
+  link.incoming = {
+    meta: record.meta,
+    received: 0,
+    chunks: 0,
+    sink: null,
+    stalled: true,
+    crossedReload: true,
+    resumes: 0,
+    token: null,
+  };
+  // adoptSink takes the resume module as its first argument because link.js reaches it
+  // through a lazy import and has no other handle on it. Called from INSIDE that module the
+  // namespace object is not in scope, so it gets the two functions it actually uses. Naming
+  // them is better than a self-import: a third one added to adoptSink fails here loudly
+  // instead of arriving as undefined.
+  link.adoptSink({ createIndexedSink, mintResumeToken }, link.incoming, raw,
+    { written: wholeBytes, ledger });
+  const at = link.incoming.sink.position;
+  await link.rememberInboundRecord(link.incoming);
+  link.emit('file-incoming', record.meta);
+  link.emit('file-progress', {
+    direction: 'in', id: record.meta.id, sent: at, total: record.meta.size, name: record.meta.name,
+  });
+  return at;
+}
+
+/**
+ * RECEIVER side. The sender is about to continue; check it before accepting a byte.
+ *
+ * Split out of link.js on 2026-08-10 alongside adoptInbound, and reachable only after a
+ * resume request this side sent first. `link.onResumeAccepted` stays as the method: onControl
+ * dispatches to it by name and tests/disconnect.test.mjs drives it by name.
+ *
+ * @param {object} link the Link whose inbound transfer is being resumed.
+ * @param {object} control the `file-resume-ok` frame the sender answered with.
+ */
+export async function onResumeAccepted(link, control) {
+  const inbound = link.incoming;
+  // Everything that could distinguish "no such transfer" from "wrong token" answers with
+  // one frozen refusal, and this side sends NOTHING back for it: a reply is itself a
+  // signal, and a resume offer must not be usable to probe what this device holds.
+  const verdict = judgeResumeResponse(inbound, control);
+  if (!verdict.ok) {
+    if (verdict.code === RESUME_REFUSED.code) return;
+    await link.control({ kind: 'file-resume-deny', id: control.id, code: verdict.code, reason: verdict.reason });
+    await link.failInbound(inbound, verdict.reason);
+    return;
+  }
+  const offset = verdict.offset;
+
+  // The second half of the splice guard: the sender proved the file to itself, and now
+  // it has to prove it to the side that holds the partial copy.
+  const sameFile = compareFingerprints(inbound.meta.fingerprint ?? null, control.fingerprint ?? null);
+  if (!sameFile.ok) {
+    await link.control({
+      kind: 'file-resume-deny', id: control.id, code: 'fingerprint_mismatch', reason: sameFile.reason,
+    });
+    await link.failInbound(inbound, `refused to continue: ${sameFile.reason}`);
+    return;
+  }
+
+  inbound.stalled = false;
+  inbound.crossedReload = false;
+  inbound.resumes = (inbound.resumes ?? 0) + 1;
+  // `inbound.quietRounds = 0` used to sit here and was removed in review on 2026-08-10.
+  // This handler runs on the ACK, not on bytes: the sender has said it will continue, which
+  // is a promise and not progress. A sender that acks and then parks its ranges (the exact
+  // overlap tests/outbound.test.mjs exists for) left the receiver looping request, ack,
+  // 45 seconds of silence, request, for ever, with every message saying "attempt 1" because
+  // this line reset the count each time round. The reset belongs where bytes land and it
+  // already lives there, in onFileChunk: a chunk arriving IS the retry having worked.
+  //
+  // Chunks are about to start again, so the quiet clock starts again with them. Without the
+  // re-arm a resumed transfer runs with no watchdog at all: the timer was cleared when the
+  // link dropped and only an arriving chunk re-arms it, which is the one thing a sender that
+  // goes quiet immediately after resuming never does.
+  inbound.quietWarned = false;
+  link.armInboundQuiet(inbound);
+  link.emit('file-resumed', {
+    direction: 'in', id: inbound.meta.id, name: inbound.meta.name, offset, total: inbound.meta.size,
+  });
 }

@@ -16,9 +16,15 @@ import {
   deriveDisplayName, deriveNameSeed, nameFromSeed, resolveDisplayNames, NAME_SPACE,
 } from '../public/js/session.js';
 
-const PORT = 3785;
-const STUN = 3786;
-const CDP_PORT = 9762;
+// Overridable, the way tests/legal.test.mjs and tests/securecontext.test.mjs already are.
+// The defaults are unchanged, so nothing that runs this file today moves; what the env vars
+// buy is a second copy of this suite on a box where another session already holds 3785.
+// A collision here does not read as a collision: the server refuses to bind, the page never
+// loads, and every geometry number comes back zero, which is a shape this file has no way to
+// tell apart from a stylesheet that stopped applying.
+const PORT = Number(process.env.WG_BROWSER_PORT || 3785);
+const STUN = Number(process.env.WG_BROWSER_STUN || 3786);
+const CDP_PORT = Number(process.env.WG_BROWSER_CDP || 9762);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 // The gate is its own document. ORIGIN is the LANDING, which holds no gate machinery
 // at all, so anything driving a room, a key or a screen has to be pointed here.
@@ -416,14 +422,17 @@ const agreeInPage = `
 
 /** Force one screen on for a geometry measurement, the way app.js's show() would.
  *
- *  It has to hide #receive-note on the screens app.js hides it on, not just #extras.
- *  Left showing, that banner sits in the page's flex column below `main` and adds 50px
- *  of legitimate layout under the connected screen's composer, which a geometry check
- *  then reports as dead space the design did not leave there. */
+ *  It has to hide #receive-note on the screens app.js hides it on. That banner is a child
+ *  of `.page`, so left showing it sits in the page's flex column below `main` and adds 50px
+ *  of legitimate layout under the connected screen's composer, which a geometry check then
+ *  reports as dead space the design did not leave there.
+ *
+ *  #extras is NOT toggled here any more, and neither is it in app.js. It used to be a
+ *  page-level band shown on three screens and hidden on four; it is a cell of the home
+ *  screen's own grid now, so the <section class="screen"> around it decides when it paints
+ *  and a second switch in this helper could only ever disagree with the first one. */
 const showScreen = (id) => `
   for (const s of document.querySelectorAll('section.screen')) s.hidden = s.id !== ${JSON.stringify(id)};
-  const extras = document.getElementById('extras');
-  if (extras) extras.hidden = !['screen-onboarding', 'screen-home', 'screen-severed'].includes(${JSON.stringify(id)});
   const note = document.getElementById('receive-note');
   const noteText = document.getElementById('receive-note-text');
   if (note && noteText && noteText.textContent.trim()) {
@@ -1305,6 +1314,530 @@ const fillLog = (open = false) => `
     ch.afterTtl !== ch.before && ch.afterTtl.startsWith(ch.selectedText)
     && /password set/.test(ch.afterPw),
     changed);
+  // ------------------------------------------------- home geometry: one composition
+  //
+  // The owner's complaint, in their words: "open gate is a big rectangle to the left and
+  // the rest are organized to be aesthetically pleasing". Measured at 1920x1080 BEFORE this
+  // work, which is what each assertion below is written against:
+  //
+  //   "Open a gate"   y 232..435  h=203  x  470..946    the two cards were top-aligned and
+  //   "Join one"      y 232..559  h=327  x  974..1450   unequal: 124px of void under the left
+  //   the four steps  y 678..775                        a third band, 119px below the cards
+  //   the banner      x  96..1824 (1728px)              three measures on one screen, and the
+  //   the cards       x 470..1450 (980px)               least important block was the widest
+  //   band above      bar ends y=45, cards start y=232  187px of a 1080px viewport, empty
+  //
+  // After: one two-column grid. The left rectangle spans both rows, the right column stacks
+  // "Join one" over the four steps, and every band on the screen sits at x 470..1450.
+  //
+  // Each of these is planted against below. A geometry check that has never failed is not
+  // evidence: all six of them would report exactly this green against a stylesheet that had
+  // silently stopped applying.
+  const HOME_GEOM = `
+    function homeGeom() {
+      const sc = document.querySelector('.page') || document.scrollingElement;
+      const box = (el) => {
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none') return null;
+        const b = el.getBoundingClientRect();
+        return { left: Math.round(b.left), right: Math.round(b.right),
+                 top: Math.round(b.top + sc.scrollTop), bottom: Math.round(b.bottom + sc.scrollTop),
+                 w: Math.round(b.width), h: Math.round(b.height) };
+      };
+      const grid = document.getElementById('gate-controls');
+      const join = document.getElementById('join-btn').closest('.lp-action');
+      const steps = document.getElementById('extras');
+      // Queried through #extras, not through #gate-controls: one of the plants below
+      // moves that whole block back out under <main>, and a selector rooted at the grid
+      // would then return null and crash the probe instead of measuring the fault.
+      const step = document.querySelector('#extras .step');
+      const stepCs = getComputedStyle(step);
+      const cardCs = getComputedStyle(join);
+      const edges = (cs) => ['Top', 'Right', 'Bottom', 'Left']
+        .map((s) => parseFloat(cs['border' + s + 'Width']) || 0);
+      return JSON.stringify({
+        win: window.innerWidth, winH: window.innerHeight,
+        grid: box(grid),
+        lead: box(document.querySelector('#gate-controls .lp-action-lead')),
+        join: box(join),
+        steps: box(steps),
+        bar: box(document.querySelector('header.bar')),
+        main: box(document.querySelector('main')),
+        note: box(document.getElementById('receive-note')),
+        foot: box(document.querySelector('.foot')),
+        create: box(document.getElementById('create-btn')),
+        // Containment, not merely position. Two boxes can happen to overlap; only one of
+        // them can be a descendant of the grid.
+        stepsInsideGrid: grid.contains(steps),
+        // A legend, not a third action: no fill and no box of its own, where the two cards
+        // have both. Read as computed style rather than as a class name, because a class
+        // that stopped being styled still matches a selector.
+        stepFill: stepCs.backgroundColor, cardFill: cardCs.backgroundColor,
+        stepBorders: edges(stepCs), cardBorders: edges(cardCs),
+        stepCols: getComputedStyle(document.querySelector('#extras > .steps'))
+          .gridTemplateColumns.trim().split(/\\s+/).length,
+        // The gutter as the STYLESHEET defines it, not as a literal 16 restated here. The
+        // phone claim is that every block is drawn one gutter in from each edge, and a
+        // hard-coded 16 would keep passing if the token moved and the blocks moved with it.
+        gutter: Math.round(parseFloat(getComputedStyle(document.documentElement)
+          .getPropertyValue('--gutter')) || 0),
+        // The footer carries no box of its own (a hairline rule, no fill, no radius) and
+        // is full-bleed in BOTH documents, so it is its CONTENT that has to sit on the
+        // gutter, not its border box. Read as the computed padding rather than assumed.
+        footPadLeft: Math.round(parseFloat(getComputedStyle(document.querySelector('.foot')).paddingLeft) || 0),
+        overflow: Math.round(Math.max(
+          document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          document.body.scrollWidth - document.body.clientWidth,
+          sc.scrollWidth - sc.clientWidth)),
+      });
+    }
+  `;
+  const readHome = async (tab) => JSON.parse(await tab.eval(HOME_GEOM + 'return homeGeom();'));
+
+  /** Measure once with a fault planted through the CSSOM, then put it back.
+   *
+   *  CSSOM and not a style attribute or a <style> element: both of those are exactly what
+   *  `style-src 'self'` refuses, and the planted failure would then be reported as a CSP
+   *  violation rather than as the geometry problem it is meant to be. Every plant returns
+   *  its own undo, so a check cannot leave the page altered for the next one. */
+  async function plantAndRead(tab, js) {
+    const bad = JSON.parse(await tab.eval(HOME_GEOM + js + '\nreturn homeGeom();'));
+    return bad;
+  }
+
+  const home = await readHome(homeTab);
+
+  // 1. The two columns are the same height, because the left card spans both rows of the
+  //    grid rather than shrink-wrapping to its own copy.
+  check('the two columns of the home grid start and end on the same line',
+    Math.abs(home.lead.top - home.join.top) <= 2
+    && Math.abs(home.lead.bottom - home.steps.bottom) <= 2,
+    `lead ${home.lead.top}..${home.lead.bottom}, join top ${home.join.top}, steps bottom ${home.steps.bottom}`);
+  check('so the left rectangle no longer floats above a void of its own',
+    home.lead.h >= home.join.h + 100,
+    `lead h=${home.lead.h}, join h=${home.join.h} (before: 203 against 327, the wrong way round)`);
+
+  // 2. And it is the WIDER of the two. 1.15fr against 0.85fr: "a big rectangle to the left".
+  check('the left rectangle is the wider of the two columns, not an equal half',
+    home.lead.w > home.join.w + 60,
+    `lead ${home.lead.w}px, join ${home.join.w}px`);
+
+  // 3. One measure. Every band on the screen, not a list of the ones that were easy: the
+  //    grid, the capability banner and the footer all sit between the same two x values.
+  const bands = [['grid', home.grid], ['banner', home.note], ['footer', home.foot]];
+  check('every top-level block on the home screen sits in one column, edge for edge',
+    bands.every(([, b]) => b !== null)
+    && bands.every(([, b]) => Math.abs(b.left - home.grid.left) <= 2
+                           && Math.abs(b.right - home.grid.right) <= 2),
+    bands.map(([n, b]) => `${n} ${b ? `${b.left}..${b.right}` : 'MISSING'}`).join(', '));
+  check('and the banner is no wider than the composition above it, which it used to be by 748px',
+    home.note.w <= home.grid.w, `banner ${home.note.w}px, grid ${home.grid.w}px`);
+
+  // 4. The steps are a cell of the grid, in the right column under "Join one". Not a band
+  //    below the whole thing, which is where they were and what left them tied to nothing.
+  check('the four steps are inside the grid, in the right column under "Join one"',
+    home.stepsInsideGrid === true
+    && home.steps.left >= home.join.left - 2 && home.steps.right <= home.join.right + 2
+    && home.steps.top >= home.join.bottom,
+    JSON.stringify({ inside: home.stepsInsideGrid, steps: home.steps, join: home.join }));
+  check('and they are laid out two by two rather than as a strip across the page',
+    home.stepCols === 2, `${home.stepCols} columns`);
+
+  // 5. Lighter than the two cards. Putting them in the right column must not make that
+  //    column read as three peers, so they lose the fill and the box and keep the rule.
+  check('the steps read as a legend, not a third action: no fill and no box, where the cards have both',
+    home.stepFill !== home.cardFill
+    && home.stepBorders.filter((x) => x > 0).length === 1
+    && home.cardBorders.every((x) => x > 0),
+    JSON.stringify({ stepFill: home.stepFill, cardFill: home.cardFill,
+      stepBorders: home.stepBorders, cardBorders: home.cardBorders }));
+
+  // 6. The dead band above the cards is closed. 187px of a 1080px viewport before.
+  check('the band between the masthead and the cards is closed',
+    home.grid.top - home.bar.bottom <= 80,
+    `${home.grid.top - home.bar.bottom}px (bar ends ${home.bar.bottom}, grid starts ${home.grid.top}; was 187px)`);
+
+  // 7. And the band BELOW the composition, which is the one that was left open. Measured
+  //    at 1920x1080 before this pass: the grid ended at y=636 and the capability notice
+  //    began at y=889, so 253px of empty page sat between a composition and the paragraph
+  //    that annotates it, and the notice then floated 44px above the footer. The cause was
+  //    `margin-top: auto` on the notice, which pins it to the bottom of the flex column;
+  //    on this screen the notice belongs directly under the cards that offer to receive
+  //    something. 40px is the bar because the declaration is 14px and the grid's border box
+  //    ends a couple of pixels above `main`'s: anything near 253 fails it by six times over.
+  check('the notice sits under the composition it annotates, not pinned to the bottom of the window',
+    home.note.top - home.grid.bottom <= 40,
+    `${home.note.top - home.grid.bottom}px between the grid (ends ${home.grid.bottom}) `
+    + `and the notice (starts ${home.note.top}); was 253px`);
+  // The free height did not vanish, it moved, and that is the answer rather than an
+  // oversight: it is one band above a bottom-anchored footer now instead of a hole in the
+  // middle of the page. Asserted so the shape is on the record and a later change that
+  // un-anchors the footer is noticed.
+  check('and the free height is spent in one place, above a footer still on the bottom edge',
+    home.foot.bottom >= home.winH - 2 && home.foot.top - home.note.bottom >= 0,
+    `footer ${home.foot.top}..${home.foot.bottom} in a ${home.winH}px window, `
+    + `${home.foot.top - home.note.bottom}px of quiet page above it`);
+
+  // ---- and now prove every one of the six can fail ----------------------------------
+  //
+  // Each plant reverts the specific rule the check reads, measures, and puts it back. The
+  // restored reading is asserted too: a plant that could not be undone would leave the page
+  // broken for the checks after it and the run would fail somewhere else entirely.
+  //
+  // Every pair is recorded and printed as a table at the end of this section, so the
+  // evidence that a check CAN fail is in the run output rather than only in the code.
+  const plantLog = [];
+  const proven = (name, condition, bad, ok) => {
+    plantLog.push([name, bad, ok]);
+    check(name, condition, `BAD ${bad} | OK ${ok}`);
+  };
+  {
+    const grid = "const g = document.getElementById('gate-controls');";
+    const undo = "g.style.removeProperty(";
+
+    // 1 and 2: `align-items: stretch` is what makes the left card span both rows. Reverting
+    // it to the `start` the landing uses shrink-wraps the card again.
+    const badStretch = await plantAndRead(homeTab, `${grid} g.style.setProperty('align-items', 'start');`);
+    await homeTab.eval(`${grid} ${undo}'align-items'); return true;`);
+    const okStretch = await readHome(homeTab);
+    proven('the equal-columns check fails when align-items is reverted to start',
+      Math.abs(badStretch.lead.bottom - badStretch.steps.bottom) > 2
+      && Math.abs(okStretch.lead.bottom - okStretch.steps.bottom) <= 2,
+      `lead ends ${badStretch.lead.bottom}, steps end ${badStretch.steps.bottom}`,
+      `lead ends ${okStretch.lead.bottom}, steps end ${okStretch.steps.bottom}`);
+
+    const badCols = await plantAndRead(homeTab,
+      `${grid} g.style.setProperty('grid-template-columns', 'minmax(0,1fr) minmax(0,1fr)');`);
+    await homeTab.eval(`${grid} ${undo}'grid-template-columns'); return true;`);
+    const okCols = await readHome(homeTab);
+    proven('the wider-left check fails when the columns are forced back to equal halves',
+      !(badCols.lead.w > badCols.join.w + 60) && okCols.lead.w > okCols.join.w + 60,
+      `lead ${badCols.lead.w}px, join ${badCols.join.w}px`,
+      `lead ${okCols.lead.w}px, join ${okCols.join.w}px`);
+
+    // 3: the banner's cap is the whole of the one-measure claim.
+    const badMeasure = await plantAndRead(homeTab,
+      "document.getElementById('receive-note').style.setProperty('max-width', 'none');");
+    await homeTab.eval("document.getElementById('receive-note').style.removeProperty('max-width'); return true;");
+    const okMeasure = await readHome(homeTab);
+    proven('the one-measure check fails when the banner is allowed the full shell again',
+      badMeasure.note.w > badMeasure.grid.w && okMeasure.note.w <= okMeasure.grid.w,
+      `banner ${badMeasure.note.w}px, grid ${badMeasure.grid.w}px`,
+      `banner ${okMeasure.note.w}px, grid ${okMeasure.grid.w}px`);
+
+    // 4: move the node back out to where it used to live, under <main>, and the check has to
+    //    notice. This is the one plant that changes the DOM rather than a property, because
+    //    "inside the grid" is a fact about the tree.
+    const badPlace = await plantAndRead(homeTab, `
+      const ex = document.getElementById('extras');
+      window.__exHome = ex.parentElement;
+      window.__exNext = ex.nextElementSibling;
+      document.querySelector('main').appendChild(ex);
+    `);
+    await homeTab.eval('window.__exHome.insertBefore(document.getElementById("extras"), window.__exNext); return true;');
+    const okPlace = await readHome(homeTab);
+    // The `- 2` on the planted arm is a rounding tolerance, not a loosened claim, and it is
+    // the same tolerance every other geometry assertion in this section already uses.
+    //
+    // 2026-08-10: without it this plant was marginal and failed about one run in three.
+    // Measured in the planted state: the steps start at 449 and the grid ends at 450, so
+    // the two boxes are flush and the 1px is which side of a half-pixel `Math.round` the
+    // grid's bottom border landed on that run. Once #extras is moved out, the grid loses
+    // its second row and shrink-wraps onto the join card, so the block that used to be its
+    // lower half now begins exactly where it ends: flush IS the expected geometry here, and
+    // an assertion written as a strict `>=` on rounded pixels was reading font-rasterisation
+    // timing rather than layout. The claim that matters is unaffected: `stepsInsideGrid`
+    // false is the containment fact, and 449 against a healthy 633 is a 184px move.
+    proven('the steps-in-the-grid check fails when the block is moved back out under main',
+      badPlace.stepsInsideGrid === false && badPlace.steps.top >= badPlace.grid.bottom - 2
+      && okPlace.stepsInsideGrid === true && okPlace.steps.top < okPlace.grid.bottom - 2,
+      `inside=${badPlace.stepsInsideGrid}, steps top ${badPlace.steps.top}, grid ends ${badPlace.grid.bottom}`,
+      `inside=${okPlace.stepsInsideGrid}, steps top ${okPlace.steps.top}, grid ends ${okPlace.grid.bottom}`);
+
+    // 5: give a step the card's fill and border back and the weight check has to fire.
+    const badWeight = await plantAndRead(homeTab, `
+      for (const s of document.querySelectorAll('#gate-controls .step')) {
+        s.style.setProperty('background', getComputedStyle(document.querySelector('#gate-controls .lp-action')).backgroundColor);
+        s.style.setProperty('border', '1px solid red');
+      }
+    `);
+    await homeTab.eval(`
+      for (const s of document.querySelectorAll('#gate-controls .step')) {
+        s.style.removeProperty('background'); s.style.removeProperty('border');
+      }
+      return true;
+    `);
+    const okWeight = await readHome(homeTab);
+    proven('the lighter-steps check fails when a step is given the card fill and a full box',
+      badWeight.stepFill === badWeight.cardFill
+      && badWeight.stepBorders.filter((x) => x > 0).length === 4
+      && okWeight.stepFill !== okWeight.cardFill
+      && okWeight.stepBorders.filter((x) => x > 0).length === 1,
+      `fill ${badWeight.stepFill}, borders ${badWeight.stepBorders.join('/')}`,
+      `fill ${okWeight.stepFill}, borders ${okWeight.stepBorders.join('/')}`);
+
+    // 6: put the old band back, as the sum of the parts it used to be made of.
+    const badBand = await plantAndRead(homeTab,
+      "document.querySelector('main').style.setProperty('padding-top', '187px');");
+    await homeTab.eval("document.querySelector('main').style.removeProperty('padding-top'); return true;");
+    const okBand = await readHome(homeTab);
+    proven('the closed-band check fails when the 187px band is put back',
+      badBand.grid.top - badBand.bar.bottom > 80 && okBand.grid.top - okBand.bar.bottom <= 80,
+      `band ${badBand.grid.top - badBand.bar.bottom}px`,
+      `band ${okBand.grid.top - okBand.bar.bottom}px`);
+
+    // 7: put the auto margin back and the notice floats to the bottom of the window again.
+    //    Both halves of the before state, because they are one mechanism: the notice took
+    //    the free space with `margin-top: auto` and the footer therefore did not.
+    const badFloat = await plantAndRead(homeTab, `
+      document.getElementById('receive-note').style.setProperty('margin-top', 'auto');
+      document.querySelector('.foot').style.setProperty('margin-top', '30px');
+    `);
+    await homeTab.eval(`
+      document.getElementById('receive-note').style.removeProperty('margin-top');
+      document.querySelector('.foot').style.removeProperty('margin-top');
+      return true;
+    `);
+    const okFloat = await readHome(homeTab);
+    proven('the attached-notice check fails when the auto margin pins it to the bottom again',
+      badFloat.note.top - badFloat.grid.bottom > 40 && okFloat.note.top - okFloat.grid.bottom <= 40,
+      `${badFloat.note.top - badFloat.grid.bottom}px between the grid and the notice`,
+      `${okFloat.note.top - okFloat.grid.bottom}px between the grid and the notice`);
+
+    // Every plant went through the CSSOM or the DOM, so none of them may have tripped the
+    // CSP listener. If one had, the failure above would have been reported for the wrong
+    // reason and this whole block would be measuring a violation instead of a layout.
+    const cspPlants = await homeTab.eval('return JSON.stringify(window.__csp);');
+    check('and none of the seven plants raised a CSP violation, so each failed on geometry alone',
+      cspPlants === '[]', cspPlants);
+  }
+
+  // ---- 390x844: the phone is not negotiable ------------------------------------------
+  {
+    const ph = await guardedTab(APP, { width: 390, height: 844, mobile: true });
+    await ph.eval(agreeInPage);
+    await ph.send('Page.reload', {});
+    await ph.waitFor("!document.getElementById('screen-home').hidden",
+      { timeout: 30000, label: 'home at 390x844 for the grid checks' });
+    const p = await readHome(ph);
+    check('at 390x844 the two cards stack into one column instead of sharing a row',
+      p.lead.top < p.join.top && Math.abs(p.lead.left - p.join.left) <= 1
+      && Math.abs(p.lead.w - p.join.w) <= 1,
+      JSON.stringify({ lead: p.lead, join: p.join }));
+    check('the steps follow underneath, still two by two, still inside the grid',
+      p.stepsInsideGrid === true && p.steps.top >= p.join.bottom && p.stepCols === 2,
+      JSON.stringify({ inside: p.stepsInsideGrid, steps: p.steps, join: p.join, cols: p.stepCols }));
+    // The standing requirement: create without scrolling past the join card. Measured from
+    // the button's bottom edge against the viewport, at scroll 0.
+    check('and Create is reachable without scrolling past the join card',
+      p.create.bottom <= p.winH && p.create.bottom < p.join.top,
+      `create ends ${p.create.bottom}, join starts ${p.join.top}, viewport ${p.winH}px`);
+    check('nothing scrolls sideways at 390',
+      p.overflow <= 0, `${p.overflow}px of horizontal overflow`);
+
+    // ---- the capability notice, and what it is allowed to take -----------------------
+    //
+    // The owner's words: "the 'files over 500mb...' spiel takes over everything". Measured
+    // at 390x844 before this pass, on the home screen, before anybody dismisses anything:
+    //
+    //   #receive-note   y 785..969   h=183   21.7% of an 844px viewport, nine lines
+    //   the cards       x  16..374           the notice ran x 0..390, edge to edge
+    //   grid -> notice  0px                  flush, because `margin-top: auto` resolved to
+    //                                        0 on a page that already overflowed
+    //   notice -> foot  44px                 so the rhythm at the foot was 0 then 44
+    //
+    // After: 106px (12.6%), x 16..374, 14px then 30px. The words are all still there: the
+    // notice is a <details> whose summary shows the real first sentence app.js wrote and
+    // whose press shows the rest, so no branch of describeLimit() is paraphrased.
+    //
+    // 15% rather than 12.6%: the bar is "not the largest thing on the screen", and the
+    // measured value has to have somewhere to move as the copy changes. The before state
+    // is 21.7% and fails it by a margin no rounding reaches.
+    check('the capability notice takes no more than 15% of a 390x844 viewport before it is dismissed',
+      p.note !== null && p.note.h <= p.winH * 0.15,
+      `${p.note ? p.note.h : 'MISSING'}px of ${p.winH}px `
+      + `(${p.note ? (100 * p.note.h / p.winH).toFixed(1) : '?'}%, bar 15%, was 21.7%)`);
+
+    // One measure and one gutter, for everything that carries a box. The notice is a
+    // filled, bordered, rounded card and it was the only one drawn off both edges of the
+    // phone: `.banner` takes `var(--shell)`, which is main's BORDER box, where every card
+    // inside main is drawn to its CONTENT box.
+    const phoneBands = [['lead', p.lead], ['join', p.join], ['steps', p.steps], ['notice', p.note]];
+    check('every block with a box on the phone home screen is drawn to one measure, one gutter in',
+      phoneBands.every(([, b]) => b !== null)
+      && phoneBands.every(([, b]) => b.left === p.gutter && b.right === p.win - p.gutter),
+      `gutter ${p.gutter}px, window ${p.win}px: `
+      + phoneBands.map(([n, b]) => `${n} ${b ? `${b.left}..${b.right}` : 'MISSING'}`).join(', '));
+    // The footer is the deliberate exception and is asserted rather than skipped: it has no
+    // box to draw, only a hairline rule, and it is full-bleed on the landing page too. What
+    // it shares is the gutter its links start on.
+    check('and the footer, which has no box, still starts its links on that same gutter',
+      p.footPadLeft === p.gutter, `footer padding-left ${p.footPadLeft}px, gutter ${p.gutter}px`);
+
+    // The rhythm at the foot of the screen. 14px is the distance between the two cards and
+    // the steps at this width, so the notice joins the composition rather than arriving on
+    // a distance of its own.
+    check('the notice is one card-gap under the composition, the same 14px the cards use',
+      p.note.top - p.main.bottom === 14,
+      `${p.note.top - p.main.bottom}px between main (ends ${p.main.bottom}) and the notice `
+      + `(starts ${p.note.top}); the cards are ${p.join.top - p.lead.bottom}px apart`);
+
+    // The split is a claim about TEXT, and every check above it measures PIXELS. That is
+    // the whole reason the fold was rebuilt on 2026-08-10: a -webkit-line-clamp summary hid
+    // the tail of the paragraph from the eye and left all of it in the accessibility tree,
+    // so a screen reader was read the entire notice at all times while the geometry checks
+    // reported a tidy 12.6% box. Height cannot tell a lede from a paragraph that merely
+    // happens to be short, so without this one describeLimit() could drop its detail
+    // altogether, or repeat the lede into it, and every check in this section would stay
+    // green. Proven below by planting `detail: ''`.
+    const split = JSON.parse(await ph.eval(`
+      const t = (el) => (el?.textContent ?? '').replace(/\\s+/g, ' ').trim();
+      return JSON.stringify({
+        lede: t(document.getElementById('receive-note-text')),
+        detail: t(document.getElementById('receive-note-detail')),
+        folded: document.querySelector('#receive-note details.note-fold')?.open === false,
+      });
+    `));
+    check('the capability notice says a lede in the summary and a different detail inside '
+      + 'the fold, so a closed notice is short in the accessibility tree and not only in pixels',
+      split.lede.length > 0 && split.detail.length > 0
+      && split.detail !== split.lede && !split.lede.includes(split.detail)
+      && split.folded === true,
+      JSON.stringify({
+        lede: split.lede.slice(0, 60), detail: split.detail.slice(0, 60),
+        ledeLen: split.lede.length, detailLen: split.detail.length, closed: split.folded,
+      }));
+
+    // ---- and prove those three can fail ----------------------------------------------
+    //
+    // The fold first: it is the whole of the size claim, and the before state is what a
+    // later edit would land back on.
+    //
+    // Rewritten 2026-08-10. It used to plant `display: block` on .note-fold-text alone,
+    // which was the right control while the WHOLE paragraph lived in the summary and a
+    // -webkit-line-clamp hid the tail of it. app.js splits the notice now: the summary
+    // carries a one-sentence lede and the rest is a <p> in the disclosure body, which is
+    // what a closed <details> actually removes from the accessibility tree instead of
+    // merely from the pixels. Unclamping a one-sentence summary changes nothing, so that
+    // plant had quietly become a control that could no longer fail: the check stayed green
+    // and the proof under it had stopped measuring anything.
+    //
+    // The plant therefore reconstructs the state it is named for: one element carrying both
+    // messages, unclamped. The body text is APPENDED as a marked span rather than written
+    // over the summary's textContent, because the summary holds a <strong> title that the
+    // restore below would otherwise have to rebuild from a string.
+    const UNCLAMP = `
+      for (const t of document.querySelectorAll('.note-fold-text')) {
+        const body = t.closest('.note-fold')?.querySelector('.note-fold-body');
+        if (body && body.textContent.trim()) {
+          const s = document.createElement('span');
+          s.className = 'plant-unfolded';
+          s.textContent = ' ' + body.textContent;
+          t.appendChild(s);
+        }
+        t.style.setProperty('display', 'block');
+      }
+    `;
+    const badFold = await plantAndRead(ph, UNCLAMP);
+    await ph.eval(`
+      for (const s of document.querySelectorAll('.plant-unfolded')) s.remove();
+      for (const t of document.querySelectorAll('.note-fold-text')) t.style.removeProperty('display');
+      return true;
+    `);
+    const okFold = await readHome(ph);
+    proven('the 15% check fails when the fold is opened back out to the full paragraph',
+      badFold.note.h > badFold.winH * 0.15 && okFold.note.h <= okFold.winH * 0.15,
+      `${badFold.note.h}px of ${badFold.winH}px (${(100 * badFold.note.h / badFold.winH).toFixed(1)}%)`,
+      `${okFold.note.h}px of ${okFold.winH}px (${(100 * okFold.note.h / okFold.winH).toFixed(1)}%)`);
+
+    // The measure: give the notice the full shell back, which is the width it had.
+    const badGutter = await plantAndRead(ph,
+      "document.getElementById('receive-note').style.setProperty('width', 'var(--shell)');");
+    await ph.eval("document.getElementById('receive-note').style.removeProperty('width'); return true;");
+    const okGutter = await readHome(ph);
+    proven('the one-gutter check at 390 fails when the notice is given the full shell again',
+      !(badGutter.note.left === badGutter.gutter && badGutter.note.right === badGutter.win - badGutter.gutter)
+      && okGutter.note.left === okGutter.gutter && okGutter.note.right === okGutter.win - okGutter.gutter,
+      `notice ${badGutter.note.left}..${badGutter.note.right}, cards ${badGutter.join.left}..${badGutter.join.right}`,
+      `notice ${okGutter.note.left}..${okGutter.note.right}, cards ${okGutter.join.left}..${okGutter.join.right}`);
+
+    // The rhythm: put `margin-top: auto` back, which on a page with no free space is 0.
+    const badRhythm = await plantAndRead(ph,
+      "document.getElementById('receive-note').style.setProperty('margin-top', 'auto');");
+    await ph.eval("document.getElementById('receive-note').style.removeProperty('margin-top'); return true;");
+    const okRhythm = await readHome(ph);
+    proven('the card-gap check fails when the auto margin collapses it to nothing',
+      badRhythm.note.top - badRhythm.main.bottom !== 14
+      && okRhythm.note.top - okRhythm.main.bottom === 14,
+      `${badRhythm.note.top - badRhythm.main.bottom}px between main and the notice`,
+      `${okRhythm.note.top - okRhythm.main.bottom}px between main and the notice`);
+
+    // Prove the sideways-scroll arm can fail at THIS width. The existing overflow control
+    // in the width sweep runs at 1280, and a 1280px plant says nothing about whether the
+    // same arm is wired up in a 390px tab.
+    // `flex: 0 0 auto` for the reason recorded on the connected screen's copy of this
+    // control: a shrinkable control in a flex column is laid out at 900 x 0 and contributes
+    // nothing to the scrollable overflow, so the plant reports the clean page's own number.
+    // #gate-controls is a grid and does not shrink it, but the two controls are the same
+    // check and are pinned the same way.
+    const badWide = await plantAndRead(ph, `
+      const d = document.createElement('div');
+      d.id = 'wg-phone-overflow-control';
+      d.style.setProperty('width', '900px');
+      d.style.setProperty('height', '10px');
+      d.style.setProperty('flex', '0 0 auto');
+      document.getElementById('gate-controls').appendChild(d);
+    `);
+    await ph.eval("document.getElementById('wg-phone-overflow-control').remove(); return true;");
+    const okWide = await readHome(ph);
+    proven('the sideways-scroll check at 390 catches a planted 900px element',
+      badWide.overflow > 0 && okWide.overflow <= 0,
+      `${badWide.overflow}px of horizontal overflow`,
+      `${okWide.overflow}px of horizontal overflow`);
+    // And the stacking arm: force the desktop two-column grid on at 390 and require the
+    // check to notice. Otherwise "they stack" is equally consistent with a rule that never
+    // ran at all.
+    const badStack = await plantAndRead(ph, `
+      const g = document.getElementById('gate-controls');
+      g.style.setProperty('grid-template-columns', 'minmax(0,1.15fr) minmax(0,0.85fr)');
+      g.style.setProperty('grid-template-areas', '"lead join" "lead steps"');
+    `);
+    await ph.eval(`
+      const g = document.getElementById('gate-controls');
+      g.style.removeProperty('grid-template-columns');
+      g.style.removeProperty('grid-template-areas');
+      return true;
+    `);
+    const okStack = await readHome(ph);
+    proven('the phone stacking check catches the desktop grid forced on at 390',
+      badStack.lead.top === badStack.join.top && okStack.lead.top < okStack.join.top,
+      `lead top ${badStack.lead.top}, join top ${badStack.join.top}`,
+      `lead top ${okStack.lead.top}, join top ${okStack.join.top}`);
+    const cspPhone = await ph.eval('return JSON.stringify(window.__csp);');
+    check('the home screen raises no CSP violation at 390x844 either', cspPhone === '[]', cspPhone);
+    ph.close();
+  }
+
+  // The measured shape, for the record, so a later change is compared against this run.
+  process.stdout.write('\n--- home composition at 1920x1080 -------------------------------------\n');
+  for (const [name, b] of [['lead card', home.lead], ['join card', home.join],
+    ['the steps', home.steps], ['the grid', home.grid], ['banner', home.note], ['footer', home.foot]]) {
+    process.stdout.write(`  ${name.padEnd(11)} x ${String(b.left).padStart(5)}..${String(b.right).padStart(5)}`
+      + `  y ${String(b.top).padStart(5)}..${String(b.bottom).padStart(5)}`
+      + `  ${String(b.w).padStart(5)}x${String(b.h).padStart(4)}\n`);
+  }
+  process.stdout.write(`  band above the cards: ${home.grid.top - home.bar.bottom}px (was 187px)\n`);
+  process.stdout.write('-----------------------------------------------------------------------\n');
+  // The proof that each of those checks can fail, in the run output rather than only in
+  // the source: what the probe read with the fault planted, and what it read once the
+  // plant was undone. A pair whose two halves are the same is a plant that did nothing.
+  process.stdout.write('--- each check against its known-bad state -----------------------------\n');
+  for (const [name, bad, ok] of plantLog) {
+    process.stdout.write(`  ${name}\n      BAD  ${bad}\n      OK   ${ok}\n`);
+  }
+  process.stdout.write('-----------------------------------------------------------------------\n\n');
+
   const cspHome = await homeTab.eval('return JSON.stringify(window.__csp);');
   check('the home screen raises no CSP violation', cspHome === '[]', cspHome);
   homeTab.close();
@@ -1560,6 +2093,22 @@ const fillLog = (open = false) => `
   {
     const legacy = await browser.newTab('about:blank');
     const LEGACY_CODE = 'WARP-DRIFT-MEAD-PLUNK-SIXTH-TOTE-VIVID-WHALE-ZONAL';
+    // The LIVE address bar cannot answer "did the fragment survive the redirect", because
+    // the app deliberately empties it: boot() reads location.hash and immediately calls
+    // history.replaceState(null, '', location.pathname), so the secret is not left sitting
+    // on screen. Reading location.hash after the redirect therefore races the app's own
+    // boot and passes only when the probe wins. Under load it loses, which one run of this
+    // suite on a loaded box recorded verbatim:
+    //   BAD  a link minted before the split still opens a gate, fragment intact
+    //          <- {"path":"/app","hash":"","hasGate":true}
+    // Nothing was wrong with the product on that run: path and gate were both right and
+    // only the fragment had already been cleaned up. A document-start script has no such
+    // race. It runs before any script of the document it belongs to, so it records the URL
+    // the redirect actually landed on, fragment included, and that record survives the
+    // clean-up because replaceState does not reload the document.
+    await legacy.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: 'window.__bootHref = location.href;',
+    });
     await legacy.send('Page.navigate', { url: `${ORIGIN}/#${LEGACY_CODE}` });
     await legacy.waitFor("location.pathname === '/app'",
       { timeout: 15000, label: 'legacy hash redirect' });
@@ -1570,11 +2119,19 @@ const fillLog = (open = false) => `
       { timeout: 15000, label: 'the gate document parsed after the redirect' });
     const landed = JSON.parse(await legacy.eval(`
       return JSON.stringify({ path: location.pathname, hash: location.hash,
+        bootHref: window.__bootHref || '',
         hasGate: !!document.getElementById('create-btn') });
     `));
     check('a link minted before the split still opens a gate, fragment intact',
-      landed.path === '/app' && landed.hash === `#${LEGACY_CODE}` && landed.hasGate,
+      landed.path === '/app' && landed.bootHref === `${ORIGIN}/app#${LEGACY_CODE}` && landed.hasGate,
       JSON.stringify(landed));
+    // States the reason the check above reads the boot URL rather than the address bar,
+    // and states it as an assertion rather than a comment, so that the day the app stops
+    // cleaning the address bar this says so instead of the reader having to notice.
+    await legacy.waitFor("location.hash === ''",
+      { timeout: 15000, label: 'the secret taken back out of the address bar' });
+    check('and the secret does not stay in the address bar, which is why the fragment is read at boot',
+      (await legacy.eval('return location.hash;')) === '', 'address bar still carries the fragment');
     // The redirect must not be triggered by merely landing on the landing page: a
     // check that fires on every load would pass above and be worthless.
     await legacy.send('Page.navigate', { url: ORIGIN });
@@ -2034,6 +2591,49 @@ try {
   check('and your own message still reads "you" rather than your own name',
     ownLabel === 'you', ownLabel);
 
+  // ---- the composer's two messages, in two elements (2026-08-10) --------------------
+  //
+  // app.js wrote both the standing capability note and the transient "Trimmed to 16,000
+  // characters" through #compose-hint, which is the summary of a <details>. The trim
+  // sentence is 65 characters, so the fold had nothing to reveal and still offered the
+  // control: pressing it opened a disclosure whose body was the OTHER message's detail, or
+  // nothing at all. A control that does nothing teaches the user that the control does
+  // nothing, and then they do not press it on the note where it matters.
+  //
+  // Driven through a real `input` event rather than by calling the handler, because the
+  // clamp exists for the case where something SETS the value (a paste of 400 KiB froze the
+  // tab for 30 seconds laying out one unbreakable line) and that is exactly the path an
+  // event carries. The composer is left empty afterwards: the reply below types into it.
+  const trim = JSON.parse(await a.eval(`
+    const input = document.getElementById('chat-input');
+    const hint = document.getElementById('compose-hint');
+    const before = hint.textContent.trim();
+    input.value = 'x'.repeat(20000);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const clamped = input.value.length;
+    const t = document.getElementById('compose-trim');
+    const out = {
+      before,
+      after: hint.textContent.trim(),
+      trimText: (t ? t.textContent : '').trim(),
+      trimHidden: t ? t.hidden : null,
+      inFold: Boolean(t && t.closest('details')),
+      clamped,
+    };
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return JSON.stringify(out);
+  `));
+  check('a value set past the cap is trimmed and says so in an element of its own, leaving '
+    + 'the standing capability note exactly as it was',
+    trim.clamped === 16000 && trim.trimHidden === false
+    && trim.trimText.startsWith('Trimmed to 16,000 characters.')
+    && trim.before.length > 0 && trim.after === trim.before,
+    JSON.stringify(trim));
+  check('and that transient line sits outside the disclosure, so it cannot inherit a '
+    + '"Read the rest" control with nothing behind it',
+    trim.inFold === false, `#compose-trim inside a <details>: ${trim.inFold}`);
+
   const replyText = `reply from B ${crypto.randomUUID()}`;
   await b.eval(`
     document.getElementById('chat-input').value = ${JSON.stringify(replyText)};
@@ -2454,6 +3054,59 @@ try {
     (await rowShape('clip3.webm')).tag === 'VIDEO' && (await rowShape('tone.wav')).tag === 'AUDIO',
     'the newest video and the audio should both still be rendered');
 
+  // ---- the scan caution, on received rows only ----
+  //
+  // Asked for as "if you received a file within this session we recommend running it through
+  // virus total first before opening it". Uploading to VirusTotal PUBLISHES the file to third
+  // parties, so the caveat is checked as part of the same sentence rather than as a separate
+  // disclosure: a user who reads only the recommendation and acts on it has handed a private
+  // document away, and a caveat they have to expand is a caveat they did not read.
+  //
+  // Read out of the DOM rather than off the source, because the defect this guards against is
+  // a route that renders a received row WITHOUT going through preview.js: the stream sink was
+  // exactly that, and asserting on preview.js's own text would have passed while that route
+  // shipped no caution at all.
+  const caution = async (tab, name) => JSON.parse(await tab.eval(`
+    const row = [...document.querySelectorAll('#messages .msg')]
+      .find((r) => r.textContent.includes(${JSON.stringify(name)}));
+    if (!row) return JSON.stringify({ found: false });
+    const el = row.querySelector('.scan-caution');
+    const a = el ? el.querySelector('a') : null;
+    return JSON.stringify({
+      found: true,
+      present: !!el,
+      text: el ? el.textContent : null,
+      href: a ? a.href : null,
+      target: a ? a.target : null,
+      rel: a ? a.rel : null,
+      anchors: el ? el.querySelectorAll('a').length : 0,
+    });
+  `));
+  const vt = await caution(b, 'notes.txt');
+  check('a received file carries the scan caution next to its own Save and Open buttons',
+    vt.found === true && vt.present === true, JSON.stringify(vt).slice(0, 200));
+  check('and it says in the SAME sentence that scanning publishes the file to a third party',
+    /VirusTotal/.test(String(vt.text)) && /uploads a copy to a third party/.test(String(vt.text))
+    && /never do it with something private/.test(String(vt.text)),
+    String(vt.text).slice(0, 240));
+  check('the link goes to VirusTotal in a new tab with no opener and no referrer',
+    vt.href === 'https://www.virustotal.com/gui/home/upload' && vt.target === '_blank'
+    && /noopener/.test(String(vt.rel)) && /noreferrer/.test(String(vt.rel)) && vt.anchors === 1,
+    JSON.stringify({ href: vt.href, target: vt.target, rel: vt.rel, anchors: vt.anchors }));
+  // Not a preview-only decoration: a file whose type earns no inline element and no Open
+  // button is still a file this device received, and it is the likeliest one to be opened
+  // out of the downloads folder later.
+  const vtSvg = await caution(b, 'drawing.svg');
+  check('a received file with no preview and no Open button carries it too',
+    vtSvg.present === true, JSON.stringify(vtSvg).slice(0, 160));
+  // The sender is the one person who already knows what the file is. Checked over the WHOLE
+  // transcript rather than one row, so a caution appended to the wrong side anywhere in the
+  // session is caught.
+  const senderCautions = Number(await a.eval(
+    "return String(document.querySelectorAll('#messages .scan-caution').length);"));
+  check('and the sender never sees it on the files it sent itself',
+    senderCautions === 0, `${senderCautions} caution(s) in the sender's transcript`);
+
   // ---- a file that went to disk: no blob, but a handle to read it back ----
   //
   // A disk sink streams the file straight to the location the user picked, so this page
@@ -2776,9 +3429,10 @@ try {
     check('CONTROL: resource timing lists the scripts that WERE fetched',
       Number(anyJs) > 3, `${anyJs} .js resources`);
 
-    // The gate's CSP has no media-src, so <video> inherits default-src 'none'. A
-    // MediaStream assigned through srcObject is not a URL fetch and should therefore be
-    // outside CSP entirely, but "should" is an argument and this is a check: a stream
+    // The gate's CSP names media-src explicitly now ('self' blob:, server/index.js), so
+    // <video> no longer inherits default-src 'none'. A MediaStream assigned through
+    // srcObject is not a URL fetch and should therefore be outside CSP entirely either
+    // way, but "should" is an argument and this is a check: a stream
     // made from a canvas is the same kind of object getUserMedia returns, so if the
     // policy did block srcObject this is where it would show, without needing a camera.
     const srcObject = await s.eval(`
@@ -2850,6 +3504,509 @@ try {
     `);
     check('and the pastel palette is in effect on the board area',
       styled.length > 0, `--g-rose resolved to ${JSON.stringify(styled)}`);
+  }
+
+  // ------------------------------------------------ the phone, INSIDE an open gate
+  //
+  // "I want you to look at the mobile version within a warpgate instance." Not a screen
+  // forced on with showScreen(): tab B is one half of the real gate this block opened,
+  // with a real WebRTC channel, two real messages in the transcript and a real status log
+  // under it, resized to a phone. A faked #screen-connected has no roster, no verification
+  // code and an empty thread, which is three of the seven blocks whose spacing is the
+  // complaint.
+  //
+  // Measured at 390x844 before this pass, top to bottom, with the gaps between them:
+  //
+  //   .route-line   y  70..138          the badge and the roster
+  //         gap 22                      8px of screen gap + 14px `details.disc.compact`
+  //   #games-disc   y 160..230          Games, at the TOP, above the verification code and
+  //                                     above the conversation, because it had no `order`
+  //                                     at all and therefore defaulted to 0
+  //         gap 15
+  //   .sas-box      y 245..350          the verification code
+  //         gap 11
+  //   #messages     y 361..488          the conversation
+  //         gap  8
+  //   #chat-form    y 496..838          the composer, 342px of an 844px viewport, of which
+  //                                     160px was the capability paragraph AGAIN
+  //         gap 22
+  //   #conn-disc    y 860..930
+  //         gap 18
+  //   #sever
+  //
+  // Six different distances, none of them chosen: the screen's own `gap` was 8 the whole
+  // way down and every other pixel was a margin some child brought from a layout it no
+  // longer has. And the composer's bottom edge at 838 was 27px BELOW the scroller's own
+  // bottom edge at 811, so the thing you came to the screen to use was cut off at rest.
+  //
+  // After: one 14px gap the whole way down (the home screen's card gap, because the front
+  // page is the standard being compared against), 24px before Burn because it is
+  // destructive, Games moved down beside Connection details, and a composer of 278px whose
+  // bottom edge is at 670 with two messages in the transcript.
+  //
+  // The transcript also gained a cap on this width (`max-height: clamp(160px, 25dvh, 340px)`,
+  // 211px here) so that the composer's position is bounded no matter what the far end sends.
+  // With nothing but chat on screen the transcript is smaller than the cap and this changes
+  // nothing; the section at the end of this block sends seven real files to exercise it.
+  {
+    await b.send('Emulation.setDeviceMetricsOverride',
+      { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await b.eval("const s = document.querySelector('.page'); s.scrollTop = 0; return true;");
+
+    const CONN_GEOM = `
+      function connGeom() {
+        const sc = document.querySelector('.page') || document.scrollingElement;
+        const box = (el) => {
+          if (!el) return null;
+          const cs = getComputedStyle(el);
+          if (cs.display === 'none' || el.hidden) return null;
+          const r = el.getBoundingClientRect();
+          if (r.height < 1) return null;
+          return { id: el.id || String(el.className).split(' ')[0],
+                   left: Math.round(r.left), right: Math.round(r.right),
+                   top: Math.round(r.top + sc.scrollTop),
+                   bottom: Math.round(r.bottom + sc.scrollTop), h: Math.round(r.height) };
+        };
+        const screen = document.getElementById('screen-connected');
+        // .conn-rail is display:contents below 1024px, so the verification code and Burn
+        // are laid out as siblings of the transcript and the rail itself has NO box. A
+        // walk that stopped at the screen's element children would measure a rail of zero
+        // height and miss two of the seven blocks whose spacing is the complaint.
+        const kids = [];
+        for (const el of screen.children) {
+          if (getComputedStyle(el).display === 'contents') {
+            for (const inner of el.children) { const bx = box(inner); if (bx) kids.push(bx); }
+          } else { const bx = box(el); if (bx) kids.push(bx); }
+        }
+        kids.sort((x, y) => x.top - y.top);
+        const form = document.getElementById('chat-form').getBoundingClientRect();
+        return JSON.stringify({
+          win: window.innerWidth, winH: window.innerHeight,
+          // The SCROLLER's bottom edge, not the window's. The status dock is a sibling of
+          // .page in the body's flex column, so the last 33px of the window is never page
+          // and a fold read off innerHeight would call a cut-off composer reachable.
+          fold: Math.round(sc.getBoundingClientRect().bottom),
+          scrollTop: Math.round(sc.scrollTop),
+          order: kids.map((k) => k.id),
+          gaps: kids.slice(1).map((k, i) => ({ from: kids[i].id, to: k.id, gap: k.top - kids[i].bottom })),
+          kids,
+          composerBottom: Math.round(form.bottom),
+          composerH: Math.round(form.height),
+          // The FOLD, not #compose-hint. The hint is an inline span and its bounding rect
+          // is the union of its unclipped line boxes, so it reads 192px whether the clamp
+          // is on or off: measuring it would have printed the same number in both halves
+          // of the plant pair below and proved nothing.
+          hintH: (() => { const h = box(document.querySelector('.hint-fold')); return h ? h.h : null; })(),
+          // The batch offer row, and the list of per-file states inside it. Both are null
+          // until a batch has actually been announced, and the checks that read them run
+          // only after this file has driven one, so a null here is a missing row rather
+          // than a state to be papered over with a default.
+          batchRow: (() => {
+            const r = [...document.querySelectorAll('.msg.is-file')]
+              .find((m) => m.id.indexOf('transfer-batch-') === 0);
+            return r ? box(r) : null;
+          })(),
+          batchNames: (() => {
+            const r = [...document.querySelectorAll('.msg.is-file')]
+              .find((m) => m.id.indexOf('transfer-batch-') === 0);
+            const l = r && r.querySelector('.file-names');
+            return l ? box(l) : null;
+          })(),
+          // How tall the list WANTS to be, against how tall it is allowed to be. A cap
+          // that happened to equal the content height would look identical to no cap at
+          // all if only the rendered height were read.
+          batchNamesWanted: (() => {
+            const r = [...document.querySelectorAll('.msg.is-file')]
+              .find((m) => m.id.indexOf('transfer-batch-') === 0);
+            const l = r && r.querySelector('.file-names');
+            return l ? Math.round(l.scrollHeight) : null;
+          })(),
+          batchNamesOverflow: (() => {
+            const r = [...document.querySelectorAll('.msg.is-file')]
+              .find((m) => m.id.indexOf('transfer-batch-') === 0);
+            const l = r && r.querySelector('.file-names');
+            return l ? getComputedStyle(l).overflowY : null;
+          })(),
+          // The transcript is the block a batch row lands in, so its height is the thing
+          // that decides whether the composer moves.
+          messagesH: (() => { const m = box(document.getElementById('messages')); return m ? m.h : null; })(),
+          messagesWanted: Math.round(document.getElementById('messages').scrollHeight),
+          // The footer is a sibling of main in the page column, so it is drawn AFTER the
+          // screen and cannot be pushed out of the way by it. If main is ever allowed to be
+          // shorter than its own content, the overflow paints straight through the footer
+          // and every box measured above still reads correct.
+          // No backticks in this comment: it lives inside a template literal, and one of
+          // them ends the string 900 lines from where the parse error is reported.
+          mainBottom: (() => { const m = box(document.querySelector('main')); return m ? m.bottom : null; })(),
+          // The CONTENT bottom of the gate, which is the thing that does the painting, and
+          // NOT main's border box.
+          //
+          // 2026-08-10: the overlap arm below was written against mainBottom and could not
+          // fail. Measured with the rejected min-height:0 planted, at 390x844 with a seven
+          // file batch row on screen: main ends 749 and the footer starts 749, because a
+          // shrunken main simply pulls its sibling up behind it. The border boxes stay flush
+          // in BOTH states, so footTop < mainBottom is unreachable and the check reported a
+          // green it could never have reported red. The clean state reads 999/999.
+          //
+          // What actually spills is #sever and the Connection details card, which are laid
+          // out at their full height inside a box that is now 250px too short and paint
+          // straight through the footer. So the number to compare against footTop is the
+          // lowest edge any gate block reaches, which in the planted state is 999 against a
+          // footer starting at 749: 250px of overlap, and the arm fires.
+          gateBottom: kids.length ? Math.max(...kids.map((k) => k.bottom)) : null,
+          footTop: (() => { const f = box(document.querySelector('.foot')); return f ? f.top : null; })(),
+          gutter: Math.round(parseFloat(getComputedStyle(document.documentElement)
+            .getPropertyValue('--gutter')) || 0),
+          overflow: Math.round(Math.max(
+            document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            document.body.scrollWidth - document.body.clientWidth,
+            sc.scrollWidth - sc.clientWidth)),
+        });
+      }
+    `;
+    const readConn = async () => JSON.parse(await b.eval(CONN_GEOM + 'return connGeom();'));
+    const plantConn = async (js) => JSON.parse(await b.eval(CONN_GEOM + js + '\nreturn connGeom();'));
+    const connPlants = [];
+    const provenConn = (name, condition, bad, ok) => {
+      connPlants.push([name, bad, ok]);
+      check(name, condition, `BAD ${bad} | OK ${ok}`);
+    };
+
+    const c = await readConn();
+
+    // 1. The composer is the thing you came here to use and it has to be whole at rest.
+    check('in a connected gate at 390x844 the composer is fully above the fold without scrolling',
+      c.scrollTop === 0 && c.composerBottom <= c.fold,
+      `composer ends ${c.composerBottom}, the scroller ends ${c.fold} `
+      + `(composer ${c.composerH}px, hint ${c.hintH}px; before: 838 against a fold of 811)`);
+
+    // 2. One rhythm. Every gap between consecutive blocks is the same, except the one
+    //    before the destructive control, which is deliberately larger.
+    const beforeSever = c.gaps.filter((g) => g.to === 'sever');
+    const rest = c.gaps.filter((g) => g.to !== 'sever');
+    check('and the seven blocks are spaced on ONE gap, the same 14px the home screen uses',
+      rest.length >= 5 && rest.every((g) => g.gap === 14),
+      `${rest.map((g) => `${g.from}->${g.to} ${g.gap}`).join(', ')} (before: 22/15/11/8/22)`);
+    check('with exactly one deliberate exception: more room above the control that burns the gate',
+      beforeSever.length === 1 && beforeSever[0].gap === 24,
+      `${beforeSever.map((g) => `${g.from}->${g.to} ${g.gap}`).join(', ') || 'no gap above #sever found'}`);
+
+    // 3. Where Games sits. Its own markup calls it "the least important thing on the
+    //    screen"; an unset `order` put it second from the top.
+    const at = (id) => c.order.indexOf(id);
+    check('Games sits with Connection details below the composer, not above the conversation',
+      at('games-disc') > at('chat-form') && at('games-disc') > at('conn-disc')
+      && at('games-disc') < at('sever'),
+      c.order.join(' -> '));
+
+    // 4. One measure, the same claim the home screen makes, in the screen that is open the
+    //    longest. Every block that carries a box, one gutter in from each edge.
+    check('every block in the connected gate is drawn to one measure, one gutter in',
+      c.kids.length >= 6
+      && c.kids.every((k) => k.left === c.gutter && k.right === c.win - c.gutter),
+      c.kids.map((k) => `${k.id} ${k.left}..${k.right}`).join(', '));
+
+    // 5. And nothing runs off the side of the phone.
+    check('nothing scrolls sideways in a connected gate at 390',
+      c.overflow <= 0, `${c.overflow}px of horizontal overflow`);
+
+    // ---- every one of those five against its known-bad state -------------------------
+    //
+    // The first plant is the composite before state rather than a single declaration, and
+    // deliberately so: the composer came back above the fold from TWO changes (the folded
+    // hint and Games leaving the top of the column), and a plant that reverted only one of
+    // them lands the composer's bottom edge within a pixel or two of the fold, which is a
+    // check that passes or fails on rounding. Reverting both is the state the owner
+    // photographed.
+    //
+    // The hint half of this plant was rewritten on 2026-08-10 for the reason the home
+    // screen's UNCLAMP records in full: the composer hint is now a one-sentence lede in the
+    // summary with the rest in the disclosure body, so unclamping the summary alone no
+    // longer restores the 160px block this check exists to keep off the screen. The plant
+    // puts both messages back into the one element and then unclamps it, which IS the
+    // layout it replaced.
+    const badFold = await plantConn(`
+      for (const t of document.querySelectorAll('.note-fold-text')) {
+        const body = t.closest('.note-fold')?.querySelector('.note-fold-body');
+        if (body && body.textContent.trim()) {
+          const s = document.createElement('span');
+          s.className = 'plant-unfolded';
+          s.textContent = ' ' + body.textContent;
+          t.appendChild(s);
+        }
+        t.style.setProperty('display', 'block');
+      }
+      document.getElementById('games-disc').style.setProperty('order', '0');
+    `);
+    await b.eval(`
+      for (const s of document.querySelectorAll('.plant-unfolded')) s.remove();
+      for (const t of document.querySelectorAll('.note-fold-text')) t.style.removeProperty('display');
+      document.getElementById('games-disc').style.removeProperty('order');
+      return true;
+    `);
+    const okFold = await readConn();
+    provenConn('the composer-above-the-fold check fails against the layout it replaced',
+      badFold.composerBottom > badFold.fold && okFold.composerBottom <= okFold.fold,
+      `composer ends ${badFold.composerBottom}, fold ${badFold.fold} (hint ${badFold.hintH}px)`,
+      `composer ends ${okFold.composerBottom}, fold ${okFold.fold} (hint ${okFold.hintH}px)`);
+
+    // The rhythm: hand the two disclosures their old margins back and put the screen's gap
+    // back to 8. That is where four of the six original distances came from.
+    const badGaps = await plantConn(`
+      document.getElementById('screen-connected').style.setProperty('gap', '8px');
+      for (const d of document.querySelectorAll('#conn-disc, #games-disc')) {
+        d.style.setProperty('margin-top', '14px');
+        d.style.setProperty('margin-bottom', '10px');
+      }
+    `);
+    await b.eval(`
+      document.getElementById('screen-connected').style.removeProperty('gap');
+      for (const d of document.querySelectorAll('#conn-disc, #games-disc')) {
+        d.style.removeProperty('margin-top'); d.style.removeProperty('margin-bottom');
+      }
+      return true;
+    `);
+    const okGaps = await readConn();
+    const spread = (g) => [...new Set(g.gaps.filter((x) => x.to !== 'sever').map((x) => x.gap))].sort((m, n) => m - n);
+    provenConn('the one-rhythm check fails when the children carry their own margins again',
+      spread(badGaps).length > 1 && spread(okGaps).length === 1 && spread(okGaps)[0] === 14,
+      `distinct gaps ${JSON.stringify(spread(badGaps))}`,
+      `distinct gaps ${JSON.stringify(spread(okGaps))}`);
+
+    // The Burn separation, on its own: it is the one number that is NOT 14, so a plant that
+    // only proved the rhythm could not tell "24 by choice" from "24 by accident".
+    const badSever = await plantConn("document.getElementById('sever').style.setProperty('margin-top', '0px');");
+    await b.eval("document.getElementById('sever').style.removeProperty('margin-top'); return true;");
+    const okSever = await readConn();
+    const severGap = (g) => (g.gaps.find((x) => x.to === 'sever') || { gap: null }).gap;
+    provenConn('the extra room above Burn fails when its margin is taken away',
+      severGap(badSever) === 14 && severGap(okSever) === 24,
+      `${severGap(badSever)}px above Burn, the same as everything else`,
+      `${severGap(okSever)}px above Burn`);
+
+    // Games back to the order it had, which is none.
+    const badOrder = await plantConn("document.getElementById('games-disc').style.setProperty('order', '0');");
+    await b.eval("document.getElementById('games-disc').style.removeProperty('order'); return true;");
+    const okOrder = await readConn();
+    provenConn('the Games-position check fails when its order is left unset',
+      badOrder.order.indexOf('games-disc') < badOrder.order.indexOf('messages')
+      && okOrder.order.indexOf('games-disc') > okOrder.order.indexOf('chat-form'),
+      badOrder.order.join(' -> '),
+      okOrder.order.join(' -> '));
+
+    // The measure, and the sideways scroll, at this width in this screen.
+    const badMeasure = await plantConn(
+      "document.getElementById('conn-disc').style.setProperty('margin-left', '-16px');");
+    await b.eval("document.getElementById('conn-disc').style.removeProperty('margin-left'); return true;");
+    const okMeasure = await readConn();
+    const offGutter = (g) => g.kids.filter((k) => k.left !== g.gutter).map((k) => `${k.id}@${k.left}`);
+    provenConn('the one-measure check in the gate fails when one block is pulled off the gutter',
+      offGutter(badMeasure).length > 0 && offGutter(okMeasure).length === 0,
+      `off the gutter: ${JSON.stringify(offGutter(badMeasure))}`,
+      `off the gutter: ${JSON.stringify(offGutter(okMeasure))}`);
+
+    // `flex: 0 0 auto` is load bearing, and it is the second thing this control needed.
+    //
+    // #screen-connected is a flex COLUMN, and a plain div in one is `flex: 0 1 auto`: it can
+    // be shrunk along the main axis, which here is the height. Once style.css gave the
+    // screen `min-height: 0` on a phone (so the transcript absorbs a batch row), the flex
+    // line runs at a deficit and every shrinkable item shrinks. Measured: the control was
+    // laid out at 900 x 0, and a zero-height box contributes nothing to a scrollable
+    // overflow rectangle, so `sc.scrollWidth` read 390 and the plant reported the same
+    // "0px of horizontal overflow" as the clean page. BAD and OK identical is a plant that
+    // proves nothing, and it would have kept saying so for as long as the check existed.
+    // Pinned, the same control lays out at 900 x 10 and the scroller reads 916 against 390.
+    //
+    // The equivalent control on the home screen appends to a GRID, where nothing shrinks it,
+    // and it does produce its 526px there. It is pinned too rather than left to that
+    // accident: the two are the same check and only one of them being immune to a
+    // container-type change is how the pair silently stops agreeing.
+    const badWide = await plantConn(`
+      const d = document.createElement('div');
+      d.id = 'wg-conn-overflow-control';
+      d.style.setProperty('width', '900px');
+      d.style.setProperty('height', '10px');
+      d.style.setProperty('flex', '0 0 auto');
+      document.getElementById('screen-connected').appendChild(d);
+    `);
+    await b.eval("document.getElementById('wg-conn-overflow-control').remove(); return true;");
+    const okWide = await readConn();
+    provenConn('the sideways-scroll check in the gate catches a planted 900px element',
+      badWide.overflow > 0 && okWide.overflow <= 0,
+      `${badWide.overflow}px of horizontal overflow`,
+      `${okWide.overflow}px of horizontal overflow`);
+
+    // ---- and what the OTHER device can do to this screen -------------------------------
+    //
+    // The batch row grew a state per file on 2026-08-10, so a peer pressing "send seven
+    // files" now writes seven "name: waiting for you to accept" lines into the transcript
+    // of somebody who has pressed nothing. Measured at 390x844, this gate, seven real files
+    // over a real channel:
+    //
+    //   .file-names   101px -> 201px   the states doubled it: every name now wraps to two
+    //                                  lines in a 308px column
+    //   the row       205px -> 306px   36% of an 844px viewport, one message
+    //   #messages     128px -> 443px   the transcript simply grew to fit it
+    //   #chat-form    y 392..670 -> 707..985, against a scroller that ends at y=811
+    //
+    // So the composer's position was a function of what the far end sent. That is the same
+    // defect as the capability banner on the home screen, arriving over the network rather
+    // than out of the markup, and it is the one thing on this screen that must not move.
+    //
+    // Two rules answer it, both in style.css and both scoped to `max-width: 699px`: the
+    // transcript absorbs (`min-height: 0` on `main` and on the screen, so `#messages`
+    // scrolls its own content instead of growing the column), and the file list inside one
+    // row is capped at 116px with its own scroller. Measured after: the composer is at
+    // y 424..703 with the batch row on screen and at y 424..703 without it, identical to
+    // the pixel, and the file list is 116px of the 201px it wants.
+    //
+    // Driven rather than faked: `renderBatchOffer` only runs on a real multi-file
+    // announcement, and a hand-built div with the same class names would prove that the
+    // stylesheet matches a selector rather than that a peer cannot move the composer.
+    const batchNames = [
+      'IMG_20260731_183042_beach_sunset.jpg', 'IMG_20260731_183107.jpg',
+      'holiday-video-clip.mp4', 'receipts-scan.pdf', 'packing-list.txt',
+      'a-really-quite-long-file-name-from-a-camera-roll.heic', 'notes.md',
+    ];
+    const batchPaths = batchNames.map((name, i) => {
+      const p = path.join(TMP, `batch-${i}-${name}`);
+      fs.writeFileSync(p, Buffer.alloc(4096 + i * 512, 0x41 + i));
+      return p;
+    });
+    await a.setFileInput('#file-input', batchPaths);
+    await b.waitFor(
+      "(() => { const r = [...document.querySelectorAll('.msg.is-file')]"
+      + ".find((m) => m.id.indexOf('transfer-batch-') === 0); return r ? 'row' : ''; })()",
+      { timeout: 30000, label: 'the batch offer row for seven files, in tab B' },
+    );
+    // Back to the top before measuring. `composerBottom` and `fold` are both viewport
+    // coordinates, so a page that scrolled while the row arrived would move one and not the
+    // other and the comparison against `c` would be reading a scroll position rather than a
+    // layout. The assertion below restates scrollTop === 0 rather than trusting this line.
+    await b.eval("document.querySelector('.page').scrollTop = 0; return true;");
+    const withBatch = await readConn();
+
+    // 1. The composer is still whole and still above the fold. It DOES move down, because
+    //    the transcript is allowed to grow up to its cap and the row is real content, and
+    //    that is the intended behaviour: what must not happen is the composer leaving the
+    //    screen of somebody who pressed nothing. Compared against `c`, read at the top of
+    //    this block before any plant and before any file was announced.
+    check('a batch of seven files announced by the peer never pushes the composer off screen',
+      withBatch.batchRow !== null
+      && withBatch.scrollTop === 0
+      && withBatch.composerBottom <= withBatch.fold,
+      `composer ${c.composerBottom} before the batch, ${withBatch.composerBottom} with it, `
+      + `fold ${withBatch.fold} (before this pass: 670 -> 985 against a fold of 811)`);
+    // 2. Because the transcript is capped and scrolls, rather than growing without limit.
+    check('the transcript is bounded on a phone and scrolls the batch row inside itself',
+      withBatch.messagesH <= 340 && withBatch.messagesWanted > withBatch.messagesH,
+      `#messages ${withBatch.messagesH}px holding ${withBatch.messagesWanted}px of content `
+      + `(${c.messagesH}px before the batch arrived; before this pass it grew to 443px)`);
+    // 3. And nothing spilled out of `main` onto the footer while doing it. This is not a
+    //    hypothetical: the first attempt at bounding the transcript used `min-height: 0` on
+    //    `main`, which does keep the composer on screen and paints "FAQ Terms Acceptable use
+    //    Privacy Support GitHub" straight across the Connection details card, because the
+    //    content main no longer has room for does not stop existing. Every box measured
+    //    above reads correct in that state, so this is the check that sees it.
+    //    Read as the lowest edge any gate block reaches, not as main's border box: a main
+    //    that is too short for its content pulls the footer up flush behind it, so the two
+    //    border boxes agree in the broken state exactly as they do in the healthy one.
+    check('and nothing from the gate paints over the footer while it does that',
+      withBatch.footTop >= withBatch.gateBottom,
+      `the lowest gate block ends ${withBatch.gateBottom}, the footer starts ${withBatch.footTop} `
+      + `(main's own box ends ${withBatch.mainBottom})`);
+    // 3. And one row cannot own the screen. 64 files is what the protocol allows
+    //    (MAX_BATCH_FILES in link.js), which at the measured 28.7px per entry is 1837px.
+    check('the per-file list inside one batch row is capped, and scrolls the rest',
+      withBatch.batchNames !== null
+      && withBatch.batchNames.h <= 116
+      && withBatch.batchNamesWanted > withBatch.batchNames.h
+      && withBatch.batchNamesOverflow === 'auto',
+      `${withBatch.batchNames ? withBatch.batchNames.h : 'MISSING'}px shown of `
+      + `${withBatch.batchNamesWanted}px wanted, overflow-y ${withBatch.batchNamesOverflow}`);
+
+    // ---- all three of those against their known-bad state -------------------------------
+    //
+    // The cap on the transcript first. `max-height: none` is what the base rule says and
+    // what this screen shipped with before this pass, so the plant is literally the old
+    // stylesheet rather than an invented fault.
+    const badCapped = await plantConn(
+      "document.getElementById('messages').style.setProperty('max-height', 'none');");
+    await b.eval("document.getElementById('messages').style.removeProperty('max-height'); return true;");
+    const okCapped = await readConn();
+    provenConn('the composer-stays-on-screen check fails when the transcript can grow again',
+      badCapped.composerBottom > badCapped.fold && okCapped.composerBottom <= okCapped.fold,
+      `composer ends ${badCapped.composerBottom}, fold ${badCapped.fold}, `
+      + `#messages ${badCapped.messagesH}px`,
+      `composer ends ${okCapped.composerBottom}, fold ${okCapped.fold}, `
+      + `#messages ${okCapped.messagesH}px`);
+
+    // The footer arm, planted with the rejected fix rather than with something arbitrary:
+    // `min-height: 0` on main is exactly what produced the overlap that was photographed.
+    const badSpill = await plantConn(`
+      document.querySelector('main').style.setProperty('min-height', '0');
+      document.getElementById('screen-connected').style.setProperty('min-height', '0');
+    `);
+    await b.eval(`
+      document.querySelector('main').style.removeProperty('min-height');
+      document.getElementById('screen-connected').style.removeProperty('min-height');
+      return true;
+    `);
+    const okSpill = await readConn();
+    provenConn('the footer-overlap check fails against the min-height:0 fix that was rejected',
+      badSpill.footTop < badSpill.gateBottom && okSpill.footTop >= okSpill.gateBottom,
+      `gate content ends ${badSpill.gateBottom}, footer starts ${badSpill.footTop}, `
+      + `${badSpill.gateBottom - badSpill.footTop}px of overlap (main's box ends ${badSpill.mainBottom})`,
+      `gate content ends ${okSpill.gateBottom}, footer starts ${okSpill.footTop}, `
+      + `${okSpill.footTop - okSpill.gateBottom}px of clearance (main's box ends ${okSpill.mainBottom})`);
+
+    // The cap on the list, on its own: without this plant "116px" is equally consistent
+    // with a list that simply happens to be 116px tall.
+    const badCap = await plantConn(`
+      for (const l of document.querySelectorAll('.msg.is-file .file-names')) {
+        l.style.setProperty('max-height', 'none');
+      }
+    `);
+    await b.eval(`
+      for (const l of document.querySelectorAll('.msg.is-file .file-names')) {
+        l.style.removeProperty('max-height');
+      }
+      return true;
+    `);
+    const okCap = await readConn();
+    provenConn('the bounded-file-list check fails when the cap is lifted',
+      badCap.batchNames.h > 116 && okCap.batchNames.h <= 116,
+      `list ${badCap.batchNames.h}px, row ${badCap.batchRow.h}px`,
+      `list ${okCap.batchNames.h}px of ${okCap.batchNamesWanted}px wanted, row ${okCap.batchRow.h}px`);
+
+    // Leave the gate settled rather than with an unanswered consent prompt in it: every
+    // assertion after this block reads these same two tabs, and a live offer is state the
+    // severing checks below would inherit without saying so.
+    await b.eval(`
+      const row = [...document.querySelectorAll('.msg.is-file')]
+        .find((m) => m.id.indexOf('transfer-batch-') === 0);
+      const refuse = [...row.querySelectorAll('button')].find((x) => x.textContent === 'Refuse');
+      refuse.click();
+      return true;
+    `);
+
+    process.stdout.write('\n--- the connected gate at 390x844 -------------------------------------\n');
+    for (const k of c.kids) {
+      process.stdout.write(`  ${k.id.padEnd(12)} x ${String(k.left).padStart(4)}..${String(k.right).padStart(4)}`
+        + `  y ${String(k.top).padStart(4)}..${String(k.bottom).padStart(4)}  h ${String(k.h).padStart(4)}\n`);
+    }
+    process.stdout.write(`  gaps: ${c.gaps.map((g) => g.gap).join(' / ')} (before: 22 / 15 / 11 / 8 / 22 / 18)\n`);
+    process.stdout.write(`  composer ends ${c.composerBottom}, scroller ends ${c.fold} (before: 838 against 811)\n`);
+    process.stdout.write('--- each check against its known-bad state -----------------------------\n');
+    for (const [name, bad, ok] of connPlants) {
+      process.stdout.write(`  ${name}\n      BAD  ${bad}\n      OK   ${ok}\n`);
+    }
+    process.stdout.write('-----------------------------------------------------------------------\n\n');
+
+    // Put the tab back the way the rest of this block found it. Every assertion after this
+    // one reads tab B at its original size, and a 390px override left in place would make
+    // them measure a phone without saying so.
+    await b.send('Emulation.clearDeviceMetricsOverride');
   }
 
   // ------------------------------------------------------------ page errors
@@ -3110,6 +4267,43 @@ try {
       ? 'the probe was rate limited before the room was reaped, so this measured nothing'
       : `last answer: ${reaped?.status} ${reaped?.body}`);
 
+  // ---- release the tabs this run has finished with -----------------------------------
+  //
+  // Investigated 2026-08-10, after two intermittent 90s aborts in the block below on a
+  // byte-identical file. Nothing in it was at fault: the run had simply accumulated live
+  // pages. tab.close() closed the DevTools socket and left the PAGE running (fixed in
+  // tests/lib/cdp.mjs), and a, b, c, z and priv were never closed at all, so every gate
+  // this file had ever opened still held its /api/events stream.
+  //
+  // Two ceilings sit just above that, and both fail silently: Chromium's six connections
+  // per origin over HTTP/1.1 (an SSE stream holds one for the life of the tab, so a POST
+  // to /api/relay can be left with no socket and die on its own 8s timeout) and the
+  // server's streamsPerKey, default 4, whose 429 puts an EventSource into readyState
+  // CLOSED for good because it does not reconnect. `ss -tn` measured this run sustained at
+  // 7 to 9 established connections to the test origin.
+  //
+  // These five are used for the last time above. Closed here rather than at the end of the
+  // file so the blocks below run with the sockets free.
+  for (const done of [a, b, c, z, priv]) await done.close();
+
+  // Asserted, not assumed. A page takes a moment to go, and a future edit that opens a tab
+  // and leaves it open would otherwise put the run straight back where it was with no
+  // symptom but a timeout somewhere further down.
+  const appTabs = async () => {
+    const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`, { signal: AbortSignal.timeout(5000) });
+    const list = await res.json();
+    return list.filter((t) => t.type === 'page' && typeof t.url === 'string' && t.url.startsWith(ORIGIN));
+  };
+  let livePages = await appTabs();
+  for (let i = 0; i < 20 && livePages.length > 0; i += 1) {
+    await new Promise((r) => { setTimeout(r, 150).unref?.(); });
+    livePages = await appTabs();
+  }
+  check('every tab this run has finished with is really gone, so what follows has all six '
+    + 'of Chromium\'s per-origin connections to itself',
+    livePages.length === 0,
+    `${livePages.length} still open: ${livePages.map((t) => t.url.replace(ORIGIN, '')).join(', ') || 'none'}`);
+
   // ------------------------------------------------------------ a password gate survives a reload
   //
   // The roadmap called this a real gap and it was one: the key schedule takes a password,
@@ -3229,19 +4423,36 @@ try {
     // 2. The cut is counted in bytes rather than waited for as a percentage. Over
     //    loopback the whole 8 MiB can land between two polls, and a cut that arrives
     //    after the last byte tests nothing at all.
+    //
+    // The hook also keeps a TIMELINE of every peer connection and data channel state change.
+    // That is not decoration. When the wait below timed out, the whole account of the failure
+    // was `last value: false` for 180 seconds, which cannot tell "the channel never came
+    // back" apart from "it came back and nothing was sent" apart from "it all arrived and the
+    // receiver rejected it". Those have different causes and different fixes, and a run that
+    // takes three minutes to say nothing is a run that has to be repeated to learn anything.
+    // The dump below turns the abort into the sequence that produced it.
     const CHAN_HOOK = `
+      window.__t0 = Date.now();
+      window.__timeline = [];
+      const mark = (what) => window.__timeline.push(
+        '+' + ((Date.now() - window.__t0) / 1000).toFixed(1) + 's ' + what);
       window.__chans = [];
       window.__cutAfter = 0;
       window.__cutFired = false;
       const grab = (ch) => {
         if (!ch || ch.label !== 'wg') return ch;
         window.__chans.push(ch);
+        const n = window.__chans.length;
+        mark('channel #' + n + ' appeared, state ' + ch.readyState);
+        ch.addEventListener('open', () => mark('channel #' + n + ' open'));
+        ch.addEventListener('close', () => mark('channel #' + n + ' close'));
         let sent = 0;
         const send = ch.send.bind(ch);
         ch.send = (data) => {
           sent += (data && (data.byteLength ?? data.length)) || 0;
           if (window.__cutAfter && sent > window.__cutAfter && !window.__cutFired) {
             window.__cutFired = true;
+            mark('CUT after ' + sent + ' bytes on channel #' + n);
             ch.close();
             return undefined;
           }
@@ -3250,8 +4461,14 @@ try {
         return ch;
       };
       const RPC = RTCPeerConnection;
+      window.__pcs = [];
       function Patched(...args) {
         const pc = new RPC(...args);
+        window.__pcs.push(pc);
+        const n = window.__pcs.length;
+        mark('pc #' + n + ' created');
+        pc.addEventListener('connectionstatechange', () => mark('pc #' + n + ' connection=' + pc.connectionState));
+        pc.addEventListener('iceconnectionstatechange', () => mark('pc #' + n + ' ice=' + pc.iceConnectionState));
         pc.addEventListener('datachannel', (event) => grab(event.channel));
         const make = pc.createDataChannel.bind(pc);
         pc.createDataChannel = (...a) => grab(make(...a));
@@ -3262,6 +4479,23 @@ try {
       window.__blobs = [];
       const realUrl = URL.createObjectURL.bind(URL);
       URL.createObjectURL = (blob) => { window.__blobs.push(blob); return realUrl(blob); };
+
+      // EVERY LOG LINE, TIMESTAMPED, INTO THE TIMELINE. Measured on 2026-08-10: when this
+      // wait aborted, the sender's #log held exactly ONE line, "could not send dropped.bin:
+      // the gate was burned during the transfer", and nothing about the sever that produced
+      // it. app.js's 'severed' handler calls clearLog(), deliberately, so the end-state
+      // photograph the dump takes is always taken AFTER the reason has been erased. Reading
+      // the lines as they are appended is the only way the abort can name its own cause;
+      // reading #log at the end reads the gate's obituary and not its death.
+      document.addEventListener('DOMContentLoaded', () => {
+        const box = document.getElementById('log');
+        if (!box) return;
+        new MutationObserver((records) => {
+          for (const r of records) {
+            for (const node of r.addedNodes) mark('LOG ' + (node.textContent || '').slice(0, 200));
+          }
+        }).observe(box, { childList: true });
+      });
     `;
     for (const t of [rsA, rsB]) await t.send('Page.addScriptToEvaluateOnNewDocument', { source: CHAN_HOOK });
 
@@ -3309,8 +4543,33 @@ try {
     await rsB.waitFor("/paused|waiting to continue|nothing has arrived/i.test(document.getElementById('log').textContent)",
       { timeout: 60000, label: 'resume: the receiver noticed the drop' });
 
-    await rsB.waitFor("[...document.querySelectorAll('#messages button')].some(x => x.textContent === 'Save')",
-      { timeout: 180000, label: 'resume: the interrupted file finished anyway' });
+    // A diagnostic must name its own cause. Without this the abort said `last value: false`
+    // and nothing else, so every investigation of it began by re-running a three minute test.
+    // The dump is on the FAILURE path only: it neither relaxes the wait nor adds a check, and
+    // the original error is re-thrown with the timeline attached rather than swallowed.
+    try {
+      await rsB.waitFor("[...document.querySelectorAll('#messages button')].some(x => x.textContent === 'Save')",
+        { timeout: 180000, label: 'resume: the interrupted file finished anyway' });
+    } catch (err) {
+      const DUMP = `
+        const q = (id) => document.getElementById(id);
+        return JSON.stringify({
+          timeline: window.__timeline || [],
+          channels: (window.__chans || []).map((c) => c.readyState),
+          cutFired: window.__cutFired === true,
+          log: q('log') ? q('log').textContent.slice(-2500) : null,
+          rows: q('messages') ? q('messages').textContent.slice(-1200) : null,
+          buttons: q('messages') ? [...q('messages').querySelectorAll('button')].map((b) => b.textContent) : [],
+        });
+      `;
+      const parts = [];
+      for (const [side, tab] of [['SENDER rsA', rsA], ['RECEIVER rsB', rsB]]) {
+        let dump;
+        try { dump = await tab.eval(DUMP); } catch (dumpErr) { dump = `could not be read: ${dumpErr.message}`; }
+        parts.push(`\n--- ${side} ---\n${dump}`);
+      }
+      throw new Error(`${err.message}${parts.join('')}`);
+    }
 
     const rsLog = await rsB.eval("return document.getElementById('log').textContent;");
     const continuedAt = (rsLog.match(/continuing from ([\d.]+)\s*(B|KB|MB|GB)/i) || [])[1];
@@ -3528,12 +4787,49 @@ try {
       !shown.includes('\u0000'), JSON.stringify(shown));
     check('negative control: the hostile name really was sent, so the strip is doing work',
       /exe/.test(shown), JSON.stringify(shown));
+    // Rewritten on 2026-08-10 because the row it reads changed shape underneath it, and the
+    // old form had become a check that could no longer pass for any build.
+    //
+    // It used to assert `.file-names` had ZERO element children, which was the right test
+    // while the list was one text node. batchui.js now draws one <div> per announced file so
+    // that each can carry its own state ("waiting its turn", "arriving now", "saved"), so a
+    // correct build has exactly as many children as the batch has files and the old
+    // assertion failed on the feature rather than on an injection.
+    //
+    // Widened again later the same day, when each line became a DIV holding two SPANs so that
+    // CSS can ellipse the NAME and keep the STATE (see .file-line in style.css). The claim is
+    // still the one that matters and is still exact: nothing the PEER wrote became markup.
+    // Every element in that subtree is now enumerated, rather than counting one level:
+    //   - the list's children are DIVs, the only element paintBatch() creates per line, and
+    //     there are as many as the batch has files, so a count of 0 fails rather than passes;
+    //   - each line holds exactly two SPANs, name then state, which is the shape the stylesheet
+    //     depends on and would otherwise rot silently;
+    //   - nothing below those spans is an element at all, which is where a peer's string would
+    //     have to surface if it were ever parsed instead of assigned to textContent.
+    const listShape = JSON.parse(await fbB.eval(`
+      const rows = [...document.querySelectorAll('#messages .msg.is-file')].filter((r) => r.id.startsWith('transfer-batch-'));
+      const el = rows.length ? rows[rows.length - 1].querySelector('.file-names') : null;
+      if (!el) return JSON.stringify({ found: false });
+      const kids = [...el.children];
+      const spans = kids.flatMap((k) => [...k.children]);
+      return JSON.stringify({
+        found: true,
+        count: kids.length,
+        tags: [...new Set(kids.map((k) => k.tagName))],
+        perLine: [...new Set(kids.map((k) => k.children.length))],
+        spanTags: [...new Set(spans.map((s) => s.tagName))],
+        spanClasses: [...new Set(spans.map((s) => s.className))].sort(),
+        deeper: spans.reduce((n, s) => n + s.children.length, 0),
+      });
+    `));
     check('the names are text, not markup: no element came out of the peer\'s string',
-      (await fbB.eval(`
-        const rows = [...document.querySelectorAll('#messages .msg.is-file')].filter((r) => r.id.startsWith('transfer-batch-'));
-        const el = rows.length ? rows[rows.length - 1].querySelector('.file-names') : null;
-        return el ? el.children.length : -1;
-      `)) === 0);
+      listShape.found === true && listShape.count === 2
+      && listShape.tags.length === 1 && listShape.tags[0] === 'DIV'
+      && listShape.perLine.length === 1 && listShape.perLine[0] === 2
+      && listShape.spanTags.length === 1 && listShape.spanTags[0] === 'SPAN'
+      && listShape.spanClasses.join(',') === 'file-line-name,file-line-state'
+      && listShape.deeper === 0,
+      JSON.stringify(listShape));
 
     // Refuse, and the whole set must go: a batch that is refused and then delivers its
     // small files anyway through the auto-accept path would be the button lying.

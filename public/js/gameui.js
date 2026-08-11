@@ -295,6 +295,47 @@ export class GameUI {
     // should get the log line and no error.
     const drawer = this.root && this.root.closest ? this.root.closest('details') : null;
     if (drawer && !drawer.open) drawer.open = true;
+
+    // Opening the drawer is not the same thing as putting the answer on screen, and on a
+    // small phone it is not even close. Measured on the connected screen at 360x640 with
+    // the drawer opened by an invitation and nothing else touched:
+    //
+    //     masthead bottom      y =  45
+    //     drawer top           y = 625
+    //     Play button          y = 694..730     viewport height 640
+    //     scrollTop after      0                scrollable range 842
+    //
+    // So the control that answers the invitation sat 54px BELOW the fold, the page did
+    // not move, and elementFromPoint at its centre returned nothing at all: off screen.
+    // The drawer had opened onto something the person was never shown. At 390x844 the
+    // same measurement puts it at y=678 and it happens to fit, which is exactly why this
+    // cannot be left to the layout: it is one block of transcript away from not fitting,
+    // and the Games panel moved from second to sixth on the phone layout, so the drawer
+    // now opens further down the column than it used to.
+    //
+    // Deferred by one frame because the invitation itself is not in the DOM yet:
+    // announceInvite() runs from render() BEFORE renderInvite() appends the row, so a
+    // scroll issued here would be aimed at the previous contents. One rAF is enough,
+    // since render() finishes synchronously.
+    //
+    // `block: 'nearest'` rather than 'center' or 'start': it is a no-op when the row is
+    // already fully on screen, so somebody who had the drawer open and was reading it
+    // does not get yanked around by a scroll they did not ask for. The masthead is
+    // `position: sticky; top: 0`, so a scroll that ignored it would park the row
+    // underneath it; the offset lives in CSS as `scroll-margin-top` on .game-status,
+    // beside the token that carries the masthead's height.
+    //
+    // Instant, never smooth: this is a jump to something that needs an answer, and a
+    // 300ms animated scroll on a screen that may be running a live transfer is motion
+    // spent on a decoration.
+    if (drawer && typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        const answer = this.root && this.root.querySelector ? this.root.querySelector('.game-status') : null;
+        if (answer && typeof answer.scrollIntoView === 'function') {
+          answer.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+        }
+      });
+    }
   }
 
   render() {

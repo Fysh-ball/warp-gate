@@ -238,6 +238,15 @@ const packed = (graph) => [...graph.values()]
     // Nothing here can be reached until a file has actually finished arriving, which is
     // the same rule as everything above it.
     ['the file preview and Open button', 'preview.js'],
+    // Split on 2026-08-10, when the disconnect recovery, the batch progress rows and the
+    // pending-accept row put the gate 429 B over. Gated by the decision to SCAN rather than
+    // type: app.js keeps only the one property lookup that decides whether the button may be
+    // shown at all, and everything from the first press onwards is here. A gate joined by
+    // typing the words, which is every laptop with no camera and everybody whose code is
+    // already on their clipboard, fetches none of it. qrscan.js and qrdecode.js were already
+    // behind this same decision, so the button handler was the last eager thing standing in
+    // front of ~57 KB it never used.
+    ['the camera scan panel', 'scanui.js'],
     // Split on 2026-08-10, when three features in one day (the batch accept, the preview and
     // the outbound accounting fix) put the gate 2,821 B over. Gated by the decision to TAKE a
     // file: link.js builds a sink only from acceptIncoming (the user clicked Accept and is in
@@ -309,6 +318,12 @@ const packed = (graph) => [...graph.values()]
     // than passing on a file that no longer has the call site.
     ['the streaming download', 'filesink.js', './download.js'],
     ['the folder sink naming', 'filesink.js', './dirsink.js'],
+    // Two edges, one per hop, because the scan is now two lazy steps rather than one.
+    // Without the second row, moving the camera work out of app.js and then forgetting to
+    // import qrscan.js from its new home would pass every check above while shipping a
+    // button that opens a panel and never starts a camera.
+    ['the camera scan panel', 'app.js', './scanui.js'],
+    ['the camera scanner', 'scanui.js', './qrscan.js'],
   ];
   for (const [what, from, spec] of REACHED) {
     const edges = dynamicImports(fs.readFileSync(path.join(JS, from), 'utf8'));

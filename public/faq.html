@@ -25,8 +25,15 @@ from then on messages and files pass directly between the devices. When the gate
 the keys and the room are gone.</p>
 
 <h2 id="sec-is-there-an-app-to-install">Is there an app to install?</h2>
-<p>No. It is a web page. There is no app, no extension and no account, and there never
-will be.</p>
+<p>No app, and no account. It's a web page, and that's the point.</p>
+<p>There is one optional extra: a browser extension. It carries the client inside the
+package instead of downloading it, which closes the one gap nothing else can. Whoever
+serves you the page controls the code that holds your keys, so if you don't want to trust
+the server on every visit, the extension is the answer. It's in
+<a href="https://github.com/Fysh-ball/warp-gate/tree/main/extension" target="_blank" rel="noopener noreferrer">the
+repository</a> and you load it unpacked: it isn't in any store, and it doesn't have to be
+installed for the site to work. One thing it gives up: it can't stream a download, so on a
+browser without a save-file dialog a file over 500 MB can't be received in the extension.</p>
 
 <h2 id="sec-who-can-read-what-i-send">Who can read what I send?</h2>
 <p>The devices in the gate, and nobody else. Everything is encrypted in your browser

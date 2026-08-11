@@ -406,6 +406,28 @@ if (!findBrowser()) {
   try {
     const tab = await browser.newTab(`http://127.0.0.1:${PORT}/app`);
 
+    // WAIT FOR app.js TO HAVE PICKED A SCREEN BEFORE FORCING ONE.
+    //
+    // boot() in app.js is async and ends in `show('onboarding')` on a first visit. Until
+    // that lands, every `section.screen` still carries the `hidden` attribute it ships
+    // with, and `[hidden]` is `display: none !important` in style.css. Forcing
+    // #screen-connected visible before boot finishes therefore holds only until boot
+    // catches up, and boot then hides it again from underneath the measurement.
+    //
+    // Measured: boot() completed 773ms after this eval started. Runs where it landed
+    // mid-eval reported found:true, visible:false, hitIsButton:false, hitWas:"bar" for
+    // the drawer checks below, because the button's rect had collapsed to 0x0 at the
+    // origin and elementFromPoint(0, 0) returns the masthead. That reads exactly like an
+    // element covered by the sticky bar and is nothing of the kind. Three consecutive
+    // runs gave 0, 1 and 2 failures, and the run with 2 failed the OPEN-drawer CONTROL
+    // with the identical payload, which is what proves the cause is the screen going
+    // away rather than anything about the drawer.
+    //
+    // This is the idiom the rest of the browser suite already uses (tests/browser.test.mjs
+    // gates on the same expression in a dozen places); this block was the one that did not.
+    await tab.waitFor("!document.getElementById('screen-onboarding').hidden",
+      { timeout: 20000, label: "app.js boot to have shown a screen, so forcing #screen-connected sticks" });
+
     // The drawer lives on the connected screen, so that screen has to be the one showing
     // or every visibility answer below would be about the screen rather than the drawer.
     // Nothing else is touched: the disclosure is left in the state a person leaves it in.
@@ -415,7 +437,32 @@ if (!findBrowser()) {
 
       const drawer = document.getElementById('games-disc');
       const area = document.getElementById('game-area');
-      const settle = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // Two frames, THEN the drawer's own opening animation, THEN one more frame.
+      //
+      // app.js listens for the <details> toggle and adds .is-opening, and style.css runs
+      // wg-rise-sm at var(--motion-small), 150ms, with fill: both on the .disc-body,
+      // whose first keyframe is opacity: 0. checkVisibility({ opacityProperty: true })
+      // answers false for an opacity of exactly 0, which is what the fill holds until the
+      // animation has ticked. Two rAF is ~32ms into a 150ms fade, so measuring there is
+      // measuring the fade rather than the layout: it reported visible:false with
+      // hitIsButton:true, an element that is demonstrably present and hit-testable.
+      //
+      // Waiting for the real animation rather than sleeping a fixed 200ms, because the
+      // duration is a CSS token and a test that hardcodes it goes quietly wrong when it
+      // changes. Infinite animations are excluded or the wait would never resolve, and a
+      // cancelled animation rejects finished, which is "it is not running any more" and
+      // is exactly what this is waiting for.
+      const settle = async () => {
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const running = (document.getAnimations ? document.getAnimations() : [])
+          .filter((a) => a.effect && a.effect.getComputedTiming().iterations !== Infinity);
+        await Promise.all(running.map((a) => a.finished.catch((err) => {
+          // Cancelled, which resolves the question this wait is asking. Named rather
+          // than swallowed so a future failure here is not invisible.
+          void err;
+        })));
+        await new Promise((r) => requestAnimationFrame(r));
+      };
 
       // Where the Play button really is: visible to the browser's own test, and the thing
       // that answers a hit test at its own centre. Two different questions, because
@@ -516,9 +563,28 @@ if (!findBrowser()) {
         out.noInviteStaysShut = drawer.open === false;
       }
 
+      // The precondition, re-read at the END rather than assumed from the top. Every
+      // "not visible" answer above is only about the drawer if the screen holding it was
+      // still displayed when it was measured, and app.js re-hiding it is precisely the
+      // race that used to make this block report a covered button. Read as a computed
+      // style, not as the hidden attribute: [hidden] is display:none !important here, so
+      // the style is the thing that actually decides, and either route to display:none
+      // invalidates the block the same way.
+      out.screenHeld = !document.getElementById('screen-connected').hidden
+        && getComputedStyle(document.getElementById('screen-connected')).display !== 'none';
+
       return JSON.stringify(out);
     `);
     const seen = JSON.parse(raw);
+
+    // Runs before everything, including the CONTROL. If the screen went away mid-block,
+    // every answer below is about a display:none subtree and none of them is about the
+    // drawer, so this check exists to name that cause instead of letting it masquerade
+    // as an element hidden behind the masthead.
+    check('the connected screen was still displayed when the drawer was measured',
+      seen.screenHeld === true,
+      'app.js re-hid #screen-connected mid-block, so every visibility answer below is '
+      + 'about a display:none subtree rather than about the drawer');
 
     // Runs first on purpose. If this fails, every "not reachable" answer below is about a
     // broken measurement rather than about the drawer, and the block reports nothing.
@@ -545,6 +611,132 @@ if (!findBrowser()) {
       JSON.stringify(seen.repeatedMid));
     check('CONTROL: with nothing to answer, a shut drawer stays shut',
       seen.noInviteStaysShut === true, 'an unconditional open would pass the check above for free');
+
+    // ---------------------------------------------------------------- on a phone
+    //
+    // Everything above calls scrollIntoView() itself before measuring, so it answers
+    // "could this be reached" and not "was it put in front of the person". Those came
+    // apart when the layout pass moved the Games panel from an unset `order` (which put
+    // it at the very top of the connected column) to `order: 5`, below the transcript,
+    // the composer and Connection details. The drawer now opens a long way down a
+    // scrolling column.
+    //
+    // Measured at 360x640 with the drawer opened by an invitation and nothing scrolled:
+    // masthead bottom y=45, drawer top y=625, the Play row at y 694..730 in a 640px
+    // viewport, page still at scrollTop 0 with 842px of scroll available, and
+    // elementFromPoint at the button's centre returning nothing at all. The check above
+    // passed the whole time, because it scrolled first.
+    //
+    // 360x640 rather than 390x844 on purpose: at 390x844 the same row lands at y=678 and
+    // fits by 130px, so a check at that size would have passed with the bug present and
+    // proved nothing. This is the smallest widely used phone viewport, and it is the one
+    // the requirement is actually about.
+    const phone = await browser.newTab(`http://127.0.0.1:${PORT}/app`);
+    try {
+      await phone.send('Emulation.setDeviceMetricsOverride',
+        { width: 360, height: 640, deviceScaleFactor: 1, mobile: true });
+      await phone.waitFor("!document.getElementById('screen-onboarding').hidden",
+        { timeout: 20000, label: 'app.js boot on the phone tab' });
+      const phoneRaw = await phone.eval(`
+        for (const s of document.querySelectorAll('section.screen')) s.hidden = s.id !== 'screen-connected';
+        const [play, ui] = await Promise.all([import('/js/gameplay.js'), import('/js/gameui.js')]);
+        const drawer = document.getElementById('games-disc');
+        const area = document.getElementById('game-area');
+        // Same settle as the block above, and for the same reason: the drawer's 150ms
+        // opening fade holds .disc-body at opacity 0 until it ticks.
+        const settle = async () => {
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const running = (document.getAnimations ? document.getAnimations() : [])
+            .filter((a) => a.effect && a.effect.getComputedTiming().iterations !== Infinity);
+          await Promise.all(running.map((a) => a.finished.catch((err) => { void err; })));
+          await new Promise((r) => requestAnimationFrame(r));
+        };
+
+        const games = new play.GameSession({ send: async () => true });
+        const gameUi = new ui.GameUI({
+          root: area,
+          games,
+          partners: () => [{ peer: 'peer-them', label: 'Their Device' }],
+          onNotice: () => {},
+        });
+        area.replaceChildren();
+        drawer.open = false;
+        gameUi.render();
+        await settle();
+
+        await games.receive('peer-them', { t: 'invite', mid: 'cccc000000000001', game: 'chess', seat: 'w' });
+        // Three settles, not one: the scroll is deferred by a frame because the row it
+        // aims at does not exist until render() has finished appending it.
+        await settle(); await settle(); await settle();
+
+        // Deliberately NO scrollIntoView here. That is the entire difference between this
+        // measurement and the ones above, and its absence is what makes this ask the
+        // question in the check's own name rather than mere reachability.
+        const answerBox = () => {
+          const b = [...area.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Play');
+          if (!b) return { found: false };
+          const r = b.getBoundingClientRect();
+          const bar = document.querySelector('header.bar').getBoundingClientRect();
+          const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+          return {
+            found: true,
+            drawerOpen: drawer.open,
+            visible: b.checkVisibility({ checkVisibilityCSS: true, contentVisibilityAuto: true, opacityProperty: true }),
+            hitIsButton: hit === b,
+            hitWas: hit ? (hit.id || hit.className || hit.tagName) : 'nothing',
+            // Below the masthead, which is sticky at top: 0, and above the fold. Either
+            // failure leaves the person hunting for the control the screen is waiting on.
+            belowMasthead: r.top >= bar.bottom,
+            aboveTheFold: r.bottom <= innerHeight,
+            top: Math.round(r.top), bottom: Math.round(r.bottom),
+            barBottom: Math.round(bar.bottom), viewportH: innerHeight,
+          };
+        };
+        const out = { down: answerBox() };
+
+        // THE OTHER DIRECTION, and the one the sticky masthead actually decides.
+        //
+        // Scrolling DOWN to something below the fold parks it against the bottom edge,
+        // where a masthead pinned to the TOP cannot reach it. Scrolling UP is where the
+        // offset earns its place: the drawer sits at order 5 with the burn control below
+        // it, so a person reading the foot of the column has the drawer above the
+        // viewport, and block: nearest aligns the row's top to the top of the
+        // scrollport, which is where .bar is pinned. Without the scroll-margin-top in
+        // style.css the answer lands UNDER the masthead and is exactly as unreachable as
+        // it was below the fold, so this is measured rather than reasoned about.
+        await games.decline();
+        await settle();
+        const scroller = [document.querySelector('.page'), document.scrollingElement]
+          .find((n) => n && n.scrollHeight > n.clientHeight + 1) || document.scrollingElement;
+        scroller.scrollTop = scroller.scrollHeight;
+        await settle();
+        out.scrolledToFoot = Math.round(scroller.scrollTop) > 0;
+        await games.receive('peer-them', { t: 'invite', mid: 'cccc000000000002', game: 'chess', seat: 'w' });
+        await settle(); await settle(); await settle();
+        out.up = answerBox();
+        return JSON.stringify(out);
+      `);
+      const phoneSeen = JSON.parse(phoneRaw);
+      const ph = phoneSeen.down;
+      check('on a 360x640 phone the answer is on screen WITHOUT the test scrolling to it, '
+        + 'below the masthead and above the fold',
+        ph.found === true && ph.drawerOpen === true && ph.visible === true
+        && ph.belowMasthead === true && ph.aboveTheFold === true && ph.hitIsButton === true,
+        phoneRaw);
+
+      check('CONTROL: the page really was scrolled to its foot before the second invitation',
+        phoneSeen.scrolledToFoot === true,
+        'nothing scrolled, so the check below never faced the masthead and measured nothing');
+
+      const up = phoneSeen.up;
+      check('an invitation arriving while the drawer is ABOVE the scroll position clears '
+        + 'the sticky masthead rather than landing under it',
+        up.found === true && up.visible === true && up.belowMasthead === true
+        && up.aboveTheFold === true && up.hitIsButton === true,
+        JSON.stringify(up));
+    } finally {
+      await phone.close();
+    }
   } catch (err) {
     check('the games drawer block ran to completion', false, err.message);
   } finally {

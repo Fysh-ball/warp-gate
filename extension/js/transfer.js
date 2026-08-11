@@ -37,27 +37,55 @@ export const CHECKPOINT_BYTES = 32 * 1024 * 1024;
 
 export const canStreamToDisk = () => typeof globalThis.showSaveFilePicker === 'function';
 
+/**
+ * What this browser can RECEIVE, as a lede and a detail.
+ *
+ * Returns two strings rather than one, changed on 2026-08-10. It used to return a single
+ * paragraph, and both places that show it (#receive-note above the home screen, #compose-hint
+ * inside the composer) were the largest object on a 390x844 phone: 183px and 160px. The
+ * layout pass folded both into a <details> whose summary is line-clamped to three lines,
+ * which fixed the pixels and created an accessibility defect in doing so: A LINE CLAMP HIDES
+ * PIXELS, NOT TEXT. The disclosure's body was empty, so the whole paragraph was in the
+ * summary, so a screen reader read every word of it at all times no matter what state the
+ * control was in, and pressing the control changed only what was painted.
+ *
+ * A seam is the only thing that fixes that, and the seam has to be here because this is the
+ * only place that knows which of the three branches applies. `lede` answers the question
+ * ("can this browser receive a big file, yes or no") and goes in the summary; `detail` is
+ * everything a person only needs once the answer is yes or no, and goes in the body, where
+ * `details` genuinely removes it from the accessibility tree while it is closed.
+ *
+ * @returns {{lede: string, detail: string}}
+ */
 export function describeLimit() {
   if (canStreamToDisk()) {
-    return 'This browser writes received files straight to disk, so there is no practical size '
-      + 'limit and an interrupted transfer can carry on into the same file.';
+    return {
+      lede: 'This browser writes received files straight to disk, so there is no practical size limit.',
+      detail: 'An interrupted transfer can carry on into the same file.',
+    };
   }
   // showSaveFilePicker is Chromium-only: Firefox has declined to implement it and no
   // Safari has it. That used to mean a large RECEIVE here was impossible rather than
   // slow. It no longer does: the service worker hands the file to the browser's own
   // download manager, which writes to disk with no ceiling.
   if (supportsStreamDownload()) {
-    return `Files over ${formatBytes(MEMORY_LIMIT_BYTES)} are saved by this browser's own download `
-      + 'manager as they arrive, so there is no size limit. They go to your usual downloads folder '
-      + 'rather than a location you pick. A dropped connection carries on where it left off, but '
-      + 'RELOADING the page loses it, because the browser owns the partial file and will not hand '
-      + 'it back. A Chromium desktop browser survives both.';
+    return {
+      lede: `Files over ${formatBytes(MEMORY_LIMIT_BYTES)} are saved by this browser's own download `
+        + 'manager as they arrive, so there is no size limit.',
+      detail: 'They go to your usual downloads folder rather than a location you pick. A dropped '
+        + 'connection carries on where it left off, but RELOADING the page loses it, because the '
+        + 'browser owns the partial file and will not hand it back. A Chromium desktop browser '
+        + 'survives both.',
+    };
   }
-  return `This browser cannot write received files straight to disk, so it holds them in memory `
-    + `and refuses anything over ${formatBytes(MEMORY_LIMIT_BYTES)}. Sending any size is fine. `
-    + 'To RECEIVE a large file, use a Chromium desktop browser (Chrome, Edge, Brave, Opera) at '
-    + 'the receiving end. A dropped connection carries on where it left off, but RELOADING the '
-    + 'page loses it, because the partial file was only ever in this page\'s memory.';
+  return {
+    lede: 'This browser cannot write received files straight to disk, so it holds them in memory '
+      + `and refuses anything over ${formatBytes(MEMORY_LIMIT_BYTES)}.`,
+    detail: 'Sending any size is fine. To RECEIVE a large file, use a Chromium desktop browser '
+      + '(Chrome, Edge, Brave, Opera) at the receiving end. A dropped connection carries on where '
+      + 'it left off, but RELOADING the page loses it, because the partial file was only ever in '
+      + 'this page\'s memory.',
+  };
 }
 
 export function formatBytes(n) {

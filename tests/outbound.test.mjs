@@ -41,7 +41,7 @@ function makeFile() {
  * previous run is mid-flight. That overlap is the whole bug: without it the latch alone
  * would have been enough and the coverage map would be unnecessary.
  */
-function harness({ gateAt = null } = {}) {
+function harness({ gateAt = null, gateEnd = false } = {}) {
   const sealed = [];
   const controls = [];
   // Every frame in the order it went out, so an ordering claim ("the parked chunks went
@@ -50,6 +50,10 @@ function harness({ gateAt = null } = {}) {
   let releaseGate = null;
   let announceGate = null;
   const reachedGate = new Promise((resolve) => { announceGate = resolve; });
+  let releaseEnd = null;
+  let announceEnd = null;
+  const reachedEnd = new Promise((resolve) => { announceEnd = resolve; });
+  let endGateUsed = false;
   let chunkSends = 0;
 
   const session = {
@@ -65,7 +69,23 @@ function harness({ gateAt = null } = {}) {
   link.state = LINK_STATE.CONNECTED;
   link.channel = {
     seal: async (type, bytes) => ({ type, bytes }),
-    sealJson: async (type, body) => { sealed.push({ type, body }); return { type, body }; },
+    // `gateEnd` suspends the SEAL of FILE_END, which is the one window the chunk gate
+    // above cannot reach: the range loop has already decided it has nothing left to
+    // send, so a plan parked from here is parked at a pass that will never look again.
+    // Sealing is where the window lives, because it is the last await before the frame
+    // reaches the wire and it is genuinely asynchronous in the product (subtle.encrypt).
+    // One shot on purpose. The window is entered once; a pass that goes back for a parked
+    // plan and then seals a SECOND FILE_END must not be gated again, or the test would
+    // hold the fix it is measuring open for ever and read as a hang rather than a result.
+    sealJson: async (type, body) => {
+      sealed.push({ type, body });
+      if (gateEnd && type === TYPE.FILE_END && !endGateUsed) {
+        endGateUsed = true;
+        announceEnd();
+        await new Promise((resolve) => { releaseEnd = resolve; });
+      }
+      return { type, body };
+    },
   };
   link.peer = {
     maxChunkBytes: () => CHUNK,
@@ -97,9 +117,15 @@ function harness({ gateAt = null } = {}) {
     controls,
     order,
     reachedGate,
+    reachedEnd,
     release: () => { releaseGate?.(); },
+    releaseEnd: () => { releaseEnd?.(); },
     get chunkSends() { return chunkSends; },
+    // Every FILE_END that was SEALED, which is not the same as every one that went out: a
+    // pass that discovers a parked plan after sealing drops the frame rather than
+    // declaring the file complete. `order` is the wire; this is the seal log.
     fileEnd: () => sealed.filter((s) => s.type === TYPE.FILE_END).map((s) => s.body),
+    endsOnWire: () => order.filter((o) => o.end).length,
   };
 }
 
@@ -148,6 +174,45 @@ const fingerprint = await fingerprintFile(file);
   check('an empty file is a legal transfer and declares nothing rather than failing',
     end?.bytes === 0 && end?.chunks === 0, JSON.stringify(end));
   check('CONTROL: and no chunk frame went out at all', h.chunkSends === 0, `sends=${h.chunkSends}`);
+}
+
+// ------------------ the latch, not a token: what actually stops a second pass over one file
+{
+  // A `run` token used to be minted in driveOutbound and checked in its finally, so that only
+  // the pass which set the streaming latch could clear it. Deleted on 2026-08-10: it could
+  // never be false, and mutating the check to a bare `out.streaming = false` left disconnect
+  // 33/33 and outbound 18/18 green, so the token had no coverage at all. What holds the
+  // invariant is the ENTRY GUARD, which is read and written synchronously and turns every
+  // caller away while a pass is in flight, and that is what gets the check here. Removing the
+  // guard makes this section BAD, which the token's version never was.
+  const h = harness({ gateAt: 5 });
+  const done = startSend(h, file, fingerprint);
+  await h.reachedGate;
+
+  const out = h.link.outbound;
+  const sendsBefore = h.chunkSends;
+  // Re-entered directly, which is the shape both serveResume and afterReconnect take.
+  h.link.driveOutbound([[12, CHUNKS]]);
+  h.link.driveOutbound(null);
+  // One turn of the microtask queue, which is all a second pass needs to reach its first
+  // await and push a chunk. A check that asserted this synchronously could not tell a pass
+  // that was refused from one that simply had not started yet.
+  await new Promise((r) => { setImmediate(r); });
+
+  check('a driveOutbound entered while a pass is in flight parks its ranges instead of '
+    + 'starting a second pass over the same file',
+    h.chunkSends === sendsBefore && out.streaming === true
+      && JSON.stringify(out.parked) === JSON.stringify([[12, CHUNKS]]),
+    JSON.stringify({
+      before: sendsBefore, now: h.chunkSends, streaming: out.streaming, parked: out.parked,
+    }));
+
+  h.release();
+  await done;
+  check('and the send still ends once, declaring the file rather than the file plus a '
+    + 'second pass over it',
+    h.fileEnd().length === 1 && h.fileEnd()[0]?.bytes === SIZE,
+    JSON.stringify({ ends: h.fileEnd().length, declared: h.fileEnd()[0]?.bytes, size: SIZE }));
 }
 
 // ------------------------------------------------- a resume landing mid-send: THE BUG
@@ -269,6 +334,75 @@ const fingerprint = await fingerprintFile(file);
     end?.bytes === SIZE, JSON.stringify({ declared: end?.bytes, size: SIZE }));
   check('CONTROL: and it moved only the missing chunks, not the file',
     h.chunkSends === CHUNKS - 12, `sends=${h.chunkSends} want=${CHUNKS - 12}`);
+}
+
+// ------------------------- a resume that lands in the window between the last chunk
+//                           and FILE_END
+{
+  // The gap the parking left open, found on 2026-08-10 while chasing an intermittent
+  // 180-second abort in tests/browser.test.mjs ("the interrupted file finished anyway").
+  //
+  // The parking above only helps while the range loop is still iterating. Once the loop
+  // has nothing left it checks `out.parked` ONCE, breaks, and then seals and sends
+  // FILE_END. Sealing is asynchronous, so a resume can arrive after that check and before
+  // the frame is on the wire. serveResume has already sent `file-resume-ok` by then, so
+  // the receiver has been told the chunks are coming; `streaming` is still true, so
+  // driveOutbound parks them; and the pass that would drain them has already decided it
+  // is finished. The plan is dropped, FILE_END declares the file complete, and the
+  // receiver fails its own length check on bytes it was promised and never got.
+  //
+  // On screen that is the reported complaint exactly: the bar stops, the ack arrives, and
+  // nothing else ever happens.
+  //
+  // The gate here suspends the FILE_END seal, which is the narrowest form of the window
+  // and the one a real run hits: everything after the seal is synchronous.
+  const h = harness({ gateEnd: true });
+  const out = {
+    id: 'T-endrace',
+    name: file.name,
+    size: SIZE,
+    mime: 'application/octet-stream',
+    chunkSize: CHUNK,
+    file,
+    fingerprint,
+    peerFingerprint: fingerprint,
+    sent: 0,
+    chunks: 0,
+    active: true,
+    stalled: true,
+    streaming: false,
+    settle: null,
+  };
+  h.link.outbound = out;
+  const finished = new Promise((resolve, reject) => { out.settle = { resolve, reject }; });
+  finished.catch(() => {});
+  // The receiver holds everything from chunk 2 on and is missing 0 and 1, so this pass has
+  // two chunks to send and then reaches FILE_END immediately.
+  const serving = h.link.serveResume(out, 0, [[0, 2]], 2 * CHUNK);
+  await h.reachedEnd;
+
+  // A SECOND resume, landing in the window. This is what a receiver does when the link
+  // renegotiates twice, or when its quiet timer fires while the last chunks are in flight:
+  // the ranges are everything it still lacks, and it has already been told they are coming.
+  const parkedBefore = h.chunkSends;
+  h.link.driveOutbound([[5, 7]]);
+  h.releaseEnd();
+  await serving;
+  await finished;
+
+  const chunks = h.order.filter((o) => o.chunk !== undefined).map((o) => o.chunk);
+  check('a resume that lands while FILE_END is being sealed is still served',
+    chunks.slice(parkedBefore).join(',') === '5,6',
+    `after the window: [${chunks.slice(parkedBefore).join(',')}], all: [${chunks.join(',')}]`);
+  check('and those chunks go out BEFORE FILE_END, not behind the receiver\'s verdict',
+    h.order.findIndex((o) => o.end) === h.order.length - 1,
+    `end at ${h.order.findIndex((o) => o.end)} of ${h.order.length}`);
+  check('CONTROL: and exactly one FILE_END reaches the wire, so the file is declared once',
+    h.endsOnWire() === 1, `${h.endsOnWire()} on the wire, ${h.fileEnd().length} sealed`);
+  // The declared total is taken from the LAST seal: a discarded frame is not a declaration.
+  const end = h.fileEnd().at(-1);
+  check('and the declared total is still the whole file, not the file plus the re-sent chunks',
+    end?.bytes === SIZE, JSON.stringify({ declared: end?.bytes, size: SIZE }));
 }
 
 process.exit(summary('outbound accounting') ? 0 : 1);

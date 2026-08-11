@@ -105,6 +105,59 @@ export function openableAs(mime) {
   return OPEN_TYPES.get(safeMime(mime)) ?? '';
 }
 
+// Where the caution below points. The upload page rather than the home page, because the
+// recommendation is "check this file" and landing somewhere that asks the user to find the
+// right box is how advice stops being followed.
+const VIRUSTOTAL_URL = 'https://www.virustotal.com/gui/home/upload';
+
+/**
+ * The scan caution, on a file this device RECEIVED and never on one it sent.
+ *
+ * ASKED FOR VERBATIM: "We should also show a 'If you recieved a file within this session we
+ * recommend running it through virus total first before opening it'". The recommendation is
+ * right and the obvious wording of it is not, so the caveat is in the same sentence rather
+ * than in a disclosure underneath it:
+ *
+ *   UPLOADING A FILE TO VIRUSTOTAL PUBLISHES IT. Samples are shared with security vendors
+ *   and are downloadable by paying subscribers. This product's entire premise is that
+ *   nothing leaves the two browsers, so "run it through VirusTotal" on its own is advice
+ *   that undoes the thing the user came here for, and a user who follows it on a private
+ *   document has handed that document to third parties. It is the right move for something
+ *   you were sent and did not expect, and the wrong move for anything private, and a user
+ *   cannot make that call from a sentence that does not tell them the difference.
+ *
+ * NO HASH LOOKUP, which would have been the privacy-preserving version. `fingerprintFile`
+ * in transfer.js hashes only the first FINGERPRINT_PREFIX_BYTES of the file, so it is not a
+ * whole-file SHA-256 and VirusTotal cannot be searched with it. Building a lookup URL out of
+ * it would return "not found" for every file ever sent, which a user reads as "clean": a
+ * check that cannot fail, pointed at the user. WebCrypto has no streaming digest either, so
+ * a real hash means re-reading the whole file, which for a disk-sink file is a second full
+ * read and for a 3 GB file is not cheap. If that is ever offered it has to be an explicit
+ * action that says it is computing a hash, not a link that quietly claims to be one.
+ *
+ * On the ROW rather than as a page-level banner, deliberately: the standing "Files over
+ * 500 MB" notice was already reported as taking over a phone screen, and a second permanent
+ * banner makes the same complaint worse. This sits where the decision is made, next to Save
+ * and Open, at the moment the user is about to open something.
+ */
+function appendScanCaution(row) {
+  const el = document.createElement('div');
+  el.className = 'muted small scan-caution';
+  el.appendChild(document.createTextNode('Did not expect this file? Scan it with '));
+  const link = document.createElement('a');
+  link.href = VIRUSTOTAL_URL;
+  link.target = '_blank';
+  // Both halves, as attributes rather than window.open flags, for the reason openBytes gives
+  // below: noopener so the new document gets no window.opener back into a page holding a room
+  // key, and noreferrer so the request does not carry this gate's URL to a third party.
+  link.rel = 'noopener noreferrer';
+  link.textContent = 'VirusTotal';
+  el.appendChild(link);
+  el.appendChild(document.createTextNode(' before opening. That uploads a copy to a third '
+    + 'party who shares it with security vendors, so never do it with something private.'));
+  row.appendChild(el);
+}
+
 /** Append a muted one-line note to a row. Every failure path below ends in one of these. */
 function note(row, text) {
   const el = document.createElement('div');
@@ -207,6 +260,15 @@ function inlineElementFor(mime) {
 export function decorateFileRow(row, meta, ctx) {
   const name = ctx.sanitizeFilename(meta.name);
   const save = row.querySelector('button.save-btn');
+
+  // Unconditional and FIRST, before every early return below. A file that gets no inline
+  // preview and no Open button is not a file that needs less caution: the Open button is
+  // withheld for types this page will not navigate to, and those are exactly the ones a user
+  // opens from their own file manager instead, where nothing here can say anything at all.
+  // This function is only ever reached from app.js's received-file path, which returns at
+  // "Sent." for anything this device sent, so there is no route by which a sent file lands
+  // here. tests/batchui.test.mjs pins that in app.js's source.
+  appendScanCaution(row);
 
   // ------------------------------------------------------------------ inline preview
   if (meta.blob) {

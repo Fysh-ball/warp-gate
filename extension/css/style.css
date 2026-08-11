@@ -290,7 +290,7 @@ html, body {
    the screens used to each set their own with `main:has(> #screen-x:not([hidden]))`,
    which meant seven numbers to keep consistent and seven chances for one of them to be
    a phone column. */
-main, .extras, .banner, .foot {
+main, .banner, .foot {
   width: var(--shell);
   max-width: 100%;
   margin-left: auto;
@@ -497,7 +497,9 @@ button.link:active { transform: none; }
 .composer-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .composer-actions button { width: auto; flex: 0 0 auto; padding: 9px 14px; font-size: 14px; }
 .composer-actions .primary { margin-left: auto; }
-#compose-hint { flex: 1 1 100%; order: 9; margin-top: 2px; }
+/* #compose-hint is no longer a child of the actions row: it sits inside `.hint-fold`,
+   which is the flex item now and carries the `flex`/`order`/`margin-top` this rule used to
+   set. See "a long standing note, folded to its first sentence" further down. */
 
 .toggle {
   display: inline-flex;
@@ -540,6 +542,70 @@ button.link:active { transform: none; }
    has to break inside a word: one unbroken 120-character name would otherwise push the
    transcript column wider than the window and take the Accept button off screen with it. */
 .file-names { overflow-wrap: anywhere; margin-bottom: 6px; }
+/* One entry of that list. Until 2026-08-10 each line was a single text node, "name: state",
+ * which CSS cannot truncate selectively: an ellipsis on the line eats the STATE, which is the
+ * half the reader needs, and no ellipsis at all wraps every entry onto two lines (measured:
+ * seven files went from 101px to 201px, see the note below). batchui.js now writes two spans,
+ * so the name is the part that shrinks and the state always survives.
+ *
+ * `min-width: 0` on the name is the whole trick: a flex item defaults to min-width:auto, which
+ * refuses to shrink below its content, so the ellipsis would never engage and the long name
+ * would push the state out of the column instead.
+ *
+ * The state is NOT nowrap on purpose. Most states are two or three words, but a failed file
+ * carries a whole sentence ("The connection to the other device was severed..."), and pinning
+ * that to one unbreakable line would blow out the transcript width for exactly the entry the
+ * reader most needs to read. It shrinks and wraps; the name ellipses. `overflow-wrap: anywhere`
+ * is inherited from .file-names and matters here for the same reason it does there. */
+.file-line { display: flex; align-items: baseline; }
+.file-line-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The ": " separator lives at the head of this span, not at the tail of the name, so that an
+ * ellipsed name reads "long-name-abo...: saved" rather than swallowing the colon too. */
+.file-line-state { flex: 0 1 auto; min-width: 0; }
+/* And bounded on a phone, because this list grew a state per file on 2026-08-10 and the
+ * row grew with it.
+ *
+ * Measured at 390x844 in a real connected gate, one batch of seven files, offered and not
+ * yet accepted:
+ *
+ *   before the states existed   .file-names  101px   seven names, one line each
+ *   with a state per file       .file-names  201px   seven names, TWO lines each, because
+ *                                                    "name: waiting for you to accept" does
+ *                                                    not fit in a 308px column
+ *   the row around it           .msg.is-file 306px   of an 844px viewport, 36%
+ *   the transcript around that  #messages    443px   up from 128px, and that pushed the
+ *                                                    composer from y 392..670 to 707..985
+ *
+ * 64 is the protocol cap (MAX_BATCH_FILES in link.js), so the unbounded version of this row
+ * is 64 x 28.7 = 1837px: a single peer decision that owns the screen. 116px is eight lines
+ * at the 14.4px line box measured above, which is four files with their states, and the
+ * rest scroll. Nothing is hidden and nothing is summarised away: the tally underneath
+ * ("3 of 7 saved, 1 arriving now, 3 waiting their turn") is OUTSIDE this box and always
+ * visible, so the count never depends on scrolling to it.
+ *
+ * `overscroll-behavior: contain` for the same reason the status log has it: a nested
+ * scroller on a phone must not hand the gesture to the page behind it once it hits its end,
+ * which on this screen would scroll the composer away mid-read.
+ *
+ * 2026-08-10, later the same day: THE JS FIX LANDED. batchui.js emits two spans per line, so
+ * the rules below can ellipse the name and keep the state, and an ordinary entry is one line
+ * at any width. The cap stays: it is not made redundant by the fix, because 64 one-line
+ * entries is still 64 lines, and a failed file carries a whole sentence of detail as its
+ * state, which wraps by design rather than being truncated. What changed is that the cap is
+ * now rarely reached instead of being reached by any batch of five. */
+@media (max-width: 699px) {
+  .msg.is-file .file-names {
+    max-height: 116px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
 .msg-image {
   display: block;
   max-width: 100%;
@@ -737,9 +803,10 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
   body:has(> .page) > .page > * { width: 100%; }
   body:has(> .page) > .page > main,
   body:has(> .page) > .page > .banner,
-  body:has(> .page) > .page > #extras,
   body:has(> .page) > .page > .foot { width: var(--shell); max-width: 100%; }
-  body:has(> .page) > .page > #extras { order: 1; }
+  /* #extras used to be a page-level row here, ordered 1 so it painted under `main`. It is
+     a cell of the home screen's grid now (see THE HOME SCREEN below), so it is no longer
+     a child of `.page` and neither its width nor its order can be set from here. */
   /* margin-top:auto in a flex column eats the free space ABOVE the footer, so on a short
      screen it sits on the bottom edge instead of floating halfway up with dead space
      under it. On a screen taller than the viewport there is no free space and this is a
@@ -755,8 +822,9 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
      2026-08-10: order 1 put it BETWEEN the two gate cards and the numbered steps, which
      is the worst place available. It is a full-shell-width slab and the cards above it
      are narrower, so it read as a rule drawn across the middle of the page, cutting the
-     one composition on the screen in half. It is the last thing now, under the steps and
-     above the footer. */
+     one composition on the screen in half. It is the last thing now, under the grid and
+     above the footer. Its WIDTH is dealt with separately, in THE HOME SCREEN below: being
+     the last block did not stop it being the widest one. */
   body:has(> .page) > .page > #receive-note { order: 2; margin-top: auto; }
   /* The auto margin belongs to whichever of the two is FIRST in the bottom-anchored pair,
      never to both: two auto margins in a flex column SPLIT the free space, which would
@@ -955,6 +1023,116 @@ main.legal a { color: var(--accent); }
 .banner-close:hover,
 .banner-close:focus-visible { color: var(--text); background: var(--panel-2); border-color: var(--line); }
 
+/* ---- a long standing note, folded to its first sentence -------------------------------
+ *
+ * Two places on this site show the SAME paragraph out of describeLimit(): #receive-note
+ * above the onboarding and home screens, and #compose-hint inside the connected screen's
+ * composer. Both were measured at 390x844 before this block and both were the largest
+ * object on their screen:
+ *
+ *   #receive-note   183px of an 844px viewport (21.7%), nine lines
+ *   #compose-hint   160px inside a 342px composer, eight lines, and it pushed the
+ *                   composer's own bottom edge 27px below the fold
+ *
+ * After, and these are the shipped numbers read back off a real browser by the geometry
+ * checks in tests/browser.test.mjs rather than the estimate this block was drafted with:
+ *
+ *   #receive-note   106px of an 844px viewport (12.6%), three lines
+ *   #compose-hint    98px inside a 280px composer, three lines, and the composer's bottom
+ *                   edge is at y=685 against a scroller that ends at 811
+ *
+ * An earlier draft of this comment claimed 80px (9.5%) and 39px, which was two lines at
+ * each site. The clamp resolves to THREE on a phone (see --note-fold-lines below), so
+ * those figures never existed on any screen: corrected here rather than left as a number
+ * a later reader would measure against and disbelieve.
+ *
+ * One skin, because it is one problem in two places, and a second skin for the second
+ * place is how two things that must agree stop agreeing.
+ *
+ * The clamp is on an inner span rather than on the <summary> itself, and that is what
+ * makes the control legible: `summary::after` is the "Read the rest" line, it is a block
+ * OUTSIDE the clamped span, so it is never eaten by the clamp and never has to be an
+ * absolutely positioned chevron fighting the close button for the top right corner. It is
+ * part of the summary, so pressing it toggles.
+ *
+ * `display: -webkit-box` is deliberately the closed state and `display: block` the open
+ * one: switching display is what turns the clamp off, so an engine that ignores
+ * -webkit-line-clamp entirely simply shows the whole note and loses nothing. Failing open
+ * is the only acceptable direction for a note about what the browser can and cannot do. */
+.note-fold > summary {
+  display: block;
+  list-style: none;
+  cursor: pointer;
+}
+.note-fold > summary::-webkit-details-marker { display: none; }
+.note-fold > summary > .note-fold-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  /* Three on a phone, two from 900px up: see the two --note-fold-lines overrides. Three
+     lines of a 358px column is the whole of "Files over 500 MB are saved by this browser's
+     own download manager as they arrive, so there is no size limit", which is the sentence
+     that answers the question. Two lines of a 980px column is the same sentence. */
+  -webkit-line-clamp: var(--note-fold-lines, 3);
+  overflow: hidden;
+}
+.note-fold[open] > summary > .note-fold-text {
+  display: block;
+  -webkit-line-clamp: none;
+}
+.note-fold > summary::after {
+  content: "Read the rest";
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.note-fold[open] > summary::after { content: "Show less"; }
+/* The summary is the control, so it is the thing that has to show focus. Without this the
+   ring lands on nothing visible, because the default marker was turned off above. */
+.note-fold > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 5px;
+}
+@media (min-width: 900px) {
+  .note-fold { --note-fold-lines: 2; }
+}
+/* THE DISCLOSURE'S BODY. It did not exist when this block was first written: describeLimit()
+ * returned one text node, all of it went into the summary, and the <details> had nothing
+ * inside it but the control. That is not a cosmetic shortcut, it is an accessibility defect,
+ * because a line clamp hides PIXELS AND NOT TEXT: the whole paragraph was in the accessibility
+ * tree at all times and the press changed only what was painted. describeLimit() returns a
+ * lede and a detail as of 2026-08-10, so the summary carries the answer, this carries the
+ * rest, and `details` really does remove it while closed. The clamp above stays: the lede is
+ * short enough that it never bites now, and leaving it means an engine that ignores
+ * -webkit-line-clamp still fails open in exactly the same direction. */
+.note-fold > .note-fold-body {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* #compose-hint carries the same paragraph inside the composer. It used to be the flex
+   item itself; the fold is now, so the two declarations that placed it move up one level.
+   `order: 9` keeps it last in the actions row and `flex: 1 1 100%` keeps it on a line of
+   its own under Attach/Secret/Send. */
+.hint-fold { flex: 1 1 100%; order: 9; margin-top: 2px; }
+/* app.js does not write the hint until the gate connects, and for that instant the fold
+   would be a "Read the rest" control over nothing. `:has()` is unguarded here on purpose:
+   an engine without it paints an empty fold for one frame, which is the harmless
+   direction, and this file already depends on `:has()` for the screen-scoped rules. */
+.hint-fold:has(#compose-hint:empty) { display: none; }
+/* The transient "Trimmed to 16,000 characters", which used to be written into #compose-hint
+ * itself. One element carrying two unrelated messages meant a 65-character notice about what
+ * just happened inherited the standing note's fold, and got a "Read the rest" control over
+ * text that was entirely visible. A control that reveals nothing teaches the user that the
+ * control reveals nothing, which costs the note where the control matters. Its own element
+ * since 2026-08-10, outside the fold, on its own line under the actions row. `order: 10`
+ * puts it after the fold, which is 9. */
+.compose-trim { flex: 1 1 100%; order: 10; margin: 2px 0 0; }
+
 .path-row { display: flex; gap: 8px; align-items: stretch; margin: 8px 0 4px; }
 .path-row code {
   flex: 1;
@@ -995,9 +1173,11 @@ main.legal a { color: var(--accent); }
   100% { background-position: -120% 0; }
 }
 
-/* ---------------------------------------------- extras: bridge, steps, support */
+/* ---------------------------------------------- bridge, steps, support */
 
-.extras { padding: 8px var(--gutter); }
+/* `.extras` used to set the padding of a page-level band here. That band is gone: its one
+   child, the numbered steps, is a cell of the home screen's grid now and takes its spacing
+   from the grid's own gap. */
 
 .bridge { text-align: center; margin: 6px 0 20px; }
 .bridge svg { width: 100%; max-width: 380px; height: auto; }
@@ -1053,9 +1233,12 @@ main.legal a { color: var(--accent); }
 
    Everything below is scoped to the gate document by `#gate-controls`, `#extras` and
    `main:has(> .screen)`, none of which exist in index.html. The landing shares the
-   `.lp-action` skin (its hero has a pair of them too) and must not be reached by any of
-   it, which is why the padding rule below is written as `#gate-controls .lp-action` and
-   not as `.lp-action`.
+   `.lp-action` and `.lp-actions` skins (its hero has a pair of cards in `#gate-links`)
+   and must not be reached by any of it, which is why every rule below is written as
+   `#gate-controls .lp-action` and never as `.lp-action`. `.steps` and `.step` are app
+   skins that the landing does not use at all (it has `.lp-steps`), but they are scoped
+   here too: the ban is on reaching a shared skin, not on whether it happens to be shared
+   this week.
 
    Measured at 1920x1080 before this block, on the home screen:
      .bar            h=45  at y=0
@@ -1072,28 +1255,210 @@ main.legal a { color: var(--accent); }
    contains, and the free height is all spent in one place instead of between the blocks.
    --------------------------------------------------------------------------------- */
 
-/* Declared here rather than in the token block at the top because exactly two rules read
-   it and both are in this section: a token nobody else can reach is easier to reason
-   about next to its users.
+/* Declared here rather than in the token block at the top because the rules that read it
+   are all in this section: a token nobody else can reach is easier to reason about next
+   to its users.
 
-   980px, from the prose inside the cards rather than from the window. #gate-controls is
-   two equal columns, so 980 makes each card 476px wide, and after the card's own inset
-   the body copy ("Paste the link, or type the eight words shown on the other device...")
-   gets about 430px, which at 13.5px is roughly 62 characters: the same measure .lp-lede
-   is capped to at 62ch and the same order as --measure. The same 980 gives the four step
-   cards 233px each, which is two comfortable lines of their 12px caption instead of one
-   line of text in a 418px box. Below 980px of available width both rules are inert, so
-   no phone and no tablet sees this number at all. */
+   980px, from the prose inside the cards rather than from the window. It used to make two
+   equal 476px cards; the grid below splits it 1.15fr / 0.85fr instead, so the lead card is
+   547px and the join card 405px. After the card's own 24px inset the join copy ("Paste the
+   link, or type the eight words shown on the other device...") gets 357px, which at 13.5px
+   is about 51 characters, and the two step columns beside it get 190px each, which is two
+   comfortable lines of their 12px caption. Below 980px of available width the cap is inert,
+   so no phone and no tablet sees this number at all. */
 :root { --gate-col: 980px; }
 
-#gate-controls,
-#extras > .steps {
+#gate-controls {
   max-width: var(--gate-col);
-  /* main and #extras are already centred (see `main, .extras, .banner, .foot`), so a cap
-     is all that is needed to centre these two inside them. Left/right only: .steps sets
-     its own bottom margin and this must not take it away. */
+  /* `main` is already centred (see `main, .banner, .foot`), so a cap is all that is needed
+     to centre the grid inside it. Left/right only, and the top margin is zeroed rather
+     than inherited: `.lp-actions` adds clamp(28px, 3vw, 52px) above 900px for the landing
+     hero, where the cards follow a headline. Here they are the first thing on the screen
+     and that 52px was half of the dead band this section exists to close. */
   margin-left: auto;
   margin-right: auto;
+  margin-top: 0;
+}
+
+/* ================================================ THE HOME SCREEN: one composition
+ *
+ * The complaint, at 1920x1080, in numbers measured off the page before this block:
+ *
+ *   "Open a gate"    y 232..435, h=203      the two cards are top-aligned and unequal,
+ *   "Join one"       y 232..559, h=327      so 124px of the left column is a void
+ *   band above       bar ends y=45,         187px of a 1080px viewport with nothing in it
+ *                    cards start y=232
+ *   the four steps   y 678..775             a third band, 119px below the cards, tied to
+ *                                           nothing above it
+ *   three measures   cards  x 470..1450 (980px)
+ *                    steps  x 470..1450 (980px)
+ *                    banner x  96..1824 (1728px)
+ *   so the least important block on the screen was also the widest one.
+ *
+ * After, same viewport (the numbers the geometry checks in tests/browser.test.mjs read
+ * back, so they are the shipped values and not the sketch this block started from):
+ *   "Open a gate"    y  95..634, h=539      one rectangle, the full height of the column
+ *   "Join one"       y  95..422, h=327      beside it, and 539 = 327 + 28 + 184
+ *   the four steps   y 450..634, h=184      the lower half of the RIGHT column, inside the
+ *                                           grid rather than a band under it
+ *   band above       50px, from 187px
+ *   one measure      cards, steps, banner and footer all x 470..1450 (980px)
+ *
+ * The shape is the user's: one big rectangle to the left, everything else stacked to its
+ * right. The left card is the wider of the two columns (1.15fr against 0.85fr, the same
+ * order as the landing hero's 1.12/0.88) and it stretches over both rows, so the button
+ * `margin-top: auto` already pushes to its foot lands at the bottom of the whole
+ * composition instead of 125px up.
+ * ================================================================================= */
+
+/* Below 700px the lead card is shrink-wrapped, so there is no slack for the picture inside
+   it to take and it would only push Create down a phone screen. Declared BEFORE the media
+   query that turns it on, because the two rules have identical specificity and the later
+   one wins: written the other way round the picture would be hidden at every width and the
+   rectangle would be empty again on exactly the screens that need it filled. */
+#gate-controls .lp-action-lead > .bridge { display: none; }
+
+@media (min-width: 700px) {
+  /* 700px, not 900px, because that is where `.lp-actions` itself becomes two columns.
+     Picking a different number would have left a band between the two breakpoints where
+     the cards are side by side and the steps are auto-placed into whichever cell is
+     free, which is a layout nobody chose. */
+  #gate-controls {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    grid-template-areas:
+      "lead join"
+      "lead steps";
+    /* `.lp-actions` sets `align-items: start` from 700px so the landing's hero cards keep
+       their own heights. Here the left card IS the composition and has to reach the foot
+       of the column beside it, so stretch is put back. Scoped to the id, so the landing
+       keeps `start`. */
+    align-items: stretch;
+  }
+  #gate-controls > .lp-action-lead { grid-area: lead; }
+  #gate-controls > .lp-action:not(.lp-action-lead) { grid-area: join; }
+  #gate-controls > #extras { grid-area: steps; }
+
+  /* The rectangle has to read as the thing you press. Its heading was the same
+     clamp(17px, 1.15vw, 22px) as the card beside it, which made two equal titles on a
+     screen whose whole point is that one of these is the primary action. */
+  #gate-controls .lp-action-lead h2 { font-size: clamp(21px, 1.9vw, 34px); }
+  #gate-controls .lp-action-lead > p { font-size: 14.5px; }
+
+  /* And the button has to be the size of the decision. A 49px control at the foot of a
+     539px rectangle is a link with a background; this is the one thing on the screen the
+     visitor came to press. */
+  #gate-controls .lp-action-lead > button {
+    padding: 18px 16px;
+    font-size: 16px;
+  }
+
+  /* The diagram takes the slack, and SPLITS it.
+   *
+   * Two `margin-top: auto` in the same flex column share the free space between them
+   * rather than one taking all of it (the same mechanic the status-log section relies on
+   * for #receive-note and .foot). The button already carries one, from `.lp-action >
+   * button`. Adding a second here puts equal space above and below the picture, so the
+   * card reads as heading block / picture / action rather than as a heading with 250px of
+   * nothing under it. Measured at 1920x1080: 87px above, 87px below. */
+  #gate-controls .lp-action-lead > .bridge {
+    display: block;
+    margin-top: auto;
+    margin-bottom: 20px;
+  }
+}
+
+/* #home-error is deliberately given no area. It is `hidden` in the resting state, and a
+   hidden element is `display: none` and therefore not a grid item at all, so it creates no
+   implicit row and no row gap. Naming a third row for it would have cost a permanent 28px
+   of empty track under the composition for an error that is almost never on screen. When
+   it does appear, `.lp-actions #home-error { grid-column: 1 / -1 }` spans it across an
+   implicit row below both columns, which is where an error about either action belongs. */
+
+/* The steps are a LEGEND, not a third action.
+ *
+ * They used to be four filled panels with a border each, which was correct when they were
+ * a band of their own across the page and wrong the moment they moved into the right
+ * column: card, card, card, card down one side reads as three peers plus a heading, not
+ * as "here is what happens next". They are hairline-ruled rows now, no fill and no box,
+ * and the only thing that carries the accent is the number. Nothing was removed: same
+ * four steps, same words, same numbers. */
+#gate-controls #extras { padding: 0; }
+#gate-controls .steps {
+  /* 2x2 at every width inside the grid. The shared rule is 4-across, which in a 405px
+     column would be four 90px slivers. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 22px;
+  margin: 0;
+}
+#gate-controls .step {
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding: 11px 0 13px;
+}
+
+/* One measure for the whole screen.
+ *
+ * `#receive-note` and `.foot` are children of `.page` and take `var(--shell)`, which is
+ * 1728px at 1920. The composition is 980. A 1728px slab under a 980px grid is the thing
+ * that made the banner read as a rule drawn across the page rather than as the last
+ * paragraph of it, and it is why nothing on the screen explained why the least important
+ * block was the widest.
+ *
+ * Scoped to the home screen by `:has()`, because the consent screen genuinely wants the
+ * shell: it is a ruled list of five disclosures and a diagram, and 980px would put it back
+ * into the phone column that the onboarding work took it out of. On an engine without
+ * `:has()` this simply does not apply and the page renders as it does today, which is the
+ * safe direction to fail in. */
+@supports selector(:has(*)) {
+  body:has(> .page) > .page:has(> main > #screen-home:not([hidden])) > #receive-note,
+  body:has(> .page) > .page:has(> main > #screen-home:not([hidden])) > .foot {
+    max-width: var(--gate-col);
+  }
+
+  /* And the note joins the composition instead of floating above the footer.
+   *
+   * The band the owner measured: at 1920x1080 the grid ended at y=636 and the note began
+   * at y=889, so 253px of empty page sat between a composition and the paragraph that
+   * annotates it, and the note then hovered 44px above the footer attached to nothing.
+   * The cause is one declaration: `#receive-note { order: 2; margin-top: auto }` in the
+   * status-log section. `order` is what puts the note after `main` despite being authored
+   * before it, and that part is right and stays. `margin-top: auto` is the part that
+   * pinned it to the bottom, and on this screen it is wrong: a note about what this
+   * browser can receive belongs directly under the two cards that offer to receive
+   * something, at the same measure, 14px away, exactly like the 14px between the cards
+   * themselves.
+   *
+   * The free height does not disappear, it moves: it is now one band above a
+   * bottom-anchored footer, which is what the rest of this file already treats as the
+   * resting shape of a short page (see the rejected `space-between` note on the grid).
+   * Measured after: grid ends 636, note 650..712, footer 1016..1080, so the gap the owner
+   * pointed at is 14px and the free height is 304px in one place at the foot of the page.
+   *
+   * Also the phone, and this is the same rule doing the same job: at 390x844 the auto
+   * margin resolved to 0 because the page already overflowed, so the note was flush
+   * against the steps at y=785 with 0px between them and then 44px before the footer. The
+   * explicit 14px makes the rhythm 14 / 30 instead of 0 / 44.
+   *
+   * Scoped to home rather than written into the base rule, because the auto margin is
+   * load bearing on the OTHER screen this note appears on. app.js shows it on onboarding
+   * and home only; on onboarding the note is the last thing under a long consent screen
+   * and bottom-anchoring it is what stops it floating when that screen is short. The
+   * footer takes the auto margin back here, so exactly one item in the column carries it
+   * and the free space still lands in one place rather than being split two ways. */
+  body:has(> .page) > .page:has(> main > #screen-home:not([hidden])) > #receive-note {
+    margin-top: 14px;
+    /* The floor under the footer's auto margin, and it has to be here rather than left to
+       `.foot { margin-top: 30px }`, because `auto` REPLACES that 30px and resolves to 0 on
+       any screen with no free space to take. Without this line the phone traded a 44px gap
+       for a 0px one and the footer's rule would touch the note's bottom edge: an auto
+       margin is a way of spending surplus, never a way of guaranteeing a minimum. */
+    margin-bottom: 30px;
+  }
+  body:has(> .page) > .page:has(> main > #screen-home:not([hidden])) > .foot {
+    margin-top: auto;
+  }
 }
 
 /* The free height, distributed instead of dumped.
@@ -1105,16 +1470,20 @@ main.legal a { color: var(--accent); }
    on a tall window every spare pixel landed in a single band above the footer and the
    content was crushed into a strip under the header.
 
-   Three auto margins in the same column split the free space three ways: above the
-   content, between the content and the steps, and above the footer. That both moves the
-   content off the top edge and widens the gap between the two blocks, which is the same
-   complaint said twice. Equal thirds put the content block above centre rather than in
-   the middle of the window, which is where optical centring wants it.
+   Two auto margins in the same column split the free space in half: above the content and
+   above the footer. That moves the content off the top edge on the screens that are a
+   short pane in a tall window.
+
+   The home screen is the exception now, and it is the reason this comment changed. It used
+   to be a THREE way split, because #extras was a page-level row between `main` and the
+   footer and carried an auto margin of its own. Both of those are gone: the steps are a
+   cell of the grid, and an equal share above the content is exactly the 187px band the
+   user was looking at. Home takes a bounded band instead (see `padding-top` below) and
+   gives the rest to the footer.
 
    This stays a no-op everywhere it should be. On a document taller than the viewport
    there is no free space to divide, so it cannot push the footer off the end of long
-   content, exactly as the single auto margin could not. When #extras is hidden it is
-   display:none and does not participate, so those screens split in half instead.
+   content, exactly as the single auto margin could not.
 
    Gated on BOTH axes on purpose. min-width 1200px keeps it away from a tablet, and
    min-height 800px keeps it away from 1366x768, where the measured gap above the footer
@@ -1122,33 +1491,56 @@ main.legal a { color: var(--accent); }
    opening it up would only cost the page its fold. A phone fails both terms. */
 @media (min-width: 1200px) and (min-height: 800px) {
   @supports selector(:has(*)) {
-    body:has(> .page) > .page > main:has(> .screen),
-    body:has(> .page) > .page > #extras { margin-top: auto; }
+    body:has(> .page) > .page > main:has(> .screen) { margin-top: auto; }
     /* #screen-connected is the documented exception. There `main` is the thing that
        grows (it is flex: 1 1 auto, and .foot's margin-top is already forced back to 0
        for the same reason), so an auto margin above it would be arguing with the flex
        that is supposed to give the transcript the window. Written as an override rather
        than as a :not() on the selector above so that the reason can sit next to it. */
     body:has(> .page) > .page > main:has(> #screen-connected:not([hidden])) { margin-top: 0; }
+    /* And home, for the opposite reason: it is a composition rather than a pane, and half
+       the free height above it is a void, not breathing room. */
+    body:has(> .page) > .page > main:has(> #screen-home:not([hidden])) { margin-top: 0; }
   }
 
   /* Spend the width the same way, and OUTSIDE the @supports above: none of this needs
      :has(), and an engine without it should still get the spacing even though it cannot
      get the height distribution.
 
-     These are the phone numbers the gate has always used (14px between the cards, 8px
-     between the steps, 11px/10px inside a step) being served to a 1920px screen, where
-     they read as hairlines rather than as separations. Each is doubled, which keeps the
-     existing rhythm rather than inventing a second one. */
+     These are the phone numbers the gate has always used (14px between the cards, 11px/10px
+     inside a step) being served to a 1920px screen, where they read as hairlines rather
+     than as separations. Each is opened up, which keeps the existing rhythm rather than
+     inventing a second one. */
   #gate-controls { gap: 28px; }
-  #extras > .steps { gap: 16px; }
+  /* The grid keeps its NATURAL height, and that is a decision rather than an omission.
+   *
+   * Tried and rejected: `min-height: min(62vh, 660px)` with `align-content: space-between`,
+   * to spend the 253px that is left between the composition and the capability banner at
+   * 1920x1080. It does close that gap (the grid runs y=98..758 and 131px is left), but it
+   * buys it by opening a 149px hole between "Join one" and the four steps, and the steps
+   * then float in the middle of the right column attached to nothing. That is the original
+   * complaint about the steps, reproduced inside the fix for it. Measured both ways and
+   * kept the shorter grid: quiet page above a bottom-anchored footer is not a defect, and
+   * a legend detached from the card it belongs to is. */
   /* The inset is taken from the card's own heading, which is clamp(17px, 1.15vw, 22px)
      and therefore 22px here, rounded up to the 24 the rest of this file steps in: a
      panel whose inset matches its title reads as a panel, where the shared clamp's
      14-to-22 was drawn for a card inside the landing hero at 1440. */
   #gate-controls .lp-action { padding: 24px; }
-  #extras .step { padding: 16px 15px; gap: 4px; }
+  #gate-controls .steps { gap: 0 24px; }
+  #gate-controls .step { padding: 14px 0 16px; gap: 3px; }
 }
+
+/* The band above the composition, bounded rather than shared.
+ *
+ * Measured at 1920x1080: the masthead ends at y=45 and the cards now start at y=95, so the
+ * band is 50px. It was 187px, made of an equal-thirds auto margin (111px), main's own
+ * 20px of padding and `.lp-actions`' 52px top margin, none of which knew about the other
+ * two. `vh` rather than a constant so a 2560x1440 display gets a proportionally larger
+ * opening and a 1280x720 laptop does not lose its fold to one; the clamp floor keeps it
+ * sane on a short window. The `max-width: 899px` rule further down this file sets 12px for
+ * a phone and comes later, so it still wins there. */
+main:has(> #screen-home:not([hidden])) { padding-top: clamp(12px, 4.5vh, 52px); }
 
 /* ---------------------------------------------- icons */
 
@@ -1445,7 +1837,26 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
 /* Connection details is a child of the screen now rather than of the rail, and keeps the
    slot it had on a phone: after the composer, before the burn control. */
 #screen-connected > #conn-disc { flex: 0 0 auto; order: 4; }
-.conn-rail > #sever { flex: 0 0 auto; order: 5; }
+/* Games had NO order at all, so it defaulted to 0 and joined the route line at the very
+   top of the column: measured at 390x844 it painted at y 160..230, above the verification
+   code, above the transcript and above the composer. Its own comment says it is "the least
+   important thing on the screen and must not compete with the transcript for attention",
+   which is the opposite of where an unset `order` put it. It sits with the other thing you
+   consult rather than read now, immediately after Connection details. */
+#screen-connected > #games-disc { flex: 0 0 auto; order: 5; }
+/* The other half of that move. An invitation arriving at a shut drawer opens it
+   (gameui.js announceInvite) and then scrolls the row carrying Play and No thanks into
+   view, because at order 5 the drawer opens well down a scrolling column: measured at
+   360x640 the row landed at y 694 in a 640px viewport, 54px below the fold, with the
+   page still at scrollTop 0.
+   `.bar` is `position: sticky; top: 0` inside `.page`, which is the scroller here, so a
+   scroll that ignored it would park the row under the masthead and the answer would be
+   just as unreachable as it was below the fold. --bar-h is the masthead's height and is
+   defined in this file; the rule lives here rather than in games.css for that reason,
+   since games.css is deliberately scoped to board colours and defines no shell token.
+   The +12px is a breathing gap, not a measurement. */
+#screen-connected > #games-disc .game-status { scroll-margin-top: calc(var(--bar-h) + 12px); }
+.conn-rail > #sever { flex: 0 0 auto; order: 6; }
 #screen-connected > #messages {
   flex: 1 1 auto;
   /* min-height:0 is what lets a flex item actually shrink, so the inner overflow works
@@ -1456,12 +1867,112 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
   overflow-y: auto;
 }
 
+/* THE TRANSCRIPT IS THE SCROLLER ABOVE 699px TOO, added 2026-08-10.
+ *
+ * `max-height: none` above is not a rounding error, it is the whole bug. `main` is a flex
+ * item of `.page` (the scroller) with flex-basis auto, so it is sized by its CONTENT: the
+ * transcript grew with every row that arrived and pushed the composer down a page that then
+ * scrolled, and `overflow-y: auto` on #messages could never fire because the element never
+ * ran out of room. The phone has capped this since the day the phone layout was written; the
+ * desktop never did, and only looked right because the suite's transcript happened to end
+ * near the fold.
+ *
+ * Measured at 1440x900 in a live gate, three messages and five received files: the composer's
+ * bottom edge was at y=1122 against a 900px window with 491px of page scroll under it. What
+ * exposed it was three lines of scan caution on each received file row, which moved a real
+ * gate's composer from y=884 to y=956. 884 was never healthy either: it left 16px of margin,
+ * so ANY future row would have done the same thing. This makes the composer's position a
+ * function of the WINDOW rather than of how much has been said.
+ *
+ * The 400px is the rest of the column at this width, measured rather than guessed: the route
+ * line and the gap above the transcript are 106px, the gap below it is 14px, and #chat-form
+ * is 233px with the folded hint in it. Rounded up so the composer lands just inside the fold
+ * (900 - 400 = 500px of transcript puts its bottom edge at y=853) and expressed against dvh
+ * so it holds at every window height instead of only at the one the tests measure: at 700px
+ * the transcript is 300px, at 1400px it is 1000px, and the composer sits 47px above the fold
+ * in all three. dvh, not vh, for the same reason the phone block gives.
+ *
+ * The 240px floor is for a window short enough that the arithmetic goes negative. Below it
+ * the composer does go under the fold, which is the honest outcome: a 500px-tall desktop
+ * window cannot hold a transcript, a composer and a keyboard at once, and a floor of zero
+ * would answer that by deleting the conversation.
+ *
+ * Two bands, because "the rest of the column" is not one number. Above 1024px the rail is
+ * beside the transcript and takes the verification code with it; between 700 and 1023 there
+ * is no rail, so the code box and Burn are IN the column and the same window has 120px less
+ * to give. Measured at 820x900 with the 400px constant: the composer landed at y=941, still
+ * past the fold. With 520 it lands at 821. */
+@media (min-width: 700px) and (max-width: 1023px) {
+  #screen-connected > #messages { max-height: max(240px, calc(100dvh - 520px)); }
+}
+@media (min-width: 1024px) {
+  #screen-connected > #messages { max-height: max(240px, calc(100dvh - 400px)); }
+}
+
 /* A phone has no rail and no spare height. Nothing is removed, only tightened: the
    composer has to be fully on screen with the transcript above it. */
 @media (max-width: 699px) {
-  #screen-connected { gap: 8px; }
+  /* ONE gap, the home screen's gap.
+   *
+   * Measured at 390x844 in a connected gate before this block, top to bottom, the space
+   * between consecutive blocks was 22 / 15 / 11 / 8 / 22 / 18px. The screen's own `gap`
+   * was 8 the whole way down; everything else was a margin some child brought with it
+   * from a layout it no longer has (`details.disc.compact` 14 above and 10 below,
+   * `.messages` 10 below, `#sever` 10 above). Six different distances is what "the bottom
+   * items are scattered" looks like measured, and none of the six was chosen.
+   *
+   * 14px, because that is the distance between the two cards and the steps on the home
+   * screen at this width, and the standard the owner is comparing this screen against is
+   * the front page. The margins are zeroed rather than tuned: a gap and a margin adding
+   * up to a third number is how the six appeared in the first place. */
+  #screen-connected { gap: 14px; }
+  #screen-connected > *,
+  #screen-connected > .conn-rail > * { margin-top: 0; margin-bottom: 0; }
   #screen-connected > #messages { min-height: 120px; }
-  .conn-rail > #sever { margin-top: 10px; }
+  /* The transcript is BOUNDED on a phone, so the composer's position stops being a function
+   * of what the other device sent.
+   *
+   * The base rule sets `max-height: none` on the transcript, which is right on a desktop
+   * where the screen is a grid whose transcript row is `minmax(0, 1fr)` and therefore
+   * bounded by the window. On a phone there is no such row: `main` and `#screen-connected`
+   * are `flex: 1 1 auto` with no `min-height: 0`, so each is at least its own min-content
+   * tall, and min-content includes every message bubble. Nothing bounded the transcript at
+   * all, so it simply grew. Measured at 390x844 in a real gate, one batch of seven files
+   * offered by the peer and not yet answered:
+   *
+   *   #messages   128px -> 443px      the batch row alone is 306px of it
+   *   #chat-form  y 392..670 -> 707..985, against a scroller that ends at y=811
+   *
+   * So one peer pressing "send 7 files" took the composer off the screen of the person who
+   * had pressed nothing. That is the same defect as the capability banner two screens up,
+   * arriving over the network instead of out of the markup.
+   *
+   * A cap and not `min-height: 0`, which was tried first and is the wrong tool here. Letting
+   * `main` shrink below its content does keep the composer on screen, but the content it no
+   * longer has room for does not disappear: it overflows main's box and paints straight
+   * through `.foot`, which is the next item in `.page`'s flex column. Photographed at
+   * 390x844: "FAQ Terms Acceptable use Privacy Support GitHub" printed across the middle of
+   * the Connection details card. A fix that trades a composer below the fold for a footer
+   * on top of a card is not a fix.
+   *
+   * 25dvh is 211px here, which leaves the composer's bottom edge at y=774 against a fold of
+   * 811 with the full seven-file row on screen, and the transcript scrolls its own content
+   * as a transcript should. 28dvh was measured first and left only 11px of that margin: the
+   * verification box above the transcript is 84px or 105px depending on whether its two
+   * words wrap, and a headroom smaller than the things above it can move by is not headroom.
+   * dvh, not vh: on a phone `vh` is the LARGE viewport, the one
+   * measured with the address bar hidden, so a vh cap is quietly too tall on exactly the
+   * devices this block exists for, and this file already measures the window in dvh
+   * (`body:has(> .page) { height: 100dvh }`). The 160px floor of the clamp keeps a short
+   * phone from capping the transcript below the 120px the line above already guarantees;
+   * the 340px ceiling keeps a tall one from handing the whole window back to the problem. */
+  #screen-connected > #messages { max-height: clamp(160px, 25dvh, 340px); }
+  /* The one deliberate exception, and it is deliberate for the same reason the desktop
+     rail pushes this control to its own foot with `margin-top: auto`: Burn is destructive
+     and irreversible, and a destructive control sitting on the same rhythm as a routine
+     one is a mis-tap waiting to happen. 14 + 10 = 24px, and it is the only number on this
+     screen that is not 14. */
+  #screen-connected > .conn-rail > #sever { margin-top: 10px; }
 }
 
 @media (min-width: 1024px) {
@@ -1887,6 +2398,28 @@ body:has(#screen-connected:not([hidden])) .foot {
   margin-top: 40px;
 }
 .lp-section + .lp-section { margin-top: 44px; }
+
+/* The suggestion box and the pledge share one row. The box is a short form and the
+   pledge is a single paragraph, so at desktop widths each was a wide band with the
+   right half of the page empty beside it. */
+.lp-pair {
+  display: grid;
+  gap: 40px;
+  align-items: start;
+  border-top: 1px solid var(--line);
+  margin-top: 40px;
+  padding: 44px 0 0;
+}
+.lp-pair > .lp-section { border-top: 0; margin-top: 0; padding-top: 0; }
+
+@media (min-width: 900px) {
+  .lp-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 44px; }
+  /* A deployment that does not accept suggestions ships the box [hidden] (landing.js
+     clears it only when /api/config says so), leaving the pledge alone in the row. It
+     has to read as a normal full-width section then, not a half column with dead
+     space beside it. */
+  .lp-pair:has(> #suggest-section[hidden]) { grid-template-columns: minmax(0, 1fr); }
+}
 
 .lp-h2 {
   font-size: clamp(21px, 2.05vw, 40px);
@@ -2777,6 +3310,20 @@ main.legal .doc-foot a:hover { color: var(--accent); text-decoration: underline;
    inherited: a bare `padding: 10px 14px` here put the last words of the sentence under
    the dismiss control. */
 #receive-note { font-size: 13px; padding: 10px 50px 10px 14px; }
+/* One gutter, at every width.
+ *
+ * `.banner` takes `width: var(--shell)`, which is `main`'s BORDER box, and the note is a
+ * filled, bordered, rounded card. Measured at 390x844: the cards inside `main` sat at
+ * x 16..374 and this one sat at x 0..390, so its border ran off both edges of the phone
+ * and its corner radii were clipped by the screen while every other block on the screen
+ * was inset. That is the same defect the 1728px slab was at 1920, one level down and
+ * never fixed, because the cap that fixed it there is 980px and inert on a phone.
+ *
+ * `--shell` minus two gutters is exactly `main`'s CONTENT box (1696 at 1920, 358 at 390),
+ * which is the line every card in the page is drawn to. An id, so it beats the
+ * `.page > .banner` width without needing a longer selector. The other two banners keep
+ * the full shell: they are page-level alarms shown before any composition exists. */
+#receive-note { width: calc(var(--shell) - 2 * var(--gutter)); }
 #receive-note strong { display: inline; margin-right: 7px; }
 
 

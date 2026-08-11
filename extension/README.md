@@ -127,6 +127,40 @@ package's own `index.html` replaces it), `js/landing.js` (only the landing loads
 `sw.js` (an extension page cannot register a service worker), `manifest.webmanifest` (names
 a `start_url` and scope on a server).
 
+### Where this package's CSP differs from the server's
+
+The served site's policy is `CSP_DIRECTIVES` in `server/index.js`; this package's is the
+`content_security_policy.extension_pages` string in `manifest.json`. They are not the same
+string and must not be, so the differences are enumerated here rather than left to be
+rediscovered a directive at a time. Identical in both: `default-src 'none'`,
+`script-src 'self'`, `style-src 'self'`, `img-src 'self' blob:`, `media-src 'self' blob:`,
+`font-src 'self'`, `base-uri 'none'`, `form-action 'none'`, `frame-ancestors 'none'`.
+
+| Directive | Server | Here | Why |
+| --- | --- | --- | --- |
+| `connect-src` | `'self'` | `https:`, `http://localhost:*`, `http://127.0.0.1:*` | The reason this directory exists: the client is not served by the origin it signals to, so `'self'` would block every `/api/*` call. `host_permissions` is the narrow gate; this directive cannot be narrower than the origin a user is permitted to configure. |
+| `manifest-src` | `'self'` | absent | `manifest.webmanifest` is not shipped and the patch removes the `<link rel="manifest">` from `app.html`, so there is nothing to fetch. |
+| `worker-src` | `'self'` | absent | `sw.js` is not shipped: Chromium refuses to let an extension page register a service worker at all. See "Streaming download is gone" below. |
+| `frame-src` | `'self'` | absent | That frame exists only to dispatch a request to that service worker. With no worker there is nothing for it to do. |
+
+`media-src 'self' blob:` was **missing here until 2026-08-10**, and it is the one difference
+that was never a decision. `js/preview.js` previews a received video or audio file by
+assigning a `blob:` object URL to a `<video>` or `<audio>` element, and a media element
+loads through `media-src`, not `img-src`. Without the directive it inherited
+`default-src 'none'` and every inline video and audio preview failed with "Media load
+rejected by URL safety check", which reads to a user as a corrupt file rather than as a
+policy decision. Inline IMAGE previews kept working, because `img-src` already carried
+`blob:`, so the failure looked specific to the file rather than to the package. The verified
+run below never previewed a file, which is how "no CSP violation" was true and this was
+broken at the same time. `'self'` and `blob:` only, exactly as the server sets it and for
+the reasons given there.
+
+The camera scanner needs nothing from this policy, which is worth stating because it looks
+as though it should: `js/qrscan.js` attaches the camera with `video.srcObject = stream`, and
+a `MediaStream` assigned to a property is not a URL fetch, so no fetch directive is
+consulted. Only the legacy `URL.createObjectURL(stream)` spelling would have gone through
+`media-src`.
+
 ## What works, end to end, verified
 
 Driven in headless Brave against a server started from this tree. Every claim below is an
@@ -172,7 +206,12 @@ ever asked to.
 - **The share target is gone** with the service worker. Sharing a file into Warp Gate from
   the OS is a PWA feature and has no extension equivalent here.
 - **QR scanning is untested.** `getUserMedia` on an extension page should prompt and work,
-  but nothing in this run pressed the scan button.
+  but nothing in this run pressed the scan button. The panel moved out of `app.js` and into
+  `js/scanui.js` upstream on 2026-08-10 and this package **ships it**: `app.html` here still
+  carries the scan button and the `scan-panel` markup, and `js/app.js` dynamically imports
+  `./scanui.js` when the button is pressed, so leaving the file out would turn a visible
+  working button into a runtime import failure. Nothing in `manifest.json` gates it: MV3 has
+  no camera permission, and the prompt is the browser's own against the extension origin.
 - **Firefox is untested.** The manifest carries `background.scripts` alongside
   `background.service_worker` and a `browser_specific_settings.gecko` block, and adding them
   was verified not to break the Chromium load. Nothing beyond that has been run. What needs

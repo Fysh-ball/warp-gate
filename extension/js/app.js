@@ -117,6 +117,9 @@ const MAX_NAME_CHARS = 32;
 // How many local sends are in flight. renderProgress consults this so it can refuse to
 // CREATE a row for an outbound transfer this side never started (see H7).
 let localSends = 0;
+// The transfer id of the send sendFilesNow is currently awaiting, learned from the offer row
+// link.js draws before it waits for acceptance. Null until that offer goes out.
+let offeredRowId = null;
 
 // The drag veil's state lives at module level so show() and the Escape/dragend resets can
 // clear it. A drag cancelled in a browser that emits no balancing dragleave otherwise
@@ -418,10 +421,12 @@ function show(name) {
   }
   // Any screen change ends whatever drag was in progress; the veil must not survive it.
   resetDrag();
-  // The extras fill the space on the quiet screens, and stay out of the way while a
-  // gate is actually open.
-  const extras = $('extras');
-  if (extras) extras.hidden = !['onboarding', 'home', 'severed'].includes(name);
+  // #extras used to be toggled here, because it was a page-level band that had to be
+  // shown on onboarding, home and severed and hidden everywhere else. It is a cell of
+  // the home screen's own grid now, so the <section class="screen"> around it already
+  // governs when it paints and a second switch here could only ever disagree with the
+  // first one. Removed rather than left as a no-op: a line that sets `hidden` on an
+  // element inside an already-hidden ancestor is a rule nobody can test.
   // The status badge describes a gate, so it appears once there is one to describe.
   // On the consent screen and the front page there is no gate and nothing has gone
   // wrong, so "idle" in the corner is chrome reporting the absence of an event.
@@ -741,78 +746,49 @@ function stopTtl() {
 
 // ---------------------------------------------------------------- camera scan
 
-let scanAbort = null;
-
 /**
  * Wire the "scan with the camera" button.
  *
- * The scanner and the QR decoder behind it are ~57 KB and are imported only when the
- * button is pressed. The button itself is revealed only if this browser can open a camera
- * at all, and that check needs no module: it is one property lookup, done inline, so a
- * device that cannot scan never fetches the code that scans.
+ * All this does is decide whether the button may exist and, if it is pressed, fetch the
+ * panel that does the work. The panel, the camera plumbing and the QR decoder behind it are
+ * ~60 KB in scanui.js and qrscan.js, and none of it is reachable until somebody chooses to
+ * scan rather than type: see the header of scanui.js for why that is the line.
  *
- * @param {() => void} joinNow the same join path the button and the Enter key use. A
- *   scanned code goes through it rather than around it, so a scan is not a second, less
- *   validated way into a gate.
+ * The camera check itself stays here because it needs no module, is one property lookup,
+ * and has to run on every load: a device that cannot open a camera must not be shown a
+ * button that can only fail. It mirrors scanSupported() in qrscan.js, which is the
+ * authority once the module is loaded.
+ *
+ * @param {() => void} joinNow the same join path the button and the Enter key use, handed
+ *   through to scanui.js so a scanned code cannot take a second, less validated route in.
  */
 function armScanner(joinNow) {
   const btn = $('scan-btn');
-  const panel = $('scan-panel');
-  const video = $('scan-video');
-  const note = $('scan-note');
-
-  // Inline rather than imported: see above. Mirrors scanSupported() in qrscan.js, which
-  // is the authority once the module is loaded.
   if (typeof navigator?.mediaDevices?.getUserMedia !== 'function') return;
   btn.hidden = false;
 
-  const close = () => {
-    if (scanAbort) { scanAbort.abort(); scanAbort = null; }
-    panel.hidden = true;
-    btn.hidden = false;
-  };
-
-  $('scan-cancel').addEventListener('click', close);
-
   btn.addEventListener('click', async () => {
+    const panel = $('scan-panel');
+    // Painted BEFORE the await, restored in review on 2026-08-10. These three lines used to
+    // live here and moved wholesale into scanui.js when the panel was split out, which put
+    // the entire fetch of that module and its ~60 KB of QR decoder between the press and any
+    // change on screen. On a slow connection that is a button that visibly does nothing, and
+    // a button that does nothing is a button people press again. scanui.js still sets the
+    // same three itself, so this is the same state written twice rather than a second source
+    // of truth: the module cannot rely on a caller having done it.
     btn.hidden = true;
     panel.hidden = false;
-    note.textContent = 'Starting the camera...';
-
-    let mod;
+    $('scan-note').textContent = 'Starting the camera...';
     try {
-      mod = await import('./qrscan.js');
+      const mod = await import('./scanui.js');
+      await mod.scanIntoField({ $, log, joinNow });
     } catch (err) {
-      close();
+      // The panel never opened, so the button has to come back or the press leaves the page
+      // with nothing on it to press. Reported rather than swallowed: a button that does
+      // nothing at all reads as a broken page, not as a failed fetch.
+      panel.hidden = true;
+      btn.hidden = false;
       log(`the scanner could not be loaded: ${err.message}`, 'bad');
-      return;
-    }
-
-    scanAbort = new AbortController();
-    note.textContent = 'Point the camera at the other screen. Nothing leaves this device: '
-      + 'the picture is read here and thrown away.';
-
-    try {
-      const text = await mod.scanOnce(video, { signal: scanAbort.signal });
-      close();
-      // Put it in the field before joining. The person watching needs to see WHAT was
-      // read, especially when the scan picked up a different code than they meant, and a
-      // scanner that silently acts on what it saw is a scanner nobody can correct.
-      $('join-input').value = text;
-      joinNow();
-    } catch (err) {
-      close();
-      // One message per cause. A single "could not scan" for a refused permission and for
-      // a laptop with no camera names neither of them.
-      const said = {
-        denied: 'the camera was not allowed. Type the words instead, or allow the camera in the site settings.',
-        no_camera: 'no camera was found on this device.',
-        in_use: 'the camera is already in use by another app.',
-        timeout: 'no code was found. Try filling more of the frame with the code.',
-        unsupported: 'this browser cannot open a camera.',
-        cancelled: null, // the user closed it; saying so is noise
-      }[err.code] ?? `the camera failed: ${err.message}`;
-      if (said) log(said, 'warn');
     }
   });
 }
@@ -970,7 +946,12 @@ function wire(active) {
       const ttl = $('ttl');
       ttl.hidden = false;
       ttl.textContent = 'live';
-      $('compose-hint').textContent = describeLimit();
+      // Lede into the summary, detail into the disclosure's body. One string into one
+      // element made the body empty, and an empty body under a line clamp is a control that
+      // hides pixels while a screen reader still reads every word: see describeLimit().
+      const limit = describeLimit();
+      $('compose-hint').textContent = limit.lede;
+      $('compose-hint-detail').textContent = limit.detail;
       // Whatever the operating system shared into this page before a gate existed goes
       // out now. Cleared first, so a second connection does not send it twice.
       if (pendingShare.length) {
@@ -1108,6 +1089,12 @@ function wire(active) {
     // half-finished game cannot be played on, and leaving it on screen with dead buttons
     // reads as a gate that is still live.
     if (games) games.reset();
+    // The batch models go with the gate, for the reason link.js gives where it nulls
+    // pendingBatch, batchGrant and refusedBatch on close: consent does not survive the gate it
+    // was given in. batchui.js's own map was never cleared at all, so peer-supplied filenames
+    // lived for the life of the page and a later gate reusing a batch id would have found
+    // them. Guarded because the module is only fetched when a batch was actually announced.
+    if (batchUiMod) batchUiMod.forgetBatches();
     // Any transfer still running is over. Without this the row froze mid-progress with
     // no explanation, which reads as "still going" on a screen that says the gate ended.
     for (const bar of document.querySelectorAll('#messages progress')) {
@@ -1141,26 +1128,31 @@ function wire(active) {
     const d = event.detail ?? {};
     log(`refused incoming file: ${d.reason}`, 'bad');
     noteFileOutcome('them', d.name, `Not accepted: ${d.reason ?? 'refused.'}`);
+    noteBatchFile(d, 'refused', d.reason);
   });
   active.addEventListener('file-rejected', (event) => {
     const d = event.detail ?? {};
     log(`the other device refused the file: ${d.reason}`, 'bad');
-    // Only note it if no row exists yet: a transfer that got far enough to have a row
-    // is already updated in place by the file-failed handler.
-    if (!document.getElementById(`transfer-${d.id}`)) {
-      noteFileOutcome('me', d.name, `Not delivered: ${d.reason ?? 'refused.'}`);
-    }
+    // Updated IN PLACE when a row exists. link.close reports a severed send through here, and
+    // leaving that row alone while writing a second bubble under it is how one dead transfer
+    // came to sit in two places, the older still showing a bar that would never move again.
+    if (endRow(document.getElementById(`transfer-${d.id}`), d.reason ?? 'Not delivered.')) return;
+    noteFileOutcome('me', d.name, `Not delivered: ${d.reason ?? 'refused.'}`);
   });
-  active.addEventListener('file-accepted', () => log('the other device accepted the file', 'ok'));
+  active.addEventListener('file-accepted', (event) => {
+    const d = event.detail ?? {};
+    log('the other device accepted the file', 'ok');
+    // The offer row said "waiting for it to be accepted there". This is the answer to that
+    // sentence, and without it the row kept saying it was waiting for the whole transfer.
+    const row = document.getElementById(`transfer-${d.id}`);
+    if (row) rowStatus(row, 'Accepted on the other device. Sending.', 'muted small');
+  });
   active.addEventListener('file-progress', (event) => renderProgress(event.detail));
   active.addEventListener('file-failed', (event) => {
     const d = event.detail ?? {};
     log(`transfer failed: ${d.reason}`, 'bad');
-    const row = document.getElementById(`transfer-${d.id}`);
-    if (row) {
-      row.querySelector('progress')?.remove();
-      rowStatus(row, d.reason ?? 'The transfer failed.', 'error small');
-    }
+    endRow(document.getElementById(`transfer-${d.id}`), d.reason ?? 'The transfer failed.');
+    noteBatchFile(d, 'failed', d.reason);
   });
 
   // --- interrupted transfers
@@ -1176,8 +1168,18 @@ function wire(active) {
       rowTitle(row).textContent = `${sanitizeFilename(d.name, 'file')} (${formatBytes(d.total ?? 0)})`;
     }
     setProgress(row, d.sent ?? 0, d.total ?? 1);
-    rowStatus(row, d.message ?? 'Paused. Waiting to continue.', 'warn small');
-    log(d.message ?? `${sanitizeFilename(d.name, 'file')}: paused`, 'warn');
+    // Three things arrive on this one event and must not read as one. `offered` is a file
+    // waiting for a human to say yes: ordinary, not a warning. `retrying` is a transfer still
+    // being chased and has to look unmistakably unlike one that has given up, which is the
+    // error-level row file-failed writes. "It only stopped moving" is what was reported, so
+    // the distinction is the fix rather than decoration.
+    const offered = d.kind === 'offered';
+    // Which row belongs to the send sendFilesNow is currently awaiting. link.js mints the
+    // transfer id and session.sendFile does not hand it back, so this is the only place the
+    // id and the file the loop is on are known to be the same thing.
+    if (offered && d.direction === 'out') offeredRowId = d.id;
+    rowStatus(row, d.message ?? 'Paused. Waiting to continue.', offered ? 'muted small' : 'warn small');
+    log(d.message ?? `${sanitizeFilename(d.name, 'file')}: paused`, offered ? '' : 'warn');
   });
 
   active.addEventListener('file-resumed', (event) => {
@@ -1236,6 +1238,7 @@ function wire(active) {
     const meta = event.detail;
     log(`received ${sanitizeFilename(meta.name)} (${meta.human})`, 'ok');
     finishFileRow(fileRow(meta.id, 'them', meta.label), meta, 'them');
+    noteBatchFile(meta, 'done');
   });
 
   // Emitted by acceptIncoming and previously dropped on the floor. It carries the one
@@ -1264,6 +1267,7 @@ function wire(active) {
     const meta = event.detail;
     const row = fileRow(meta.id, 'them', meta.label);
     rowTitle(row).textContent = `${sanitizeFilename(meta.name)} (${formatBytes(meta.size)})`;
+    noteBatchFile(meta, 'receiving');
   });
 
   active.addEventListener('file-sent', (event) => {
@@ -1903,7 +1907,12 @@ function finishFileRow(row, meta, from) {
     // file went to disk precisely so it would not be held in memory, and drawing it would
     // pull the whole thing back in. The stream sink has no handle and cannot be opened,
     // which is why its wording above stays a dead end.
-    if (meta.handle) void renderFilePreview(row, meta);
+    // Called for the stream sink too, which has no handle and gets neither a preview nor an
+    // Open button. It is still a file this device received from someone else, and preview.js
+    // carries the scan caution: a route that skipped it would be a received file with no
+    // caution on it, which is the one case where the user is most likely to open the file
+    // from their own downloads folder instead of from here.
+    void renderFilePreview(row, meta);
     return;
   }
 
@@ -1967,6 +1976,18 @@ function renderOffer(meta) {
 // tests/size.test.mjs for why anything reachable only after an unmade decision is loaded
 // this way.
 let batchUiMod = null;
+
+// Move one file of an accepted batch along in the batch's own row. The model, the drawing
+// and the reasoning are all in batchui.js, which is not fetched until a peer has actually
+// announced several files at once; this is the one line of it that has to be on the boot
+// path, because these events arrive whether or not that module was ever loaded. Silent on a
+// miss, which is every single-file send.
+function noteBatchFile(meta, state, detail = null) {
+  if (!meta || typeof meta.batch !== 'string' || !batchUiMod) return;
+  batchUiMod.noteBatchFile({
+    batch: meta.batch, id: meta.id, name: meta.name, state, detail,
+  }, { fileRow, rowTitle, rowStatus, log, scrollMessages, session });
+}
 
 async function renderBatchOffer(d) {
   try {
@@ -2084,13 +2105,34 @@ async function sendFilesNow(list) {
   }
   for (const file of list) {
     if (!session) return;
+    // Cleared per file, so a failure that never got as far as an offer cannot borrow the
+    // previous file's row and report itself as already handled.
+    offeredRowId = null;
     // renderProgress reads this to tell a send this side started from a forged one.
     localSends += 1;
     try {
       await session.sendFile(file, batch);
     } catch (err) {
       log(`could not send ${file.name}: ${err.message}`, 'bad');
-      noteFileOutcome('me', file.name, `Not sent: ${err.message}`);
+      // EVERY rejection resolves the row, not only the ones that emit an event. This used to
+      // suppress itself whenever an offer row existed, on the stated assumption that
+      // "file-rejected has already written the reason into it". That assumption was false for
+      // link.js's resetForRenegotiation, which rejects the pending accept with "the connection
+      // restarted before the transfer was accepted" and emits NOTHING. Measured: send a file
+      // over AUTO_ACCEPT_BYTES, the offer row is drawn, the connection renegotiates before the
+      // receiver taps Accept, sendFile rejects, the row exists, nothing is written, and the row
+      // says "Offered to the other device. Waiting for it to be accepted there" for ever. That
+      // is the stranded row this whole change set exists to remove, reintroduced by the check
+      // meant to avoid duplicating a message.
+      //
+      // endRow is what makes saying it unconditionally safe: a row an event already resolved
+      // keeps that event's wording, which is the more specific of the two. `offeredRowId` is
+      // this send's id and nothing else's: sendFilesNow awaits one file at a time and
+      // outboundChain serialises the callers.
+      const row = offeredRowId ? document.getElementById(`transfer-${offeredRowId}`) : null;
+      if (!endRow(row, `Not sent: ${err.message}`)) {
+        noteFileOutcome('me', file.name, `Not sent: ${err.message}`);
+      }
     } finally {
       localSends -= 1;
     }
@@ -2113,6 +2155,30 @@ function autoGrow(el) {
     })();
     if (el.style.height !== next) el.style.height = next;
   });
+}
+
+/**
+ * Say the last thing about one transfer row, once, and remember that it has been said.
+ *
+ * Two callers both have to be able to resolve the same row and neither can see the other:
+ * the `file-rejected` and `file-failed` listeners write whatever the link established, and
+ * sendFilesNow's catch has to resolve a row that NO event ever spoke for. Without the mark
+ * the second writer either overwrites a specific cause with a vaguer one (link.close emits a
+ * full severance sentence and then rejects sendFile with "the gate was burned during the
+ * transfer") or, if it defers, leaves the row unresolved on every path that emits nothing.
+ * First writer wins, because the first writer is the one closest to the cause.
+ *
+ * Returns false only when there is no row, which is the caller's signal to write a bubble
+ * instead. It returns TRUE for a row that was already ended: the row is resolved either way,
+ * and a second bubble under it is the duplicate this was built to stop.
+ */
+function endRow(row, text) {
+  if (!row) return false;
+  if (row.dataset.ended === '1') return true;
+  row.dataset.ended = '1';
+  row.querySelector('progress')?.remove();
+  rowStatus(row, text, 'error small');
+  return true;
 }
 
 /**
@@ -2607,8 +2673,12 @@ async function boot() {
   // over the bottom of the page. The sentence is unchanged and still comes from
   // describeLimit(), which remains the only place that knows the answer.
   if (!canStreamToDisk()) {
-    receiveNoteText = describeLimit();
-    $('receive-note-text').textContent = receiveNoteText;
+    const limit = describeLimit();
+    // The LEDE is what receiveNoteText holds, because its only other job is to decide
+    // whether the banner has anything to say at all (see the screen switch above).
+    receiveNoteText = limit.lede;
+    $('receive-note-text').textContent = limit.lede;
+    $('receive-note-detail').textContent = limit.detail;
     $('receive-note').hidden = isDismissed('receive-note');
   }
   // Create and Join build a Session, hold a room slot and open a signalling connection.
@@ -2674,8 +2744,15 @@ async function boot() {
     // and pasting; this covers anything that sets the value directly.
     if (input.value.length > MAX_MESSAGE_CHARS) {
       input.value = input.value.slice(0, MAX_MESSAGE_CHARS);
-      $('compose-hint').textContent =
+      // Its OWN element, not #compose-hint. Both messages used to go through that one span,
+      // so a 65-character transient notice inherited the standing note's disclosure and got a
+      // "Read the rest" control that revealed nothing. A control that does nothing teaches
+      // the user that the control does nothing, and then they do not press it on the note
+      // where it matters.
+      const trim = $('compose-trim');
+      trim.textContent =
         `Trimmed to ${MAX_MESSAGE_CHARS.toLocaleString()} characters. Send longer text as a file instead.`;
+      trim.hidden = false;
     }
     autoGrow(input);
   });

@@ -20,7 +20,12 @@ cd "$(dirname "$0")/.." || exit 2
 # It was not an exclusion, it was an omission: the file exists, passes 24/24 offline and
 # needs no network. That is the failure mode this list has, so the completeness of the list
 # is now checked below rather than trusted.
-suites=(crypto qr qrdecode size signalling http suggest download outbound browser mesh games gameplay saswords pwa motion legal securecontext)
+# `batchui` and `disconnect` were added to tests/ and never added here, so from the day they
+# were written until 2026-08-10 the guard below aborted the whole runner with RUNNER INCOMPLETE
+# and exit 2 BEFORE a single suite ran. The guard did its job: the failure was loud. What it
+# shows is that adding a suite is two edits, not one, and that a runner which refuses to run is
+# the correct behaviour rather than a nuisance to be worked around.
+suites=(crypto qr qrdecode size signalling http suggest download outbound browser mesh games gameplay saswords pwa motion legal securecontext batchui disconnect)
 
 # Deliberately not run, and therefore deliberately not a gap. Anything in tests/ that is
 # neither here nor above is an omission and stops the run.

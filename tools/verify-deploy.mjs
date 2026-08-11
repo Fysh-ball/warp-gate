@@ -247,10 +247,19 @@ const probes = [
     name: '12. the modules added by the batch accept, the preview and the sink split are served',
     async run(base) {
       const out = {};
-      for (const p of ['/js/batchui.js', '/js/dirsink.js', '/js/preview.js', '/js/filesink.js', '/js/common.js']) {
+      // scanui.js joined this list on 2026-08-10 for exactly the reason the comment above
+      // gives: the camera panel moved off the boot path, so a 404 on it now shows up only
+      // when somebody presses "scan the code with the camera", which is minutes after the
+      // deploy looked fine.
+      for (const p of ['/js/batchui.js', '/js/dirsink.js', '/js/preview.js', '/js/filesink.js',
+        '/js/common.js', '/js/scanui.js']) {
         const r = await get(base, p);
         out[p] = {
           status: r.status,
+          // A 404 from this server answers with JSON, and a module served as JSON is refused
+          // by the browser at `import()` time even though the bytes arrived. Status alone
+          // would not separate those two, so the type is part of the claim.
+          ctype: /javascript/.test(r.headers.get('content-type') || ''),
           bytes: Buffer.byteLength(r.text, 'utf8'),
           sha: createHash('sha256').update(Buffer.from(r.text, 'utf8')).digest('hex').slice(0, 16),
         };
@@ -278,6 +287,125 @@ const probes = [
         parked: link.text.includes('out.parked'),
         batchGrant: link.text.includes('batchGrant'),
         coverage: link.text.includes('newCoverage'),
+      };
+    },
+  },
+  {
+    // The preview panel now points a receiver at VirusTotal for a file that arrived from
+    // someone else. It is advice, so nothing breaks when it is missing: the panel renders,
+    // the file opens, and the only thing absent is the sentence telling the user to check
+    // it first. That is precisely the class of change no hash above would attribute, and
+    // that a stale `preview.js` would carry away silently.
+    //
+    // Matched on the full upload URL rather than on the word VirusTotal, because the word
+    // is one edit away from appearing in a comment while the link still points nowhere.
+    name: '14. the preview panel serves the VirusTotal upload link',
+    async run(base) {
+      const r = await get(base, '/js/preview.js');
+      return {
+        status: r.status,
+        url: r.text.includes('https://www.virustotal.com/gui/home/upload'),
+        constName: r.text.includes('VIRUSTOTAL_URL'),
+      };
+    },
+  },
+  {
+    // The batch panel gained a per-file state model, so a receiver who accepts 7 files sees
+    // 7 rows and a tally instead of one download and six invisible files. Probed by the
+    // words the model renders and by the table that holds them: a state without a label in
+    // STATE_TEXT draws as nothing at all, so the table is the feature.
+    //
+    // Deliberately not matched on 'queued' or 'done' alone. Those are ordinary words that
+    // could plausibly sit in the previous release's bytes, and a probe that matches the
+    // release it is supposed to detect the absence of is a probe that measures nothing.
+    name: '15. the batch panel serves the per-file state model and its tally',
+    async run(base) {
+      const r = await get(base, '/js/batchui.js');
+      return {
+        status: r.status,
+        table: r.text.includes('STATE_TEXT'),
+        offeredText: r.text.includes('waiting for you to accept'),
+        queuedText: r.text.includes('waiting its turn'),
+        // The tally line, which is the "rather than one download" half of the change.
+        tally: r.text.includes('Files arrive one at a time.'),
+        strangers: r.text.includes('did not match what you were offered'),
+      };
+    },
+  },
+  {
+    // A transfer that dies because the other tab closed used to end in a bare error code.
+    // Both halves of the replacement are checked, because they are two separate claims: the
+    // first says what happened, the second says what to do about it, and a partial deploy
+    // that carried one without the other would read as an accusation with no way forward.
+    name: '16. link.js serves the plain-language message for a peer that disconnected',
+    async run(base) {
+      const r = await get(base, '/js/link.js');
+      return {
+        status: r.status,
+        cause: r.text.includes('severed, whether by accident or on purpose'),
+        remedy: r.text.includes('establish a new connection and send it again'),
+      };
+    },
+  },
+  {
+    // The sender's side of an offer. Before this, a file waiting on the other device's
+    // Accept showed the SENDER nothing at all, so a receiver who walked away looked
+    // identical to a transfer that had not started. `offeredRowId` is the identifier that
+    // holds that row, and it is unique to this change: probe 2 hashes app.js and would go
+    // red for any edit whatsoever without ever naming this one.
+    name: '17. app.js serves the sender-side row for a file awaiting acceptance',
+    async run(base) {
+      const r = await get(base, '/js/app.js');
+      return {
+        status: r.status,
+        marker: r.text.includes('offeredRowId'),
+        // More than the declaration: the assignment and the lookup are what make the row
+        // appear, and a file carrying only `let offeredRowId = null` would be a half deploy.
+        uses: (r.text.match(/offeredRowId/g) || []).length >= 3,
+      };
+    },
+  },
+  {
+    // Opening the games drawer on a phone used to leave the invitation below the fold, so
+    // the invite existed and the user never saw it. The fix is two files that only work
+    // together: gameui.js scrolls the status line into view, and style.css keeps the sticky
+    // bar from covering the thing it just scrolled to. Deploying one without the other
+    // scrolls the invitation exactly under the bar, so both are one probe.
+    name: '18. the game invitation scrolls into view, and clears the bar when it does',
+    async run(base) {
+      const js = await get(base, '/js/gameui.js');
+      const css = await get(base, '/css/style.css');
+      return {
+        jsStatus: js.status,
+        cssStatus: css.status,
+        scrolls: js.text.includes('scrollIntoView'),
+        nearest: /scrollIntoView\(\{\s*block:\s*'nearest'/.test(js.text),
+        // The whole rule, selector included: `scroll-margin-top` on its own already appears
+        // elsewhere in this stylesheet, so matching the property would be green before the
+        // deploy and would stay green if the rule landed on the wrong selector.
+        scrollMargin: css.text.includes("#screen-connected > #games-disc .game-status { scroll-margin-top: calc(var(--bar-h) + 12px); }"),
+      };
+    },
+  },
+  {
+    // The FAQ said "there is no app, no extension and no account, and there never will be"
+    // while the repository shipped an MV3 extension, and the extension shipped that very
+    // page inside itself. Both halves are checked: the front page has to advertise the
+    // extension with a link somebody can follow, and the FAQ answer has to have stopped
+    // denying it exists. The old sentence is matched too, because a stale faq.html would
+    // otherwise pass on the new one being merely absent from a file that never loaded.
+    name: '19. the extension is advertised on the front page, and the FAQ no longer denies it',
+    async run(base) {
+      const index = await get(base, '/index.html');
+      const faq = await get(base, '/faq.html');
+      const LINK = 'https://github.com/Fysh-ball/warp-gate/tree/main/extension';
+      return {
+        indexStatus: index.status,
+        faqStatus: faq.status,
+        onFrontPage: index.text.includes('A browser extension, if you want one'),
+        frontPageLink: index.text.includes(LINK),
+        faqLink: faq.text.includes(LINK),
+        deniedItExists: faq.text.includes('no app, no extension and no account'),
       };
     },
   },

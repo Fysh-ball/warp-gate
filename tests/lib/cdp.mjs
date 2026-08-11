@@ -127,7 +127,35 @@ class Tab {
     await this.send('DOM.setFileInputFiles', { nodeId, files: filePaths });
   }
 
-  close() {
+  /**
+   * Close the PAGE, then the socket that was driving it.
+   *
+   * This used to close the WebSocket alone, which released nothing: the tab kept running,
+   * its EventSource kept its connection to /api/events open, and every later tab in the
+   * suite competed with it. Two ceilings sit right above where that put the run, and both
+   * of them fail silently:
+   *
+   *   - Chromium allows SIX connections per origin over HTTP/1.1, shared by every tab in
+   *     the profile. An SSE stream holds one for the life of the tab, so six live gates
+   *     leave nothing for a POST. Measured with four held tabs plus a fresh pair: the
+   *     joiner's `fetch('/api/relay')` never got a socket and died on its own 8s
+   *     AbortSignal, the handshake never happened, and both screens sat on "gathering"
+   *     until they gave up. `ss -tn` counted 6 established and pinned.
+   *   - The server allows config.limits.streamsPerKey concurrent event streams per address
+   *     (default 4, server/config.js). The fifth is refused with 429, and an EventSource
+   *     that receives a non-200 goes to readyState CLOSED and does NOT reconnect. Measured
+   *     with the same probe at the default limit: readyState 2 on the creator's stream and
+   *     a 90s wait for a screen that could no longer arrive.
+   *
+   * Neither prints anything, in the page or in the run, so the only symptom either has is
+   * a waitFor that times out somewhere further down. That is the shape of the intermittent
+   * "password gate: tab B connected" abort this file has produced.
+   *
+   * Best effort and not awaited by every caller: a page that has already gone (a crashed
+   * renderer, a browser being torn down) must not turn a passing run into an error here.
+   */
+  async close() {
+    try { await this.send('Page.close', {}); } catch (err) { void err; }
     try { this.ws.close(); } catch (err) { void err; }
   }
 }

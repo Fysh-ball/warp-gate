@@ -18,42 +18,39 @@ import {
 import { Peer } from './peer.js';
 import {
   CHUNK_BYTES, readChunkRanges, createSink, primeSink, canAccept, formatBytes,
-  fingerprintFile, compareFingerprints, saveResume, listResume, clearResume, clearRoomResume,
+  // fingerprintFile went with serveResume, and compareFingerprints with onResumeAccepted,
+  // to resume.js on 2026-08-10. Neither is re-imported here and neither should be: an
+  // import kept "in case" is a name that reads as a dependency this file does not have.
+  saveResume, listResume, clearResume, clearRoomResume,
 } from './transfer.js';
 // The frame layout and the chunk arithmetic: needed at module evaluation time and once per
-// chunk in the send loop, so static.
+// chunk in the send loop, so static. expectedChunkBytes left with serveResume, same rule.
 import {
-  CHUNK_INDEX_BYTES, chunkCount, expectedChunkBytes, frameChunk, unframeChunk,
+  CHUNK_INDEX_BYTES, chunkCount, frameChunk, unframeChunk,
 } from './chunkwire.js';
 
 /**
  * How many bytes of the FILE the sender has covered, indexed by chunk.
  *
- * THE BUG THIS EXISTS FOR, measured on a real 434 MB transfer that arrived perfectly and
- * was then thrown away. `out.sent` used to be a running total of bytes PUSHED, incremented
- * once per chunk sent. A resume rebased it to what the receiver already held and then
- * re-drove the file. When a resume landed while the previous run was still unwinding, the
- * rebase happened anyway (it sits before the `streaming` latch that stops the double
- * send), and the old loop went on adding to the rebased figure. FILE_END then declared
- * 832,087,527 bytes for a 455,030,247 byte file: exactly the 377,057,280 the receiver
- * already had, plus the whole file again. The receiver had every chunk, in the right
- * order, with the right length and the right total, and failed the transfer on the
+ * THE BUG THIS EXISTS FOR, measured on a real 434 MB transfer that arrived perfectly and was
+ * then thrown away. `out.sent` used to be a running total of bytes PUSHED. A resume rebased it
+ * to what the receiver already held and re-drove the file, and when one landed while the
+ * previous run was still unwinding the rebase happened anyway (it sits before the `streaming`
+ * latch) while the old loop went on adding to the rebased figure. FILE_END then declared
+ * 832,087,527 bytes for a 455,030,247 byte file: the 377,057,280 the receiver already had,
+ * plus the whole file again. Every chunk had arrived correctly and the transfer failed on the
  * sender's arithmetic alone.
  *
- * Counting coverage per index instead makes the total idempotent: re-sending a chunk adds
- * nothing, because the slot already holds that chunk's length. Overlapping runs, a resume
- * mid-unwind and a re-send of a range the receiver already had all become harmless, which
- * is the property the latch was trying to provide and could not.
- *
- * A Uint32Array rather than a Set or a Map: one slot per chunk, 4 bytes each. A 30 GiB
- * file at the 16 KiB floor is 7.9 MB, and at the 256 KiB a real connection negotiates it
- * is 492 KB. Lengths rather than bits, so the total is a byte count and can be compared
- * with the file's size directly.
+ * Counting coverage per index makes the total idempotent: re-sending a chunk adds nothing,
+ * because the slot already holds that chunk's length. A Uint32Array rather than a Set or Map:
+ * one slot per chunk, 4 bytes each, so a 30 GiB file is 7.9 MB at the 16 KiB floor and 492 KB
+ * at the 256 KiB a real connection negotiates. Lengths rather than bits, so the total is a
+ * byte count that can be compared with the file's size directly.
  *
  * What it does NOT do, and the comment here used to claim it did: catch a truncating read.
- * readChunkRanges throws on a short read (transfer.js) rather than yielding one, so a short
- * chunk never reaches this map, and abandonOutbound ends the transfer there. That guard is
- * the one to keep; do not delete it believing this replaces it.
+ * readChunkRanges throws on a short read (transfer.js), so a short chunk never reaches this
+ * map and abandonOutbound ends the transfer there. Do not delete that guard believing this
+ * replaces it.
  */
 function newCoverage(size, chunkSize) {
   return new Uint32Array(chunkCount(size, chunkSize));
@@ -128,24 +125,19 @@ const REVEAL_TIMEOUT_MS = CONFIRM_TIMEOUT_MS;
 // rather than never.
 const BACKGROUND_GRACE_MAX = 3;
 
-// ------------------------------------------------- was this page even awake to hear it?
+// ---- was this page even awake to hear it?
 //
-// A handshake timeout is evidence of one specific thing: the other device did not answer
-// WITHIN the window. That inference is only sound if this page was running for the
-// window. It was not, on the case that made this necessary: a phone freezes the tab
-// behind the OS file picker or behind a tap into another app, every pending setTimeout
-// lands in a heap the moment it thaws, and the two auth timers below then declared
+// A handshake timeout is evidence that the other device did not answer WITHIN the window, and
+// that inference is sound only if this page was running for the window. On the case that made
+// this necessary it was not: a phone freezes the tab behind the OS file picker, every pending
+// setTimeout lands the moment it thaws, and the two auth timers below then declared
 // AUTH_FAILED, which unlike every other failure path here does NOT call holdOpen or
-// scheduleRestart. The link was left terminal with only a log line, and the gate never
-// came back.
+// scheduleRestart. The link was left terminal with only a log line and the gate never came
+// back. So the deadlines are only counted against a page that was present to observe them.
+// `document.visibilityState` is the only signal available: the Page Lifecycle `freeze` event
+// is Chromium-only and is not delivered at all for an iOS tab suspended behind the picker.
 //
-// So the deadlines are still deadlines, but they are only counted against a page that was
-// present to observe them. `document.visibilityState` is the only signal available for
-// this: the Page Lifecycle `freeze` event is Chromium-only and is not delivered at all in
-// the case that matters most, an iOS tab suspended behind the picker.
-//
-// Guarded on `document` because this module is also loaded by the node test suites, where
-// there is no document and nothing is ever backgrounded.
+// Guarded on `document` because the node test suites load this module too.
 let lastVisibleAt = Date.now();
 if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
   document.addEventListener('visibilitychange', () => {
@@ -210,7 +202,9 @@ const RESTART_SETTLE_MS = 8000;
 // quiet, and a receiver that cries stall while the sender is merely slow is worse than
 // silence. It is also only a message: nothing is aborted, because the resume design says a
 // quiet link is a pause and not an end.
-const INBOUND_QUIET_MS = 45_000;
+// Exported so tests/disconnect.test.mjs drives the timer by its real delay, not a copied
+// 45000: a test hard-coding the number keeps passing when the number moves.
+export const INBOUND_QUIET_MS = 45_000;
 // What one sealed frame costs on the wire beyond its plaintext: the 10-byte header
 // (version, type, 64-bit counter), the 16-byte AES-GCM tag, and the 4-byte chunk index that
 // now rides inside the sealed plaintext. Subtracted from the SCTP maximum message size,
@@ -224,19 +218,16 @@ const MAX_EARLY_FRAMES = 16;
 // How many chunks may be held while the accept dialog is open, counted as ENTRIES rather
 // than as bytes.
 //
-// EARLY_LIMIT_BYTES on its own was not a bound at all. A chunk frame's plaintext was
-// allowed to be exactly the four index bytes and no body, so its payload counted zero
-// against the byte limit while still costing about 100 bytes of heap for the {index, bytes}
-// entry and the array slot: earlyBytes stayed at 0 for ever and the array grew until the
-// tab died, at 30 bytes per frame on the wire, while a save dialog sat on screen. Zero
-// length is now refused in unframeChunk, which closes the free case, and this closes the
-// cheap one: a one-byte body would otherwise still buy four million entries inside 4 MiB.
+// EARLY_LIMIT_BYTES alone was not a bound: a chunk frame's plaintext could be the four index
+// bytes and no body, costing 0 against the byte limit and about 100 bytes of heap, so
+// earlyBytes stayed at 0 and the array grew until the tab died, at 30 bytes per frame on the
+// wire, while a save dialog sat on screen. unframeChunk now refuses zero length, which closes
+// the free case; this closes the cheap one, where a one-byte body buys four million entries
+// inside 4 MiB.
 //
-// 1024 is generous rather than tight. A sender running ahead at the 16 KiB chunk floor
-// fills EARLY_LIMIT_BYTES with 256 entries and at a negotiated 256 KiB with 16, so no
-// legitimate transfer comes near this, and 1024 entries is about 100 KiB of bookkeeping.
-// resume.js's MAX_AHEAD_CHUNKS is the same idea for the post-accept buffer and caps both
-// count and bytes for exactly this reason.
+// 1024 is generous rather than tight: a sender running ahead fills EARLY_LIMIT_BYTES with 256
+// entries at the 16 KiB chunk floor and 16 at a negotiated 256 KiB, so no legitimate transfer
+// comes near it. resume.js's MAX_AHEAD_CHUNKS is the same idea for the post-accept buffer.
 const MAX_EARLY_CHUNKS = 1024;
 
 /**
@@ -314,6 +305,10 @@ export class Link extends EventTarget {
     // made to send its public key twice under one commitment.
     this.peerCommitment = null;
     this.pkSent = false;
+    // WHICH handshake those two belong to: the initiator's commitment digest, known to both
+    // sides and fresh every generation. Without it a reveal from a torn-down handshake cannot
+    // be told from the one this side is waiting for. See the 'pk' handler.
+    this.handshakeId = null;
     this.revealTimer = null;
     this.sessionKeys = null;
     this.confirmedByPeer = false;
@@ -410,7 +405,7 @@ export class Link extends EventTarget {
     }
   }
 
-  // ------------------------------------------------------------ staying connected
+  // ---- staying connected
 
   clearRestartTimer() {
     if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
@@ -426,7 +421,6 @@ export class Link extends EventTarget {
     this.clearRevealTimer();
     try { this.peer?.close(); } catch (err) { void err; }
     this.peer = null;
-    // ------------------------------------------------------------------------------
     // INVARIANT, and it is the one that keeps this file confidential:
     //
     //   the key pair and the session keys are dropped TOGETHER, and a new Channel is
@@ -446,7 +440,6 @@ export class Link extends EventTarget {
     //
     // If you are here to remove the generateKeyPair() call on the renegotiation path
     // because the old pair "is still perfectly good": it is not. That is the bug.
-    // ------------------------------------------------------------------------------
     this.keyPair = null;
     this.peerPublicRaw = null;
     // The commitment belonged to the key pair that just died. Carrying it into the fresh
@@ -456,6 +449,8 @@ export class Link extends EventTarget {
     // together, like the key pair and the session keys above.
     this.peerCommitment = null;
     this.pkSent = false;
+    // The handshake being torn down here is the one this id names, so it goes with it.
+    this.handshakeId = null;
     this.sessionKeys = null;
     this.channel = null;
     this.confirmSent = false;
@@ -501,7 +496,9 @@ export class Link extends EventTarget {
     // fingerprint. It just stops until the receiver says where to continue from.
     if (this.outbound?.active) {
       this.outbound.stalled = true;
-      this.outbound.streaming = false;
+      // Same rule as markTransfersStalled: only the running pass clears its own latch. The
+      // channel and peer are null by the time this returns, so that pass throws on its next
+      // send and releases it, which is what makes leaving it alone safe.
     }
   }
 
@@ -564,26 +561,37 @@ export class Link extends EventTarget {
     this.clearInboundQuiet(inbound);
     inbound.quietTimer = setTimeout(() => {
       inbound.quietTimer = null;
-      // Two ways to already know: the transfer moved on, or the channel dropped and
-      // markTransfersStalled has already said so in better words. Neither needs a second
-      // message from here.
-      if (this.incoming !== inbound || inbound.stalled || inbound.quietWarned) return;
-      // Deliberately NOT `inbound.stalled`. That flag means "an offset has to be agreed
-      // before another byte may be written", and onFileChunk DROPS chunks while it is set.
-      // A sender that is merely slow is still sending at the offset we last agreed, so
-      // setting it here would turn a warning about quiet into the thing that breaks the
-      // transfer it was warning about. This flag only governs what has been said.
+      // The transfer moved on, so there is nothing left to drive or to say.
+      if (this.incoming !== inbound || !inbound.sink) return;
+
+      // THE DEADLOCK THIS DRIVES OUT OF, reproduced in tests/disconnect.test.mjs, which
+      // carries the full account. This timer used to promise the transfer "continues on its
+      // own if they come back", then never fire again. False: nothing continues unless the
+      // RECEIVER asks, because only the receiver knows how many bytes it committed. When the
+      // sender's half dropped and came back without this half noticing (an ICE restart, or a
+      // send that failed on peer.js's 30s drain timeout with the channel still open) this link
+      // never left CONNECTED, so setState never fired and afterReconnect never ran. Measured
+      // on a 21-chunk file: 5 chunks delivered, sendFile never settling, both sides connected
+      // for ever, a stopped bar and no text. So it asks: a resume request is idempotent and
+      // costs one control frame, and a merely slow sender answers it and carries on.
+      if (this.peer?.channel?.readyState !== 'open') {
+        // markTransfersStalled has already explained the drop and afterReconnect drives the
+        // resume when the link returns, so anything said here is a second, worse account of
+        // one event. Only the re-arm matters: without it one drop left the transfer with no
+        // watchdog at all, which is how the case above stayed invisible.
+        this.armInboundQuiet(inbound);
+        return;
+      }
+      inbound.quietRounds = (inbound.quietRounds ?? 0) + 1;
+      // Deliberately NOT setting `inbound.stalled`: that flag DROPS arriving chunks until an
+      // offset is re-agreed, so setting it on a merely slow sender would turn a warning about
+      // quiet into the thing that breaks the transfer it warned about.
       inbound.quietWarned = true;
-      this.emit('file-stalled', {
-        direction: 'in',
-        id: inbound.meta.id,
-        name: inbound.meta.name,
-        sent: inbound.received,
-        total: inbound.meta.size,
-        message: `Nothing has arrived for ${Math.round(INBOUND_QUIET_MS / 1000)} seconds, stopped at `
-          + `${formatBytes(inbound.received)} of ${formatBytes(inbound.meta.size)}. The other device may `
-          + 'have locked its screen or switched away from this page. It continues on its own if they '
-          + 'come back.',
+      // Re-arms the timer itself, so an unanswered request is asked again rather than being
+      // the last thing this side ever does.
+      this.requestResume(inbound).catch((err) => {
+        this.emit('warning', `could not ask the other device to continue: ${err.message}`);
+        this.armInboundQuiet(inbound);
       });
     }, INBOUND_QUIET_MS);
   }
@@ -597,6 +605,19 @@ export class Link extends EventTarget {
   }
 
   markTransfersStalled(why) {
+    // THE DATA LOSS THIS GUARD EXISTS FOR, reproduced in tests/disconnect.test.mjs.
+    //
+    // An open channel has NOT broken the byte stream, and marking a transfer stalled while it
+    // is open is not cosmetic: `incoming.stalled` makes onFileChunk DROP every arriving chunk
+    // until an offset is re-agreed, and only onResumeAccepted clears it. An ICE restart goes
+    // 'disconnected' and back over the SAME DTLS and SCTP association, so keys, counters and
+    // the channel all survive and the sender's loop never falters. Marking on that event threw
+    // away every chunk of the blip while the sender ran to FILE_END: measured on 21 chunks,
+    // the sender declared 328,457 bytes delivered while the receiver failed with "expected
+    // 328457 bytes in 21 chunks, reassembled 81920 in 5". Untouched, it would have completed.
+    // A channel that really closes fires channel-close, and holdOpen calls this again with
+    // readyState no longer 'open', which is when the marking is true.
+    if (this.peer?.channel?.readyState === 'open') return this.hasTransferInFlight();
     let any = false;
     if (this.incoming?.sink && !this.incoming.stalled) {
       this.incoming.stalled = true;
@@ -612,7 +633,12 @@ export class Link extends EventTarget {
     }
     if (this.outbound?.active && !this.outbound.stalled) {
       this.outbound.stalled = true;
-      this.outbound.streaming = false;
+      // `streaming` is deliberately NOT cleared here: a fix, not an omission. It is the
+      // latch that stops two driveOutbound loops sending one file at once, and clearing it
+      // from outside meant a resume arriving after a drop started a SECOND loop while the
+      // first was still unwinding: two passes over one file, two FILE_ENDs, the receiver's
+      // verdict taken on whichever arrived first. The loop sets and clears it in its own
+      // finally, so it says exactly one thing: a pass is in flight. Nothing else writes it.
       any = true;
       this.emit('file-stalled', {
         direction: 'out',
@@ -655,23 +681,18 @@ export class Link extends EventTarget {
    * The page is back in front of the user. Retry NOW, not at the back of the backoff.
    *
    * THE BUG THIS EXISTS FOR. On a phone, tapping Attach opens the OS file picker and the
-   * browser freezes the tab behind it. Both mobile engines reclaim an
-   * `RTCPeerConnection` from a frozen tab, so by the time the picker returns the link is
-   * down and scheduleRestart() has been through several rounds: 2s, 4s, 8s, 16s, 30s. The
-   * `change` event from the picker, meanwhile, fires the instant the user taps Done. It
-   * therefore arrived at a link that was still up to thirty seconds away from its next
-   * attempt, requireConnected() threw, and the send failed for what looked to the user
-   * like no reason at all: they had picked the files and the gate said it was not
-   * connected.
+   * browser freezes the tab behind it. Both mobile engines reclaim an `RTCPeerConnection`
+   * from a frozen tab, so by the time the picker returns the link is down and
+   * scheduleRestart() has been through several rounds: 2s, 4s, 8s, 16s, 30s. The picker's
+   * `change` event fires the instant the user taps Done, so it arrived at a link up to thirty
+   * seconds from its next attempt, requireConnected() threw, and the send failed for what
+   * looked like no reason: they had picked the files and the gate said it was not connected.
    *
-   * The backoff itself is right. What was wrong was applying it to a tab that had just
-   * been given back the foreground, which is the strongest possible signal that the
-   * network situation has changed. So: cancel the pending timer, put the backoff back to
-   * zero, and go. If this attempt fails, scheduleRestart takes over again from the
-   * beginning, which is what should happen after a genuine change of circumstances.
-   *
-   * Idempotent and cheap: a connected link returns immediately, so wiring this to every
-   * visibilitychange costs nothing on the overwhelmingly common path.
+   * The backoff is right; applying it to a tab that has just been given back the foreground
+   * is not, because that is the strongest available signal that the situation has changed.
+   * Cancel the pending timer, put the backoff back to zero, and go. Idempotent and cheap: a
+   * connected link returns immediately, so wiring this to every visibilitychange costs
+   * nothing on the common path.
    */
   wake(reason) {
     if (this.severed) return false;
@@ -726,10 +747,15 @@ export class Link extends EventTarget {
       }
       this.iceRestartDone = false;
       this.emit('warning', 'Renegotiating the connection from the start.');
-      // Tell the peer to drop its half before dropping ours, or it keeps waiting on a
-      // public key it will never accept because it thinks it already has one.
-      await this.signal.send({ t: 'restart' });
+      // OURS FIRST, THEN THE PEER'S. 'restart' still reaches the peer before any new key,
+      // because the next pkc only goes out from connect() below, over the same relay. The
+      // old order (send, then reset) left a round trip with lastRenegotiationAt not yet
+      // stamped, so a peer 'restart' landing inside that await passed the settle guard,
+      // reset, reconnected, and the reset below then discarded the key pair it had just
+      // made: two peer connections 0.1s apart in the 2026-08-10 dumps, and the two ends a
+      // generation apart. Stamping first defers the peer's copy instead.
       this.resetForRenegotiation();
+      await this.signal.send({ t: 'restart' });
       await this.connect();
     } finally {
       this.restarting = false;
@@ -777,13 +803,23 @@ export class Link extends EventTarget {
     // The sink's own position is the authority: after a reload it is clamped to what the
     // file on disk actually contains, which can be less than the count we remembered.
     inbound.received = received;
+    // Non-zero only when the quiet timer drove this rather than a reconnect. A row still
+    // retrying has to LOOK unlike one that has given up: app.js styles `kind: 'retrying'`
+    // as a warning and a failure as an error, so the two cannot be mistaken for each other.
+    const attempt = inbound.quietRounds ?? 0;
     this.emit('file-stalled', {
       direction: 'in',
+      kind: 'retrying',
+      attempt,
       id: inbound.meta.id,
       name: inbound.meta.name,
       sent: received,
       total: inbound.meta.size,
-      message: `Asking the other device to continue from ${formatBytes(received)}.`,
+      message: attempt
+        ? `Nothing has arrived for ${Math.round(INBOUND_QUIET_MS / 1000)} seconds, stopped at `
+          + `${formatBytes(received)} of ${formatBytes(inbound.meta.size)}. The connection is still up, so `
+          + `this device is asking the other one to carry on (attempt ${attempt}).`
+        : `Asking the other device to continue from ${formatBytes(received)}.`,
     });
     if (!inbound.token) {
       // No token means no sink was ever created for this transfer, so there is nothing on
@@ -791,14 +827,30 @@ export class Link extends EventTarget {
       await this.failInbound(inbound, 'this transfer was never accepted here, so it cannot be continued');
       return;
     }
-    const R = await loadResume();
-    await this.control(R.buildResumeRequest({
-      id: inbound.meta.id,
-      token: inbound.token,
-      indexed: inbound.sink,
-      fingerprint: inbound.meta.fingerprint ?? null,
-      crossedReload: Boolean(inbound.crossedReload),
-    }));
+    try {
+      const R = await loadResume();
+      await this.control(R.buildResumeRequest({
+        id: inbound.meta.id,
+        token: inbound.token,
+        indexed: inbound.sink,
+        fingerprint: inbound.meta.fingerprint ?? null,
+        crossedReload: Boolean(inbound.crossedReload),
+      }));
+    } finally {
+      // The request is not a guarantee: control() returns silently on a channel that is not
+      // open and the peer may never answer, so without this arm an answer that never came was
+      // never chased. Arriving chunks reset this same timer, so a request that IS answered
+      // costs nothing.
+      //
+      // In a `finally` rather than as the last statement, changed in review on 2026-08-10:
+      // both awaits above can reject (loadResume is a dynamic import over the network, and
+      // control() reaches peer.send, which throws on a channel that closed between its own
+      // readyState check and the write). The quiet timer's caller re-arms in its catch, but
+      // afterReconnect's caller only logs, so a rejection there left the transfer with NO
+      // watchdog: the exact unwatched state this arm exists to prevent, reached through the
+      // error path of the code that prevents it.
+      this.armInboundQuiet(inbound);
+    }
   }
 
   /**
@@ -837,7 +889,7 @@ export class Link extends EventTarget {
     if (this.watchdog) { clearTimeout(this.watchdog); this.watchdog = null; }
   }
 
-  // ------------------------------------------------------------ key agreement
+  // ---- key agreement
 
   async connect() {
     // this.keyPair is the "already under way" marker but it is not set until two awaits
@@ -868,7 +920,10 @@ export class Link extends EventTarget {
       // responder sends nothing at all until it holds that digest. crypto.js
       // commitPublicKey has the attack this ordering exists to stop.
       if (this.initiator) {
-        await this.signal.send({ t: 'pkc', h: b64u.encode(await commitPublicKey(this.keyPair.publicRaw)) });
+        // Kept as well as sent: it names this handshake, which is how a reveal meant for it
+        // is told from one still in flight from the handshake before.
+        this.handshakeId = b64u.encode(await commitPublicKey(this.keyPair.publicRaw));
+        await this.signal.send({ t: 'pkc', h: this.handshakeId });
       }
       // Whichever half of the exchange this side is now owed may already have arrived:
       // onSignalMessage stored it and returned without acting, because we had no key pair
@@ -951,7 +1006,7 @@ export class Link extends EventTarget {
     }));
   }
 
-  // ------------------------------------------------- commit, then reveal
+  // ---- commit, then reveal
 
   clearRevealTimer() {
     if (this.revealTimer) { clearTimeout(this.revealTimer); this.revealTimer = null; }
@@ -1000,7 +1055,7 @@ export class Link extends EventTarget {
     if (this.initiator ? !this.peerPublicRaw : !this.peerCommitment) return;
     this.pkSent = true;
     try {
-      await this.signal.send({ t: 'pk', pk: b64u.encode(this.keyPair.publicRaw) });
+      await this.signal.send({ t: 'pk', pk: b64u.encode(this.keyPair.publicRaw), h: this.handshakeId });
     } catch (err) {
       // Nothing was revealed, so this must stay retryable: latching pkSent on a failed
       // relay would wedge the handshake with a key neither side ever received.
@@ -1062,10 +1117,34 @@ export class Link extends EventTarget {
         return;
       }
       this.peerCommitment = digest;
+      // Set before the reveal goes out, because the reveal quotes it.
+      this.handshakeId = message.h;
       await this.maybeSendPublicKey();
       return;
     }
     if (message.t === 'pk') {
+      // A REVEAL FROM A HANDSHAKE THAT NO LONGER EXISTS. Both ends restart when a channel
+      // drops and a relayed message is not instant, so the answer to commitment C1 can land at
+      // an initiator already committed to C2 and holding no peer key. It is taken, C2's key is
+      // revealed to a responder still holding C1, and a reveal that does not open its
+      // commitment severs: measured on 2026-08-10 as a gate burned mid-transfer, both users
+      // told somebody was sitting between their devices. The check stays as harsh WITHIN a
+      // handshake, where a mismatch IS an attack; what was missing is that a reveal never said
+      // which handshake it answered. An absent `h` is tolerated because that is what an older
+      // build sends, and omitting it buys an on-path attacker only the burn it could cause
+      // anyway. Deliberately NOT `&& this.handshakeId`: a side that has just reset runs no
+      // handshake at all, so a reveal naming one is stale by definition, and that shape needs
+      // only ONE end to restart while a reveal is in flight, with a harsher verdict still: a
+      // reveal with no commitment in front of it reads as skipping the binding, and severs.
+      // tests/disconnect.test.mjs section 8.
+      if (typeof message.h === 'string' && message.h !== this.handshakeId) {
+        this.emit('warning', 'the other device answered a key exchange that has already been '
+          + 'restarted; waiting for the current one');
+        // Neither end can finish from here, so something has to move. Going through the
+        // backoff keeps the settle guard's bound on how often a renegotiation may start.
+        this.scheduleRestart('the key exchange restarted on the other device');
+        return;
+      }
       if (this.peerPublicRaw) return;
       let offered = null;
       try {
@@ -1277,7 +1356,7 @@ export class Link extends EventTarget {
     }
   }
 
-  // ------------------------------------------------------------ frames
+  // ---- frames
 
   /**
    * Serialise everything that touches inbound state, in arrival order.
@@ -1467,7 +1546,7 @@ export class Link extends EventTarget {
     this.emit('warning', `ignored unknown control message "${control.kind}"`);
   }
 
-  // ------------------------------------------------------------ resume protocol
+  // ---- resume protocol
 
   /**
    * SENDER side. The receiver has told us where it got to; decide whether we can serve it.
@@ -1553,133 +1632,32 @@ export class Link extends EventTarget {
   }
 
   /**
-   * Prove the file is still the same file, then continue from `offset`.
+   * Prove the file is still the same file, then continue from `offset`. See resume.js for
+   * the rules this enforces and why each one is there.
    *
-   * The fingerprint is recomputed from the live File EVERY time, not read from our own
-   * cached copy, and it is checked against what the RECEIVER recorded at FILE_START rather
-   * than only against our own record. A sender comparing its cache to its cache proves
-   * nothing; a sender that reloaded and was handed the wrong file has a cache that agrees
-   * with itself perfectly. Recomputing is one 64 KiB read, so there is no reason to skip it
-   * on the cheap resumes either.
+   * The body moved to resume.js on 2026-08-10, behind the lazy boundary the rest of
+   * chunk-level resume already sits behind: none of it can be reached until a peer has
+   * asked to continue an interrupted transfer, and a gate that never loses a connection
+   * was carrying the fingerprint re-check and the coverage arithmetic on its boot path for
+   * nothing. It stays a METHOD rather than becoming a call through `R` at both call sites
+   * because tests/outbound.test.mjs drives it by name over a real Link: a split that
+   * quietly renames the surface it is verified through is a split nobody can check.
    */
   async serveResume(out, offset, ranges, remaining) {
-    let fresh;
-    try {
-      fresh = await fingerprintFile(out.file);
-    } catch (err) {
-      await this.control({
-        kind: 'file-resume-deny', id: out.id, code: 'unreadable',
-        reason: `the file could not be read to check it is the same one: ${err.message}`,
-      });
-      this.abandonOutbound(out, `could not re-read ${out.name}: ${err.message}`);
-      return false;
-    }
-
-    const against = out.peerFingerprint ?? out.fingerprint;
-    const verdict = compareFingerprints(against, fresh);
-    if (!verdict.ok) {
-      // Never splice. Resuming a different file at an offset produces a corrupt result
-      // that passes every length check on both sides, so this refuses rather than repairs.
-      await this.control({
-        kind: 'file-resume-deny', id: out.id, code: 'fingerprint_mismatch',
-        reason: `${verdict.reason}. The transfer has to start again from the beginning rather than `
-          + 'joining two different files together.',
-      });
-      this.emit('file-reselect-refused', { id: out.id, name: out.name, reason: verdict.reason });
-      this.abandonOutbound(out, verdict.reason);
-      return false;
-    }
-
-    // What the receiver already holds, so the running total still ends at the file's size.
-    // Nothing is adopted from the peer's own counter: `remaining` came from ranges this
-    // side validated, and FILE_END's chunk count is derived from the size and chunk size
-    // fixed at FILE_START. Be honest about what the seeded slots are: for a chunk this run
-    // never reads, the length written here comes from the declared size, not from the
-    // disk. It is the only figure available, the receiver's own size check is the
-    // independent guard, and the receiver's indexed sink refuses a wrong-length chunk on
-    // arrival, so it can never report holding one that is short.
-    //
-    // Seeded into the coverage map rather than assigned to the total. The old line set
-    // `out.sent` directly, which was correct only if nothing was still sending: this runs
-    // BEFORE driveOutbound consults its `streaming` latch, so a resume arriving while the
-    // previous run was still unwinding rebased the figure and then let that run keep
-    // adding to it. Marking the chunks the receiver already has as covered gets the same
-    // starting total and stays right no matter how the two runs overlap, because every
-    // chunk can only ever contribute its own length once.
-    // Seeding ADDS what the receiver reports it already holds. It never takes coverage
-    // away, and that distinction cost a test: replacing the map wholesale also erased the
-    // chunks the still-running send had already pushed, so a resume asking for a range the
-    // old loop had passed under-declared by exactly those chunks. Coverage is a record of
-    // what was actually read and sent; only a read can write it, and only upwards.
-    const total = chunkCount(out.size, out.chunkSize);
-    if (!out.coverage || out.coverage.length !== total) out.coverage = newCoverage(out.size, out.chunkSize);
-    const wanted = new Uint8Array(total);
-    for (const [from, to] of ranges) {
-      for (let i = from; i < to && i < total; i += 1) wanted[i] = 1;
-    }
-    let covered = 0;
-    for (let i = 0; i < total; i += 1) {
-      // Outside the requested ranges the receiver has the chunk, so it counts at its full
-      // length. Inside them it counts only for what this side has actually read, which is
-      // how a truncating read still shows up as a shortfall at FILE_END.
-      if (!wanted[i]) out.coverage[i] = expectedChunkBytes(i, out.chunkSize, out.size);
-      covered += out.coverage[i];
-    }
-    out.sent = covered;
-    // A per-run counter now, used only to throttle progress events. The count that goes on
-    // the wire at FILE_END is derived from the file, not counted from this run.
-    out.chunks = 0;
-    out.stalled = false;
-    out.fingerprint = fresh;
-    await this.control({
-      kind: 'file-resume-ok', id: out.id, token: out.resumeToken ?? null, offset, ranges, fingerprint: fresh,
-    });
-    this.emit('file-resumed', {
-      direction: 'out', id: out.id, name: out.name, offset, total: out.size,
-    });
-    this.driveOutbound(ranges);
-    return true;
+    const R = await loadResume();
+    return R.serveResume(this, out, offset, ranges, remaining);
   }
 
-  /** RECEIVER side. The sender is about to continue; check it before accepting a byte. */
+  /**
+   * RECEIVER side. The sender is about to continue; check it before accepting a byte.
+   *
+   * Body in resume.js, the same split adoptInbound and serveResume took on 2026-08-10:
+   * nothing here can run until this side asked to continue an interrupted transfer. The
+   * method stays because onControl dispatches to it and the tests drive it by this name.
+   */
   async onResumeAccepted(control) {
     const R = await loadResume();
-    const inbound = this.incoming;
-    // Everything that could distinguish "no such transfer" from "wrong token" answers with
-    // one frozen refusal, and this side sends NOTHING back for it: a reply is itself a
-    // signal, and a resume offer must not be usable to probe what this device holds.
-    const verdict = R.judgeResumeResponse(inbound, control);
-    if (!verdict.ok) {
-      if (verdict.code === R.RESUME_REFUSED.code) return;
-      await this.control({ kind: 'file-resume-deny', id: control.id, code: verdict.code, reason: verdict.reason });
-      await this.failInbound(inbound, verdict.reason);
-      return;
-    }
-    const offset = verdict.offset;
-
-    // The second half of the splice guard: the sender proved the file to itself, and now
-    // it has to prove it to the side that holds the partial copy.
-    const sameFile = compareFingerprints(inbound.meta.fingerprint ?? null, control.fingerprint ?? null);
-    if (!sameFile.ok) {
-      await this.control({
-        kind: 'file-resume-deny', id: control.id, code: 'fingerprint_mismatch', reason: sameFile.reason,
-      });
-      await this.failInbound(inbound, `refused to continue: ${sameFile.reason}`);
-      return;
-    }
-
-    inbound.stalled = false;
-    inbound.crossedReload = false;
-    inbound.resumes = (inbound.resumes ?? 0) + 1;
-    // Chunks are about to start again, so the quiet clock starts again with them. Without
-    // this a resumed transfer runs with no watchdog at all: the timer was cleared when the
-    // link dropped and only an arriving chunk re-arms it, which is the one thing a sender
-    // that goes quiet immediately after resuming never does.
-    inbound.quietWarned = false;
-    this.armInboundQuiet(inbound);
-    this.emit('file-resumed', {
-      direction: 'in', id: inbound.meta.id, name: inbound.meta.name, offset, total: inbound.meta.size,
-    });
+    return R.onResumeAccepted(this, control);
   }
 
   /** RECEIVER side. The sender is still there but needs the user to act. Keep waiting. */
@@ -1740,7 +1718,9 @@ export class Link extends EventTarget {
   abandonOutbound(out, reason) {
     out.active = false;
     out.stalled = false;
-    out.streaming = false;
+    // `streaming` is NOT cleared here, for the reason markTransfersStalled gives in full:
+    // only the pass in flight may release its own latch. Clearing `active` above is what
+    // actually stops the loop. Found by grepping for the pattern after fixing it there.
     out.file = null;
     this.forgetOutboundIntent();
     this.control({ kind: 'file-abort', id: out.id, reason: String(reason).slice(0, 300) })
@@ -1796,7 +1776,7 @@ export class Link extends EventTarget {
     else pending.reject(new Error(reason));
   }
 
-  // ------------------------------------------------------------ sending
+  // ---- sending
 
   /** Serialise sends so a file transfer cannot interleave its own frames. */
   enqueue(task) {
@@ -1933,6 +1913,26 @@ export class Link extends EventTarget {
         await this.peer.send(await this.channel.sealJson(TYPE.FILE_START, start));
       });
 
+      // The offer is out and this side is now waiting on a human on the other device.
+      // Nothing said so before: sendFile awaited `accepted` in silence, so a file offered to
+      // someone who had walked away from their phone left the SENDER with no row, no name
+      // and no sign anything had been offered, for as long as they took to notice. Anything
+      // over AUTO_ACCEPT_BYTES needs a click, so that is every large file, not an edge case.
+      //
+      // Carried on `file-stalled` rather than a new event because session.js's OBJECT_EVENTS
+      // is what stamps the peer onto a link event before app.js sees it: a new name would
+      // need adding there too. `kind` is what app.js branches on.
+      this.emit('file-stalled', {
+        direction: 'out',
+        kind: 'offered',
+        id,
+        name: out.name,
+        sent: 0,
+        total: out.size,
+        message: `Offered to the other device. Waiting for it to be accepted there: nothing is sent `
+          + 'until somebody on that device says yes.',
+      });
+
       // Awaited OUTSIDE the send queue, so chat still flows while the other side decides,
       // and streaming never begins before there is a sink to stream into. Without this
       // the receiver holds chunks in a bounded buffer and drops the whole transfer once
@@ -1974,25 +1974,25 @@ export class Link extends EventTarget {
   driveOutbound(ranges) {
     const out = this.outbound;
     if (!out || !out.file || !out.active) return;
-    // PARKED, never dropped. The latch used to be a bare `return`, and the ranges the
-    // caller was holding went with it. serveResume had already sent `file-resume-ok` by
-    // then, so a resume that landed while the previous run was still unwinding told the
-    // receiver "continuing from here" and then sent nothing: if the requested chunks were
-    // behind the running iterator's cursor, which is exactly the case when the receiver
-    // lost frames from the middle of the window, they never arrived and the transfer died
-    // on the quiet timer. Correct arithmetic on a transfer that never finishes is not a
-    // fix, so the ranges wait for the running pass to unwind and are drained below.
+    // PARKED, never dropped. serveResume has already sent `file-resume-ok` by the time a
+    // resume reaches a running pass, so dropping the ranges told the receiver "continuing from
+    // here" and then sent nothing whenever the requested chunks sat behind the running
+    // iterator's cursor, which is exactly the case after losses from the middle of the window:
+    // the transfer then died on the quiet timer. They wait for the pass to unwind instead.
     //
-    // The NEWEST plan replaces an older parked one rather than merging with it. A resume
-    // plan is a statement of everything the receiver still lacks, not a delta, so the
-    // later one already covers the earlier one; merging two would also have to re-sort and
-    // re-coalesce them to satisfy readChunkRanges, which rejects overlapping or unordered
-    // ranges on purpose.
+    // The NEWEST plan replaces an older parked one rather than merging with it. A resume plan
+    // states everything the receiver still lacks, not a delta, so the later one already covers
+    // the earlier; merging would also have to re-sort and re-coalesce to satisfy
+    // readChunkRanges, which rejects overlapping or unordered ranges on purpose.
     if (out.streaming) {
       if (ranges?.length) out.parked = ranges;
       return;
     }
     out.streaming = true;
+    // The check above is the ONLY entry and it is synchronous with the assignment on the line
+    // above, so while `streaming` is true a second pass cannot exist: the guard is what holds
+    // the invariant, and tests/outbound.test.mjs re-enters driveOutbound against a running
+    // pass to prove that check can go BAD.
     // Deliberately NOT wrapping the whole loop in enqueue(). Doing so made the send
     // queue exclusive to this transfer for its entire duration, so a chat message typed
     // 16.7 MB into a 157 MB send did not arrive until the transfer finished, 20 seconds
@@ -2072,25 +2072,49 @@ export class Link extends EventTarget {
           // Drain a parked plan BEFORE FILE_END, never after. FILE_END is the receiver's
           // signal to check what it holds and either keep the file or throw it away, so a
           // chunk arriving behind it is a chunk arriving after the verdict.
-          if (!out.parked?.length) break;
-          todo = out.parked;
+          if (out.parked?.length) {
+            todo = out.parked;
+            out.parked = null;
+            continue;
+          }
+
+          // THE WINDOW THIS RE-CHECK CLOSES, found on 2026-08-10 chasing an intermittent
+          // 180-second abort in tests/browser.test.mjs and pinned deterministically in
+          // tests/outbound.test.mjs ("a resume that lands while FILE_END is being sealed is
+          // still served"). The check above runs once and the pass then commits to finishing,
+          // but sealing is asynchronous: a resume can arrive after it and before the frame
+          // reaches the wire, by which point serveResume has promised those chunks with
+          // `file-resume-ok` and parked them behind a latch only this pass clears. Re-reading
+          // after the seal closes it, the seal being the last await. Discarding the sealed
+          // frame is safe: the AEAD counter must be strictly increasing, never contiguous.
+          let declared = false;
+          await this.enqueue(async () => {
+            const frame = await this.channel.sealJson(TYPE.FILE_END, {
+              // `bytes` is the sender's own coverage total. For every chunk this side
+              // actually read it is the length that came off the disk; for a chunk the
+              // receiver told us it already holds it is the length the file's size says it
+              // must be, which is the only figure available for bytes this run never
+              // touched. The receiver checks its own total against the size it was given at
+              // FILE_START independently, so a wrong figure here cannot pass a bad file.
+              // `chunks` is derived rather than counted: the sender only sends the chunks
+              // the receiver was missing, so a counter would be the count of THIS run and
+              // not of the file.
+              id: out.id, bytes: out.sent, chunks: chunkCount(out.size, out.chunkSize),
+            });
+            if (out.parked?.length) return;
+            await this.peer.send(frame);
+            declared = true;
+          });
+          if (declared) break;
+          // `declared` is false only because the task found a parked plan, so this is
+          // non-empty. Coerced to an empty list rather than trusted, because a null `todo`
+          // means "no ranges" to readChunkRanges, which throws on a non-iterable and would
+          // turn a missed re-check into a failed transfer. An empty list yields nothing,
+          // falls straight back to the FILE_END attempt above and finishes the file.
+          todo = out.parked?.length ? out.parked : [];
           out.parked = null;
         }
 
-        await this.enqueue(async () => {
-          await this.peer.send(await this.channel.sealJson(TYPE.FILE_END, {
-            // `bytes` is the sender's own coverage total. For every chunk this side
-            // actually read it is the length that came off the disk; for a chunk the
-            // receiver told us it already holds it is the length the file's size says it
-            // must be, which is the only figure available for bytes this run never
-            // touched. The receiver checks its own total against the size it was given at
-            // FILE_START independently, so a wrong figure here cannot pass a bad file.
-            // `chunks` is derived rather than counted: the sender only sends the chunks
-            // the receiver was missing, so a counter would be the count of THIS run and
-            // not of the file.
-            id: out.id, bytes: out.sent, chunks: chunkCount(out.size, out.chunkSize),
-          }));
-        });
         out.active = false;
         out.file = null;
         this.forgetOutboundIntent();
@@ -2142,7 +2166,7 @@ export class Link extends EventTarget {
     return finished;
   }
 
-  // ------------------------------------------------------------ receiving files
+  // ---- receiving files
 
   /**
    * The peer says the next few FILE_STARTs belong together, so this side can ask once.
@@ -2383,11 +2407,10 @@ export class Link extends EventTarget {
     if (!this.incoming) throw new Error('no incoming file to accept');
     const inbound = this.incoming;
     const { meta } = inbound;
-    // Fetched HERE, before the save dialog, and deliberately not beside adoptSink below.
-    // The check that this is still the transfer in progress is immediately followed by the
-    // adopt, and an await between the two would reopen the exact window that check exists
-    // to close. Doing it first also overlaps the fetch with the dialog, which is the
-    // longest wait on this path by orders of magnitude.
+    // Fetched HERE, before the save dialog, and deliberately not beside adoptSink below: the
+    // check that this is still the transfer in progress is immediately followed by the adopt,
+    // and an await between the two would reopen the window that check exists to close. It also
+    // overlaps the fetch with the dialog, the longest wait on this path.
     //
     // primeSink rides along in the SAME await rather than being left to createSink's own
     // first-use fetch below. Two reasons, and the second is the one that matters: sequential
@@ -2465,7 +2488,7 @@ export class Link extends EventTarget {
     inbound.chunks = inbound.sink.ledger.frontier;
   }
 
-  // -------------------------------------------- surviving a reload on the receiving side
+  // ---- surviving a reload on the receiving side
 
   /**
    * Record enough about an interrupted incoming transfer to pick it up after a reload.
@@ -2529,71 +2552,14 @@ export class Link extends EventTarget {
     // also inside a user gesture, because re-granting write permission on a stored handle
     // prompts, and a prompt outside a live activation is refused outright.
     const [R] = await Promise.all([loadResume(), primeSink()]);
-    // startOffset is a request; the sink clamps it to what the file actually contains,
-    // because everything written and not committed before the reload was discarded.
-    const chunkSize = Number(record.meta.chunkSize) || CHUNK_BYTES;
-    const size = Number(record.meta.size);
-    const raw = await createSink(record.meta, { handle: record.handle, startOffset: record.received });
-    // Re-granting write permission on a stored handle prompts, and that prompt can stand
-    // open while a FILE_START arrives: anything under AUTO_ACCEPT_BYTES accepts itself,
-    // builds a sink and arms a quiet timer. Overwriting this.incoming below would strand
-    // that sink open and that timer armed, with the sender never told. The recovered
-    // transfer is the one that gives way, because it can still be continued later.
-    if (this.incoming) {
-      const clash = 'another transfer started while this file was being re-opened';
-      try {
-        await raw.abort(clash);
-      } catch (err) {
-        this.emit('warning', `could not close the recovered file: ${err.message}`);
-      }
-      throw new Error(`${clash}, so it was not continued`);
-    }
-    // FLOOR, not the ceil this used to do. A committed file can end part way through a
-    // chunk, and rounding that up claims a chunk this side holds only part of: the sender
-    // skips it and the hole is permanent, silent, and invisible to every length check,
-    // because the missing tail is never counted by either side. Rewinding to the last whole
-    // chunk costs at most one chunk of re-sent data.
-    const whole = R.chunksOnDisk(raw.position, chunkSize, size);
-    // Clamped, because a complete file reports every chunk including the short last one:
-    // whole * chunkSize then overshoots the file by the length of that chunk's padding.
-    // Unclamped it was handed to the sink as `written`, and requestResume went on to claim
-    // more bytes than the file has, which the sender refuses outright: a transfer that
-    // could never be continued, explained by a number that cannot exist.
-    const wholeBytes = Math.min(whole * chunkSize, size);
-    if (raw.position !== wholeBytes) {
-      if (typeof raw.seekTo !== 'function') {
-        // Nothing may be appended onto a partial chunk that cannot be rewound: the next
-        // chunk would be spliced into the middle of the file and every length check on both
-        // sides would still come out right. Only the disk sink can seek, and only the disk
-        // sink stores a handle, so this is unreachable today and says so loudly if that
-        // stops being true rather than quietly writing at the wrong offset.
-        await raw.abort('the recovered file cannot be rewound to a chunk boundary');
-        throw new Error(
-          `${record.meta.name} was recovered part way through a chunk and this browser cannot rewind it, `
-          + 'so the transfer has to start again from the beginning',
-        );
-      }
-      await raw.seekTo(wholeBytes);
-    }
-    const ledger = new R.ChunkLedger(chunkCount(size, chunkSize));
-    for (let i = 0; i < whole; i += 1) ledger.mark(i);
-    this.incoming = {
-      meta: record.meta,
-      received: 0,
-      chunks: 0,
-      sink: null,
-      stalled: true,
-      crossedReload: true,
-      resumes: 0,
-      token: null,
-    };
-    this.adoptSink(R, this.incoming, raw, { written: wholeBytes, ledger });
-    const at = this.incoming.sink.position;
-    await this.rememberInboundRecord(this.incoming);
-    this.emit('file-incoming', record.meta);
-    this.emit('file-progress', {
-      direction: 'in', id: record.meta.id, sent: at, total: record.meta.size, name: record.meta.name,
-    });
+    // The body moved to resume.js on 2026-08-10, the same split serveResume took and for the
+    // same reason: the chunk-boundary arithmetic and the ledger replay cannot be reached
+    // until a reload interrupted a transfer, so a gate that never lost a connection was
+    // carrying them on its boot path for nothing. The method stays because session.js and
+    // the tests call it by this name.
+    const at = await R.adoptInbound(this, record);
+    // Kept HERE rather than moving with the body: STATE lives in this module, and reading it
+    // from resume.js would make the lazy module import its own importer.
     if (this.state === STATE.CONNECTED) await this.requestResume(this.incoming);
     return at;
   }
@@ -2664,7 +2630,9 @@ export class Link extends EventTarget {
     inbound.chunks = inbound.sink.ledger.frontier;
     // Proof the other device is still there, so the quiet timer starts over. A duplicate
     // counts: it is not progress, but it is not silence either, and silence is the only
-    // thing that timer measures.
+    // thing that timer measures. The attempt count goes with it: bytes arriving is the
+    // definition of the retry having worked.
+    inbound.quietRounds = 0;
     this.armInboundQuiet(inbound);
     if (inbound.quietWarned) {
       inbound.quietWarned = false;
@@ -2787,7 +2755,7 @@ export class Link extends EventTarget {
     return true;
   }
 
-  // ------------------------------------------------------------ teardown
+  // ---- teardown
 
   /** Tell this one peer the gate is being burned. Best effort; teardown follows anyway. */
   async sendSever() {
@@ -2811,8 +2779,44 @@ export class Link extends EventTarget {
     if (this.confirmTimer) { clearTimeout(this.confirmTimer); this.confirmTimer = null; }
     this.clearRevealTimer();
     try { this.peer?.close(); } catch (err) { void err; }
-    if (this.incoming?.sink) {
-      this.incoming.sink.abort(reason ?? 'the link closed').catch(() => {});
+    // THE COMPLAINT THIS ANSWERS, verbatim: "if sender disconnects and then reconnects it
+    // seems the media being sent becomes stalled". A sender whose tab goes away and comes back
+    // is seated in a NEW slot with a new id, so its old link is swept out of the roster and
+    // closed here, and the transfer riding it is dead: a different participant with a different
+    // key schedule cannot continue it. The sink was aborted, `incoming` was nulled, and NOT ONE
+    // event went out, so on screen that is a bar that stops for ever and never explains itself.
+    // A dropped network is a different event that never reaches here: it goes to holdOpen and
+    // keeps retrying with a row saying so.
+    const why = String(reason ?? 'the connection ended');
+    // ONE SENTENCE FOR FOUR CAUSES, found in review on 2026-08-10: "whether by accident or on
+    // purpose" was a hedge laid over a fact four times out of five, and it appended a full stop
+    // to reasons that already had one ("Gate burned.. 80 KB of 321 KB arrived"). Split on SHAPE
+    // rather than on exact strings, because the shape is the caller's claim: a finished
+    // sentence means the cause was established, a bare clause means it was not, and only the
+    // clause branch keeps the hedge. 'Gate burned.' is the one finished sentence still
+    // ambiguous quoted back. tests/disconnect.test.mjs pins these strings.
+    const cause = why === 'Gate burned.'
+      ? 'You burned the gate, so the connection to the other device is gone.'
+      : (/[.!?]$/.test(why)
+        ? why
+        : `The connection to the other device was severed, whether by accident or on purpose: ${why}.`);
+    // Written once and quoted twice: the two halves of a severance differ only in which
+    // figure they cite, and two copies of one sentence drift apart.
+    const severed = (got, total, verb) => `${cause} ${formatBytes(got)} of ${formatBytes(total)} `
+      + `${verb}. A transfer cannot be continued over a connection that no longer exists, so `
+      + 'establish a new connection and send it again.';
+    const inbound = this.incoming;
+    if (inbound?.sink) {
+      inbound.sink.abort(why).catch(() => {});
+      this.emit('file-failed', {
+        ...inbound.meta, reason: severed(inbound.received, inbound.meta.size, 'arrived'),
+      });
+    }
+    if (this.outbound?.active) {
+      const out = this.outbound;
+      this.emit('file-rejected', {
+        id: out.id, name: out.name, reason: severed(out.sent, out.size, 'had been sent'),
+      });
     }
     this.forgetOutboundIntent();
     // A send waiting for the peer to accept would otherwise wait for a peer that no
@@ -2841,6 +2845,7 @@ export class Link extends EventTarget {
     this.peerPublicRaw = null;
     this.peerCommitment = null;
     this.pkSent = false;
+    this.handshakeId = null;
     // Before the reference is dropped, or the timer outlives the only object that can tell
     // it to be quiet and fires into a torn-down link.
     this.clearInboundQuiet(this.incoming);
