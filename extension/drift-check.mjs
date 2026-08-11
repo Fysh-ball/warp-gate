@@ -47,6 +47,7 @@ const EXTENSION_ONLY = new Set([
   'drift-check.mjs',
   'sync-from-public.mjs',
   'extension.test.mjs',
+  'pack.mjs',
 ]);
 
 /**
