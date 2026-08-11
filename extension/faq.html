@@ -7,6 +7,10 @@
 <meta name="color-scheme" content="dark light">
 <title>Warp Gate: FAQ</title>
 <link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
 </head>
 <body>
 <header class="bar">
@@ -51,16 +55,25 @@ it, or know it exists. It inherits none of the trust that this one has earned.</
 
 <h2 id="sec-how-do-i-know-the-person-hosting-it-is-not-malicious">How do I know the person hosting it is not malicious?</h2>
 <p>Bluntly: <strong>if you did not host it yourself, you cannot know.</strong></p>
-<p>The server sends the JavaScript that does the encryption, so whoever runs the server
-controls that code. A hostile operator does not need to break the cryptography: they can
-serve a modified page that copies your messages straight back to them, and it would look
-exactly like this one. The verification code cannot catch that either, because the same
-modified page draws it.</p>
+<!-- EXTENSION PATCH: upstream this answer says the server sends the encryption code,
+     which is the exact property this package removes. Split the answer into the half the
+     extension fixes and the half it does not. -->
+<p>In this extension, the code that does the encryption did not come from the server at
+all: it shipped inside the package you installed, and it changes only when your browser
+applies a signed update from the store. A hostile operator cannot hand this device a
+modified page. They still run the signalling, so they still see the metadata (your
+address, timing, room id, request sizes) and can refuse or end a gate, but they never
+hold a key.</p>
+<p>Anyone who opens your gate link in an ordinary browser is outside that protection:
+the server sends them the JavaScript that does the encryption, so whoever runs the
+server controls the code they run, and a modified page that copies messages straight
+back to the operator would look exactly like the real one. Both ends need the extension
+for both ends to be covered.</p>
 <p>This is true of every web application that encrypts in the browser, not just this one.
 It is why the honest statement is "trust the operator", not "trust the maths". If you
 need certainty, host it yourself from source you have read. Warp Gate has no
 dependencies and no build step precisely so that this is realistic: the files served are
-the files in the repository, and there are about twenty of them.</p>
+the files in the repository, and there are about fifty of them.</p>
 
 <h2 id="sec-can-i-run-my-own">Can I run my own?</h2>
 <p>Yes, and it is deliberately easy. It is one Node process with no dependencies, no
@@ -135,16 +148,16 @@ setting that blocks WebRTC, a network that blocks peer-to-peer traffic, and a st
 mobile carrier NAT. Putting the devices on the same network almost always works.</p>
 
 <h2 id="sec-how-big-a-file-can-i-send">How big a file can I send?</h2>
+<!-- EXTENSION PATCH: the download-manager fallback runs on a service worker, and an
+     extension page cannot register one, so that route does not exist here. -->
 <p>Sending has no limit in any browser. Receiving depends on the receiving browser. On a
 Chromium desktop browser a large file is written straight to a location you choose, as
 it arrives, and an interrupted transfer continues into the same file: a dropped
-connection picks up where it left off, and so does a reload. On other browsers, a file
-over 500&nbsp;MB is handed to the browser's own download manager and written straight to
-disk as it arrives, so there is still no size limit, but it goes to your usual downloads
-folder. A dropped connection still carries on by itself; reloading the page is what loses
-the partial file, because the browser owns it and will not hand it back. Only a browser
-that supports neither route holds the file in memory, capped at 500&nbsp;MB, and Warp
-Gate refuses before the transfer starts rather than failing near the end.</p>
+connection picks up where it left off, and so does a reload. In this extension there is
+no second route: handing a file to the browser's own download manager needs a service
+worker, and an extension page cannot register one. A browser without the
+choose-a-location picker holds the file in memory, capped at 500&nbsp;MB, and Warp Gate
+refuses before the transfer starts rather than failing near the end.</p>
 
 <h2 id="sec-how-long-does-a-gate-last">How long does a gate last?</h2>
 <p>The time you pick is an <strong>idle</strong> timeout, not a deadline. While anyone is

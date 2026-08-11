@@ -2,6 +2,13 @@
 secrets/
 *.token
 .env
+.env.*
+
+# Runtime state. The suggestion box is real users' text: it belongs on the host that
+# received it, never in a commit. .dockerignore already excludes all three from the
+# build context; this is the same list for the repository.
+data/
+*.jsonl
 
 node_modules/
 *.log

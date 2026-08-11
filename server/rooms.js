@@ -283,6 +283,10 @@ export function joinRoom(roomId, key, joinProof, now = Date.now()) {
 
   const slot = seat(room, key);
   room.expiresAt = now + room.sessionMs;
+  // A join extends the room to its full session TTL, so a claimed room nobody ever
+  // attaches to must start the abandonment clock here: detach() cannot, because it only
+  // runs after a stream has attached. attach() clears this the moment somebody arrives.
+  if (presentCount(room) === 0) room.emptySince = now;
   return {
     token: slot.token, slotId: slot.id, role: slot.role, expiresAt: room.expiresAt,
     sessionMinutes: room.sessionMs / 60000, requiresPassword: room.requiresPassword,
@@ -683,7 +687,14 @@ export function heartbeat() {
 }
 
 export function destroyAll(reason) {
+  // How many attached streams are being told: the caller's shutdown grace exists only
+  // for these frames, so zero means there is nothing to wait for.
+  let streams = 0;
+  for (const room of rooms.values()) {
+    for (const slot of room.slots.values()) if (slot.res) streams += 1;
+  }
   for (const id of [...rooms.keys()]) destroyRoom(id, reason);
+  return streams;
 }
 
 /** Read-only view of a room's occupancy, for the resume route. */

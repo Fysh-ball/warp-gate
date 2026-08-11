@@ -60,8 +60,13 @@ self.addEventListener('install', () => self.skipWaiting());
 
 self.addEventListener('activate', (event) => {
   // Take over pages that were already open, so a transfer started on the load that
-  // registered the worker does not have to wait for a reload.
-  event.waitUntil(self.clients.claim());
+  // registered the worker does not have to wait for a reload. Sweep stale shares here
+  // too: stashShare used to be the only sweeper, so a share whose gate never opened
+  // sat in Cache Storage until the NEXT share arrived.
+  event.waitUntil(Promise.all([
+    self.clients.claim(),
+    self.caches.open(SHARE_CACHE).then(sweepShares).catch((err) => { void err; }),
+  ]));
 });
 
 self.addEventListener('message', (event) => {
@@ -128,6 +133,9 @@ self.addEventListener('message', (event) => {
       try { s.controller.close(); } catch (err) { void err; }
     }
     streams.delete(msg.id);
+    // The reply is what lets the page's finish() declare completion: it proves every
+    // prior chunk was taken and end-of-stream was committed to the browser's download.
+    if (event.ports && event.ports[0]) event.ports[0].postMessage({ ok: true });
     return;
   }
 

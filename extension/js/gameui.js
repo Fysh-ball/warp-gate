@@ -15,6 +15,10 @@
 // second source of truth about what is on screen.
 
 import { playableGames } from './gameplay.js';
+// Already on this module's graph through gameplay.js -> games/index.js, so this costs no
+// extra fetch. inCheck is chess's own extra beyond the engine contract, and renderChess
+// is already chess-specific.
+import { inCheck as chessInCheck } from './games/chess.js';
 
 // ---------------------------------------------------------------- the board stylesheet
 //
@@ -523,6 +527,14 @@ export class GameUI {
       if (e.reason === 'protocol') return 'The game was abandoned: the two boards disagreed.';
       if (e.reason === 'left') return 'They left the gate.';
       if (e.reason === 'resigned') return e.by === 'you' ? 'You resigned.' : 'They resigned.';
+      if (e.reason === 'abandoned') {
+        // Not a draw: their side ended it without playing to a result. The two details a
+        // peer actually sends get their own sentence; anything else stays generic rather
+        // than printing a peer-written string as the verdict.
+        if (e.detail === 'unknown match') return 'Their device no longer has this game, so it is over.';
+        if (e.detail === 'busy') return 'They are already in another game, so this one is over.';
+        return 'The game ended on their side.';
+      }
       if (e.winner === null) return 'A draw.';
       return e.winner === view.seat ? 'You won.' : 'They won.';
     }
@@ -613,7 +625,9 @@ export class GameUI {
     }
     root.append(grid);
 
-    if (view.status.reason === 'check' || (view.status.check && !view.ended)) {
+    // status() never says "check": its reason is 'in-progress' until the game is over.
+    // The engine's own inCheck is the only source of truth for it.
+    if (!view.ended && !view.status.over && chessInCheck(view.state)) {
       root.append(el('p', 'game-note', 'Check.'));
     }
   }

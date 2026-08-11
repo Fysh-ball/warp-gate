@@ -49,6 +49,40 @@ export async function copyText(text, report = () => {}) {
 export function applySourceLink(sourceUrl) {
   const link = document.getElementById('source-link');
   if (!link || !sourceUrl) return;
-  link.href = sourceUrl;
+  // The value comes from /api/config, which on somebody else's deployment is somebody
+  // else's file: a javascript: or data: value here would become a click-to-run link on
+  // both documents, so only the two schemes a source repository can actually live on
+  // are ever written into href.
+  let url;
+  try {
+    url = new URL(sourceUrl, location.href);
+  } catch (err) {
+    console.warn(`[warp gate] sourceUrl in /api/config is not a URL: ${err.message}`);
+    return;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    console.warn(`[warp gate] sourceUrl in /api/config refused: ${url.protocol} is not a link to source`);
+    return;
+  }
+  link.href = url.href;
   link.hidden = false;
+}
+
+/**
+ * Which instance this document is being served from.
+ *
+ * warpgate.fysh.site is canonical. wg.fysh.site is the original name and stays trusted:
+ * old links and QR codes still carry it, and it redirects to the canonical host, so
+ * treating it as unofficial would flash a scary warning at people following a valid
+ * link. Anything on a loopback name is somebody running their own copy, which is the
+ * encouraged case and not a warning. Everything else is a deployment this project does
+ * not vouch for, and both documents say so rather than letting static copy claim to be
+ * the official instance on a host that is not.
+ */
+export const OFFICIAL_HOSTS = ['warpgate.fysh.site', 'wg.fysh.site'];
+
+export function instanceKind(host = location.hostname) {
+  if (OFFICIAL_HOSTS.includes(host)) return 'official';
+  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return 'local';
+  return 'other';
 }

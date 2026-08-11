@@ -28,9 +28,9 @@ first two together **reverse finding 1.2**, which is the largest single change i
 document.
 
 **The gate code became eight words (2026-08-09).** 26 Crockford base32 symbols were
-unusable on a phone keyboard. Eight words from a fixed 7776-word list is 103.02 bits, and
+unusable on a phone keyboard. Eight words from a fixed 7776-word list is 103.40 bits, and
 PBKDF2-HMAC-SHA256 at 600,000 iterations between the code and `S` puts the offline search
-at 2^123.2 SHA-256 compressions, the same order the 128-bit code held. The list is bundled,
+at 2^123.6 SHA-256 compressions, the same order the 128-bit code held. The list is bundled,
 constant, and derived offline from the English spell file Vim ships, because the EFF list
 could not be fetched on a machine with no network and no package manager; the derivation is
 recorded in the header of `public/js/words.js` and its SHA-256 is asserted by the test
@@ -328,7 +328,7 @@ Primitives used: `ECDH P-256`, `HKDF-SHA256`, `AES-256-GCM`, `SHA-256`, `crypto.
 ### 3.2 The room secret
 
 ```
-code         = 8 words drawn uniformly from a fixed 7776-word list    103.02 bits
+code         = 8 words drawn uniformly from a fixed 7776-word list    103.40 bits
 displayed as = capitals, hyphen joined, WARP-DRIFT-MEAD-...           45 to 68 characters
 S            = PBKDF2-HMAC-SHA256(code, salt="wg/v1/gate-code", c=600000, dkLen=16)
 carried in   = https://<host>/#WARP-DRIFT-MEAD-...  the fragment is never sent in an HTTP request
@@ -340,7 +340,7 @@ Deriving `room_id` from `S` means the link is one field, and the server's view o
 Why eight words and 600,000 iterations: `S` protects two different things with two different entropy requirements, and this is the crux of section 19.
 
 - Against an **active MITM**, the code only needs to survive a single real time online guess, because a failed guess is detected by key confirmation and the room is destroyed. Roughly 40 bits would do. 103 was never close to this bound.
-- Against a **passive observer who records the signaling traffic**, `S` must survive an **offline** attack, because `S` also encrypts the SDP and ICE candidates (finding 1.4). Recovering `S` later reveals the peers' IP addresses. 128 bits of raw entropy did that; 103 bits plus PBKDF2 at 600,000 iterations does it too. One guess costs about 1.2 million SHA-256 compressions, near 2^20.2, so the search costs 2^103.0 * 2^20.2 = 2^123.2 compressions. That is the same order as the 2^128 the base32 code offered, and it is what the shorter code buys.
+- Against a **passive observer who records the signaling traffic**, `S` must survive an **offline** attack, because `S` also encrypts the SDP and ICE candidates (finding 1.4). Recovering `S` later reveals the peers' IP addresses. 128 bits of raw entropy did that; 103 bits plus PBKDF2 at 600,000 iterations does it too. One guess costs about 1.2 million SHA-256 compressions, near 2^20.2, so the search costs 2^103.4 * 2^20.2 = 2^123.6 compressions. That is the same order as the 2^128 the base32 code offered, and it is what the shorter code buys.
 
 The code was 26 Crockford base32 symbols until 2026-08-09. It was correct and nobody could type it. Eight words is longer on the page and shorter in the hand: it can be read down a phone, typed with autocorrect off, and checked by eye against the other device.
 
@@ -362,7 +362,7 @@ The password changes nothing else. It only widens the HKDF salt, so a wrong pass
 - **It is never transmitted, in any form.** Not to the server, not to any peer, not derived-then-sent. Every participant computes `p_key` locally and it only ever shows up as a difference in derived keys.
 - **`S` is still mandatory.** The password is not an alternative to the link; it is an addition to it. This is the whole difference between it and the section 19 proposal.
 - **The server holds a `requiresPassword` boolean and that is all.** It is set from the create request, echoed back on create, join and `GET /api/room`, and used by the joining page to decide whether to prompt. It is **advisory metadata, not access control**: the server cannot verify a password it never receives, and a modified client could ignore the flag entirely, which would simply mean deriving the wrong keys and failing confirmation.
-- **The threat it addresses is a leaked link**, not a hostile signalling channel. 600,000 PBKDF2 iterations make each guess expensive for someone who has the link and is trying to add the password to it. Against someone who has neither, the 128 bits of `S` are already doing the work.
+- **The threat it addresses is a leaked link**, not a hostile signalling channel. 600,000 PBKDF2 iterations make each guess expensive for someone who has the link and is trying to add the password to it. Against someone who has neither, the 103 bits behind `S` (3.2) are already doing the work.
 
 ### 3.3 Handshake
 
@@ -380,7 +380,8 @@ k_sig  = HKDF-SHA256(ikm=S, salt="", info="wg/v1/signal")        AES-256-GCM key
 
   every signalling payload in both directions:
   envelope = { n: random_96_bit_nonce, c: AES-GCM(k_sig, n, json, aad="wg/v1"||room_id) }
-  the server sees only { n, c }
+  the server sees only { n, c }, and stamps the sender's seat id beside them as
+  sfrom on delivery (4.2)
 
 A, B each: (sk, pk) = ECDH P-256 keypair, generateKey(..., extractable=false, ["deriveBits"])
 A -> B : pk_A          (inside the encrypted envelope)
@@ -539,7 +540,10 @@ event: hello            data: { self, role, peers, maxParticipants, peerPresent,
                                                sent on stream attach; re-sent with
                                                expiring:true near the absolute deadline
 event: peer-joined      data: { id, role }     sent on a peer's stream attach
-event: relay            data: { n, c }         verbatim, never inspected
+event: relay            data: { n, c, sfrom }  n and c verbatim, never inspected;
+                                               sfrom is the sender's seat id, stamped
+                                               by the server on delivery. A client
+                                               DROPS a relay without it
 event: peer-left        data: { id, role, reason, expiresAt }
                                                after an 8s grace, so a reconnect is not a leave
 event: closed           data: { reason }       "ttl" | "ttl-hard" | "severed" | "shutdown"
@@ -549,9 +553,9 @@ event: closed           data: { reason }       "ttl" | "ttl-hard" | "severed" | 
 
 `token` is a 128 bit per-participant capability minted at create/join. It prevents a third party who guesses a room ID from posting into or reading the room. It is bearer only, never persisted.
 
-The server has exactly one rule about `envelope`: relay it to the addressed slot unmodified. It does not parse it, cannot parse it, and does not know it contains SDP. A refused relay is answered with its own code (`server/signal.js`): `bad_target` (400) for a missing, malformed or self-addressed `to`, and `no_peer` (404) for a target slot the room does not seat, so a client can tell "I addressed this wrongly" from "that participant is gone" without guessing.
+The server has exactly one rule about `envelope`: relay `n` and `c` to the addressed slot byte for byte, never parsed, re-parsed or re-serialised, and write exactly one thing beside them: `sfrom`, the seat id the sender's token authenticated (`server/signal.js`). The envelope is spread first and the stamp written last, so a sender who puts an `sfrom` of their own inside the JSON overwrites nothing. The server does not parse the ciphertext, cannot parse it, and does not know it contains SDP. A refused relay is answered with its own code (`server/signal.js`): `bad_target` (400) for a missing, malformed or self-addressed `to`, and `no_peer` (404) for a target slot the room does not seat, so a client can tell "I addressed this wrongly" from "that participant is gone" without guessing.
 
-The sender's own slot id rides as a `from` field **inside** the sealed envelope, never alongside it (`public/js/signal.js`). It is there because the receiver has to know which of its links a relayed offer belongs to, and the server must not be the one to say: the envelope is handed on unmodified, and adding a field to it would make the server a participant in a conversation it is supposed to be unable to read. Be clear about what `from` is and is not. It is sealed under `k_sig`, which every participant in the room holds, so it is unforgeable by the server and by anyone outside the room, and forgeable by anyone inside it. It is **routing, not authentication**. What actually binds a link to a participant is that pair's own ECDH and the key confirmation over it (3.3): a participant who mislabels a message still cannot produce a confirmation for a session it did not agree, so it gains nothing but a failed handshake on a link it was never party to.
+The sender's slot id travels twice, deliberately, and the two copies do different jobs. A `from` field rides **inside** the sealed envelope (`public/js/signal.js`): the receiver has to know which of its links a relayed offer belongs to, and the envelope is the only place a participant can write. It is sealed under `k_sig`, which every participant in the room holds, so it is unforgeable by the server and by anyone outside the room, and forgeable by anyone inside it. It is **routing, not authentication**. The authentication half is `sfrom`, the sibling field the server stamps beside the envelope on delivery: the per-seat token that authorised the `POST /api/relay` already names the posting seat, so the stamp costs the server no knowledge it did not hold, and it has to sit outside the envelope because the server cannot write into ciphertext it cannot read. The receiving client cross-checks the two and **drops the frame if `sfrom` is absent or disagrees with the sealed `from`** (`checkSender` in `public/js/signal.js`): an absent stamp means the server predates this page and the client says so by name rather than failing silently, and a mismatch is a refused impersonation. Neither half closes the forgery alone: the server cannot forge the sealed body, and a participant cannot forge the stamp. A server built to relay bare `{n, c}` is therefore rejected by every current client; the stamp is part of the wire contract, not an optimisation. What ultimately binds a link to a participant is still that pair's own ECDH and the key confirmation over it (3.3): a participant who mislabels a message still cannot produce a confirmation for a session it did not agree, so it gains nothing but a failed handshake on a link it was never party to.
 
 ### 4.3 Server state, complete
 
@@ -889,7 +893,7 @@ can sever" reads as unremarkable at two seats and as a real power at six.
 
 | Datum | Created | Lives in | Destroyed | Ever on disk? |
 |---|---|---|---|---|
-| `S` (room secret) | Creator's browser, `getRandomValues` | JS variable + URL fragment + QR pixels + `sessionStorage` | Zeroed on sever; fragment stripped with `replaceState` as soon as it is read | Only if the user saves the QR or bookmarks the link, or if the browser writes `sessionStorage` to disk for crash recovery, which some do |
+| `S` (room secret) | Derived from the gate code, PBKDF2 at 600,000 iterations (3.2, `deriveSecret` in `public/js/crypto.js`) | JS variable + URL fragment + QR pixels + `sessionStorage` + the module-level `SECRET_CACHE` in `crypto.js`, capped at 8 codes, which keeps `S` in the heap for the life of the tab so the stretch is paid once per code | Zeroed on sever, and `clearSecretCache()` is called on teardown (`public/js/app.js`); fragment stripped with `replaceState` as soon as it is read | Only if the user saves the QR or bookmarks the link, or if the browser writes `sessionStorage` to disk for crash recovery, which some do |
 | Room password | Typed by the user | JS variable, and the `p_key` derived from it | Reference dropped on sever. Never sent anywhere (3.2a) | No |
 | `room_id` | Derived from `S` | Server `Map` key, both clients | Room deletion | No |
 | Participant token | Server, per join | Server `Map`, client memory | Room deletion | No |
@@ -903,7 +907,7 @@ can sever" reads as unremarkable at two seats and as a real power at six.
 | A submitted suggestion (the text, and the hour, rounded) | The landing's suggestion box, if an operator set `WG_SUGGESTIONS_PATH` | An append-only JSON Lines file, mode 0600 | Never, except by the operator deleting it. It is meant to outlive the visit | **Yes**, and it is the only server-side row in this table that says so. No IP, no rate-limit key, no header, and nothing from the signalling side |
 | IP addresses | The network | Cloudflare and kernel sockets | Origin access logs disabled; Cloudflare retains per its own policy | Not at the origin |
 | Slot record for a reload | Server, per join | Client `sessionStorage` as `wg.slot.<roomId>` | `forgetSlot()` on sever, auth failure or unreachable | Same crash-recovery caveat as `S` |
-| Outbound transfer intent (name, size, fingerprint; never bytes) | Sender's browser at FILE_START | Client `sessionStorage` as `wg.out.<roomId>` | On completion, failure or teardown; discarded with the tab | Same crash-recovery caveat as `S` |
+| Outbound transfer intent (name, size, fingerprint; never bytes) | Sender's browser at FILE_START | Client `sessionStorage` as `wg.out.<roomId>.<peerId>` | On completion, failure or teardown; discarded with the tab | Same crash-recovery caveat as `S` |
 | Inbound resume record (transfer metadata, byte count, file handle; never bytes) | Receiver's browser during a transfer | Client IndexedDB, keyed by room | When the transfer finishes, fails, is refused or the gate ends. Lingers if the tab never returns, until site data is cleared | Yes: it is a record about a transfer, holding no file content |
 | Download service worker (`sw.js`) | First receive of an over-memory-cap file on a non-Chromium browser | The browser's service worker registry | Only if the user clears site data; a worker belongs to the site, not to a session. Disclosed in the privacy policy | Yes: the worker script itself, which holds no keys and no data |
 | Clickwrap acceptance | First visit | Client `localStorage` as `wg.agreed.v1` | Only if the user clears site data | Yes, deliberately |
@@ -947,7 +951,16 @@ produced. Both were cited by earlier versions of this section and have been remo
   DESIGN.md                    this document
   THREAT-MODEL.md              the honest user-facing threat model
   README.md
+  EXTENSION.md                 the browser extension, summarised from the repository
+                               root: the client shipped as a store-signed package
+                               instead of served, closing the delivery gap the threat
+                               model names
+  CLAUDE.md                    maintainers' working notes
   LICENSE                      AGPL-3.0
+  Dockerfile                   the published image
+  compose.yaml                 the quickstart compose file; deploy/docker-compose.yml
+                               is the reference deployment
+  .github/workflows/docker.yml image build and publish
   server/
     index.js                   node:http, static serving, security headers, graceful shutdown
     rooms.js                   the Map, TTLs, sweeper, capacity and locking
@@ -970,8 +983,10 @@ produced. Both were cited by earlier versions of this section and have been remo
     terms.html                 filled: Alberta, Canada; contact warpgate@fysh.site
     privacy.html               filled, and audited against the code 2026-08-09
     acceptable-use.html        filled
+    manifest.webmanifest       the PWA manifest
     sw.js                      download worker: streams a received file to the browser's
                                own download manager (the 1.9 reversal)
+    icons/                     the PWA icons, generated by tools/make-icons.mjs
     css/style.css
     css/games.css              board palette, injected by gameui.js at first render
     js/app.js                  UI, onboarding, sever. Loaded by app.html only
@@ -979,13 +994,15 @@ produced. Both were cited by earlier versions of this section and have been remo
                                nothing that knows what a room is
     js/legal.js                shared by the four legal documents and nothing else
     js/support.js              donation cards and the AGPL s13 link, shared by both
+    js/common.js               the few helpers the landing and the gate genuinely share
     js/session.js              the protocol state machine
     js/link.js                 one peer link: pairwise handshake, message kinds, control
     js/crypto.js               HKDF, ECDH, PBKDF2, AEAD framing, counters, SAS
-    js/words.js                the gate-code alphabet, imported by crypto.js, so eager
     js/signal.js               EventSource client, envelope encrypt and decrypt
     js/peer.js                 RTCPeerConnection, DataChannel, backpressure, ICE restart
     js/transfer.js             chunking, sink selection, progress, caps
+    js/chunkwire.js            the chunk frame: index bytes, size-to-count arithmetic
+    js/streamable.js           whether this browser can stream a received file to disk
     js/resume.js               per-chunk indices, so an interrupted transfer continues
     js/download.js             page side of the sw.js streamed download
     js/vault.js                surviving a reload on a password gate
@@ -997,6 +1014,9 @@ produced. Both were cited by earlier versions of this section and have been remo
   fails the build if any of them reappears in it. Each is paired there with an existence
   control, so a check cannot pass because the file was renamed out from under it:
 
+    js/words.js      the gate-code vocabulary: reached through the dynamic import()
+                     inside loadGateCode() in crypto.js, and statically only from the
+                     lazy js/saswords.js. On demand, not eager
     js/qrdecode.js   ENFORCED   the decoder, fetched when the camera button is pressed
     js/saswords.js   ENFORCED   the two spoken words, fetched at gate creation, so the
                                 round trip is over long before any peer can connect
@@ -1008,23 +1028,55 @@ produced. Both were cited by earlier versions of this section and have been remo
                                 the remaining engines, reached only through gameplay.js
     js/qrscan.js                camera frames to a gate code, imported by app.js only
                                 inside the scan handler
+    js/scanui.js                the camera scan panel around it
+    js/preview.js               what a finished file row grows: inline image, players,
+                                and the Open allowlist (type table, blob rebuild)
+    js/filesink.js              where a received file goes: picker, granted folder,
+                                download manager or heap. import() from transfer.js
+    js/dirsink.js               naming a file inside a granted directory without ever
+                                overwriting one. import() from filesink.js
+    js/batchui.js               one row, one Accept, for a whole batch of files
 
   js/qrscan.js is lazy by construction but is NOT in the enforced list, so nothing stops
   a future edit making it eager. It is the one gap in this table: state it rather than
   imply the whole set is covered.
+  extension/
+    manifest.json              MV3. No API permissions; optional_host_permissions for
+                               retargeting the signalling origin. See EXTENSION.md and
+                               the threat model
+    index.html                 the options page: what it protects, what it does not,
+                               and the signalling-origin setting
+    app.html, faq.html, terms.html, privacy.html, acceptable-use.html
+                               the client's pages, copied and patched
+    js/                        the mirrored client plus background.js, options.js and
+                               endpoint.js, the one place that knows where the server
+                               is. GENERATED by sync-from-public.mjs, never hand-edited
+    sync-from-public.mjs       re-copy public/ and re-apply the patches
+    drift-check.mjs            is the copy still in step with public/?
+    extension.test.mjs         the package driven in a real browser
+    README.md                  the full account: built, rejected, verified, not verified
+  docs/
+    decisions/                 dated decision records
+    issues/                    long-form issues, including the delivery-risk issue the
+                               extension answers (cloudflare-delivery-risk.md)
   deploy/
     docker-compose.yml         node:22-alpine, source mounted read-only, no image build
     SELF-HOSTING.md            deployment guidance, minus anything machine-specific
                                (the authors' own ops log is not published at all)
+    NOTES.md                   the authors' deployment record for the official instance
+    read-suggestions.mjs       read the suggestion box file
   tools/
     stun-client.mjs            an RFC 5389 client written independently of server/stun.js
     stun-probe.mjs             reachability probe
     ice-check.mjs              which candidate types a given network actually yields
     loadtest.mjs               concurrent gates, memory per gate
+    make-icons.mjs             generates public/icons/ from the palette in style.css
+    verify-deploy.mjs          compare a deployed origin against this working tree
   tests/
-    run-all.sh                 crypto, qr, signalling, http, download, browser
-    crypto.test.mjs  qr.test.mjs  signalling.test.mjs
-    http.test.mjs  download.test.mjs  browser.test.mjs
+    run-all.sh
+    22 suites: crypto, qr, qrdecode, saswords, signalling, mesh, http, download,
+    disconnect, drain, browser, motion, games, gameplay, batchui, outbound, legal,
+    pwa, suggest, size, securecontext, cdn-injection (.test.mjs each)
     public-e2e.mjs             two tabs against a live deployment
     stress/                    load, soak and regression-repro scripts
     lib/harness.mjs  lib/cdp.mjs

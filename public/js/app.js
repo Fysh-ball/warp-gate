@@ -20,7 +20,7 @@ import {
 // common.js, not support.js. Both documents need these two; only the landing has the
 // donation cards and the modal markup that the rest of support.js drives, so importing it
 // here fetched 7.2 KB of UI this document cannot display. See common.js.
-import { applySourceLink, copyText as writeClipboard } from './common.js';
+import { applySourceLink, copyText as writeClipboard, instanceKind } from './common.js';
 import { forgetPasswordKey, forgetAllPasswordKeys } from './vault.js';
 // gameplay.js, gameui.js and the four engines are ~88 KB and none of it can run until
 // somebody decides to play. They are therefore NOT imported here: see loadGames().
@@ -52,7 +52,7 @@ const AGREEMENT_KEY = 'wg.agreed.v1';
 // Set once, from describeLimit(), when this browser cannot stream a received file
 // straight to disk. Empty means there is nothing to say and the note stays hidden.
 let receiveNoteText = '';
-// Bounded by what one data channel message can carry. 32k characters is 128 KB even if
+// Bounded by what one data channel message can carry. 16k characters is 64 KB even if
 // every one of them is a 4-byte emoji, which stays clear of the SCTP ceiling.
 const MAX_MESSAGE_CHARS = 16000;
 
@@ -279,6 +279,28 @@ function revealModal(modal) {
 }
 
 /**
+ * Keep Tab inside an open modal. aria-modal hides the background from a screen reader,
+ * but sighted keyboard focus walked straight out into a screen that is still interactive
+ * underneath the scrim. Called from each modal's own keydown handler, so it is removed
+ * exactly when that handler is.
+ */
+function trapFocus(modal, event) {
+  if (event.key !== 'Tab') return;
+  // a[href], not [href]: the bare attribute also matches the <use href="#icon"> inside
+  // every donation link, and an SVG child as the computed "last focusable" let a real
+  // Tab walk straight past the real last element and out of the modal.
+  const focusables = [...modal.querySelectorAll(
+    'button, a[href], area[href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )].filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (!modal.contains(document.activeElement)) { event.preventDefault(); first.focus(); return; }
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
+
+/**
  * Ask for a tip, once per tab, and only after a gate that actually worked.
  *
  * Two conditions, both of which have to hold, and neither of which is a heuristic:
@@ -295,7 +317,7 @@ function maybeAskForSupport() {
   if (!everConnected) return;
   if (isDismissed('donate-modal')) return;
   const modal = $('donate-modal');
-  if (!modal) return;
+  if (!modal || !modal.hidden) return;
 
   const close = () => {
     modal.classList.remove('wg-modal-open');
@@ -307,6 +329,7 @@ function maybeAskForSupport() {
   };
   function onKey(event) {
     if (event.key === 'Escape') close();
+    trapFocus(modal, event);
   }
 
   $('donate-close').addEventListener('click', close, { once: true });
@@ -361,6 +384,7 @@ function confirmNetworkExposure(mode) {
     function onKey(event) {
       // Escape is a cancel here, not a dismissal: this one holds up an action.
       if (event.key === 'Escape') finish(false);
+      trapFocus(modal, event);
     }
 
     $('net-continue').addEventListener('click', onYes);
@@ -427,6 +451,15 @@ function show(name) {
     receive.hidden = isDismissed('receive-note') || !['onboarding', 'home'].includes(name);
   }
   if (name === 'onboarding') fitDisclosures();
+  // Hiding the outgoing screen dropped keyboard focus onto <body>, so after a burn the
+  // next Tab press started from nowhere and a screen reader was never told the screen
+  // changed. Only when focus was actually lost: a change that keeps the current screen
+  // visible (a reconnect while typing) must not yank focus out of the composer.
+  if (document.activeElement === document.body || document.activeElement === null) {
+    const incoming = $(`screen-${name}`);
+    incoming.tabIndex = -1;
+    incoming.focus({ preventScroll: true });
+  }
   scrollPageToTop();
 }
 
@@ -750,10 +783,15 @@ function startTtl(expiresAt) {
   el.hidden = false;
   const tick = () => {
     const left = Math.max(0, expiresAt - Date.now());
+    if (left <= 0) {
+      stopTtl();
+      el.hidden = false;
+      el.textContent = 'confirming with the server';
+      return;
+    }
     const mins = Math.floor(left / 60000);
     const secs = Math.floor((left % 60000) / 1000);
     el.textContent = `${mins}:${String(secs).padStart(2, '0')}`;
-    if (left <= 0) stopTtl();
   };
   tick();
   ttlTimer = setInterval(tick, 1000);
@@ -938,6 +976,7 @@ function wire(active) {
   gameUi = null;
   gamesLoading = null;
   gameBacklog.length = 0;
+  rosterSeen.clear();
 
   // Started here, at gate creation, rather than when the first `sas` event fires. A peer
   // is at minimum a signalling round trip away, so this has the whole handshake to land
@@ -998,6 +1037,7 @@ function wire(active) {
       // The partner list only becomes non-empty here, so the menu has to be redrawn.
       if (gameUi) gameUi.render();
     }
+    if (event.detail.state === STATE.RECONNECTING) stopTtl();
     // Only a genuine key-confirmation failure says "could not verify". A connectivity
     // stall has its own state and its own far more specific message, set by the
     // unreachable handler below; overwriting it here produced the wrong title.
@@ -1006,6 +1046,7 @@ function wire(active) {
       // in sessionStorage for the life of the tab, and the reload behind "Start again"
       // recalled it and auto-rejoined a room that is already gone.
       forgetSlot(active.roomId);
+      if (batchUiMod) batchUiMod.forgetBatches();
       $('failed-title').textContent = 'Could not verify the other device';
       // Not "the connection dropped". Reaching here means the bytes arrived and did not
       // authenticate, which is either the wrong gate code or somebody in the middle. It
@@ -1035,7 +1076,7 @@ function wire(active) {
       return mod.sasPhrase(digits).then((phrase) => {
         if ($('sas').textContent === digits) holder.textContent = phrase;
       });
-    }).catch((err) => { void err; });
+    }).catch((err) => log(`could not derive the verification words: ${err.message}. The digits above are still a complete check.`, 'warn'));
   });
 
   active.addEventListener('roster', (event) => {
@@ -1081,11 +1122,15 @@ function wire(active) {
     stopTtl();
     cancelClipboardWipe();
     $('failed-title').textContent = 'Could not connect the two devices';
-    $('failed-oops').textContent = 'Oops. Looks like the connection dropped by accident. '
-      + 'Please try again, or give us a heads up at warpgate@fysh.site.';
+    $('failed-oops').textContent = everConnected
+      ? 'Oops. Looks like the connection dropped by accident. '
+        + 'Please try again, or give us a heads up at warpgate@fysh.site.'
+      : 'The two devices never managed to reach each other, so nothing was sent. '
+        + 'Please try again, or give us a heads up at warpgate@fysh.site.';
     $('failed-detail').textContent = event.detail;
     $('failed-diag').textContent = diagnosticText();
     forgetSlot(active.roomId);
+    if (batchUiMod) batchUiMod.forgetBatches();
     // Drop the reference so no later handler, Accept button or send acts on a dead one.
     if (session === active) session = null;
     show('failed');
@@ -1587,7 +1632,9 @@ function addMessage({ from, text, label = null }) {
   const wrap = bubble(from, '', label);
   const body = document.createElement('span');
   body.className = 'msg-text';
-  body.textContent = text;
+  // The composer caps what THIS side sends; a peer is not bound by it, and one
+  // SCTP-maximum message would be a multi-hundred-KB text node held per retained row.
+  body.textContent = text.length > MAX_MESSAGE_CHARS ? text.slice(0, MAX_MESSAGE_CHARS) : text;
   wrap.appendChild(body);
   scrollMessages();
 }
@@ -2355,10 +2402,14 @@ async function startCreate() {
     $('reveal-share').onclick = revealShare;
     $('hide-share').onclick = hideShare;
 
-    const copyLink = (btn) => copyText(link).then((ok) => { if (ok) btn.textContent = 'Copied'; });
+    const copied = (btn, label) => {
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = label; }, 2500);
+    };
+    const copyLink = (btn) => copyText(link).then((ok) => { if (ok) copied(btn, 'Copy link'); });
     $('copy-link').onclick = () => copyLink($('copy-link'));
     $('copy-link-2').onclick = () => copyLink($('copy-link-2'));
-    $('copy-code').onclick = () => copyText(formatted).then((ok) => { if (ok) $('copy-code').textContent = 'Copied'; });
+    $('copy-code').onclick = () => copyText(formatted).then((ok) => { if (ok) copied($('copy-code'), 'Copy code'); });
 
     startTtl(room.expiresAt);
     show('waiting');
@@ -2682,18 +2733,14 @@ async function boot() {
 
   // Say plainly which instance this is. A hostile host would simply delete this, which
   // is exactly why the text says the trust question can only be settled by self-hosting.
-  // warpgate.fysh.site is canonical. wg.fysh.site is the original name and stays
-  // trusted: old links and QR codes still carry it, and it redirects here, so treating
-  // it as unofficial would flash a scary warning at people following a valid link.
-  const OFFICIAL_HOSTS = ['warpgate.fysh.site', 'wg.fysh.site'];
-  const host = location.hostname;
-  const isOfficial = OFFICIAL_HOSTS.includes(host);
-  const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
-  if (!isOfficial && !isLocal) {
-    $('instance-title').textContent = `You are on ${host}, which is not the official instance`;
+  // The classification lives in common.js because the landing's hero carries the same
+  // claim and must answer it the same way.
+  const kind = instanceKind();
+  if (kind === 'other') {
+    $('instance-title').textContent = `You are on ${location.hostname}, which is not the official instance`;
     $('instance-disc').classList.add('warn');
     $('instance-disc').open = true;
-  } else if (isLocal) {
+  } else if (kind === 'local') {
     $('instance-title').textContent = 'You are running your own copy';
   }
 
@@ -2748,13 +2795,13 @@ async function boot() {
   });
   armScanner(joinNow);
   armLogDock();
+  // Announced politely on change. Not #ttl: it rewrites every second, and a live region
+  // on a countdown reads the clock out on every tick.
+  $('status-badge')?.setAttribute('aria-live', 'polite');
+  $('route-badge')?.setAttribute('aria-live', 'polite');
   $('sever').addEventListener('click', severNow);
   $('waiting-sever').addEventListener('click', severNow);
   $('clear-transcript').addEventListener('click', clearTranscript);
-  window.addEventListener('pagehide', () => {
-    cancelClipboardWipe();
-    releaseAllPreviews();
-  });
 
   // The tab coming back is the strongest signal available that the network picture has
   // changed, and this document had no handler for it at all: recovery was left entirely
@@ -2822,11 +2869,21 @@ async function boot() {
     }
   });
 
+  // The text whose send is currently in flight. The composer is deliberately not
+  // cleared until the send succeeds (below), so while a send sits behind a file
+  // transfer's backpressure the box still holds the text and Enter autorepeats through
+  // requestSubmit: every repeat re-read the box and fanned out a full duplicate, which
+  // for a secret is the worst possible repeat. Keyed on the text rather than a busy
+  // flag, because distinct messages submitted in a fast burst are all real and must all
+  // send (tests/motion.test.mjs holds that door open).
+  let inFlightText = null;
   $('chat-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value;
     if (!text.trim() || !session) return;
+    if (text === inFlightText) return;
     const asSecret = $('secret-toggle').checked;
+    inFlightText = text;
     // Do NOT clear the composer until the send has actually succeeded. Clearing first
     // meant a failed send destroyed the text with no bubble to recover it from: a
     // message over the SCTP limit vanished entirely, which for a typed-out secret is
@@ -2834,10 +2891,16 @@ async function boot() {
     try {
       if (asSecret) await session.sendSecret(text);
       else await session.sendChat(text);
-      input.value = '';
-      autoGrow(input);
+      // Only if the box still holds what was sent: a burst's earlier send resolving
+      // must not wipe the newer text somebody is already typing.
+      if (input.value === text) {
+        input.value = '';
+        autoGrow(input);
+      }
     } catch (err) {
       log(`could not send, your text is still in the box: ${err.message}`, 'bad');
+    } finally {
+      if (inFlightText === text) inFlightText = null;
     }
   });
 
@@ -2977,7 +3040,9 @@ import('./share.js').then(({ initShare }) => initShare()).then((files) => {
   log(files.length === 1
     ? `${sanitizeFilename(files[0].name)} is attached and will send as soon as a gate opens.`
     : `${files.length} files are attached and will send as soon as a gate opens.`);
-}).catch((err) => { void err; });
+}).catch((err) => {
+  try { log(`could not pick up what was shared into this app: ${err.message}`, 'warn'); } catch (inner) { void inner; }
+});
 
 // Without this, any throw inside boot left the page with NO screen visible and nothing
 // logged: a blank app and no way to tell why.

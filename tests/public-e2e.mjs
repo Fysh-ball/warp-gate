@@ -6,6 +6,8 @@
 // against a deployed instance, so it exercises Cloudflare, the tunnel, TLS and the
 // real signalling path. The room link never leaves the harness.
 
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { check, summary } from './lib/harness.mjs';
 import { launchBrowser, findBrowser } from './lib/cdp.mjs';
 
@@ -76,6 +78,35 @@ for (let i = 0; i < 30; i += 1) {
     if (r.ok) break;
   } catch (err) { void err; }
   await new Promise((r) => { setTimeout(r, 1000); });
+}
+
+// Which BUILD is being measured. Every probe below exercises behaviour that has been
+// correct for months, so all 18 pass just as happily against last week's container: a
+// green run says the deployment works, not that the deployment is this tree. That is the
+// 2026-08-10 gateway failure exactly, where the checks were sound and the bytes were old.
+//
+// There is no version endpoint to ask, and there should not be: /api/health returns
+// liveness only because a richer payload is a usage side channel. So compare the bytes
+// instead. app.js is the whole transfer path, so any change to this tree moves it.
+const localApp = createHash('sha256')
+  .update(readFileSync(new URL('../public/js/app.js', import.meta.url)))
+  .digest('hex').slice(0, 16);
+let liveApp = '(unreachable)';
+try {
+  const r = await fetch(`${ORIGIN}/js/app.js`, { signal: AbortSignal.timeout(15000) });
+  liveApp = r.ok
+    ? createHash('sha256').update(Buffer.from(await r.arrayBuffer())).digest('hex').slice(0, 16)
+    : `(http ${r.status})`;
+} catch (err) {
+  liveApp = `(fetch failed: ${err.message})`;
+}
+check('the deployment is serving THIS tree, so the probes below judge this build',
+  liveApp === localApp, `tree=${localApp} live=${liveApp}`);
+if (liveApp !== localApp) {
+  process.stdout.write('BAD  refusing to run: 18 green probes against a stale build read as a pass\n');
+  process.stdout.write('     deploy this tree first, then re-run\n');
+  summary(`public end-to-end (${ORIGIN})`);
+  process.exit(1);
 }
 
 const browser = await launchBrowser({ port: 9763, extraArgs: pin });
@@ -203,6 +234,16 @@ try {
   check('no uncaught page errors on either side',
     a.pageErrors.length === 0 && b.pageErrors.length === 0,
     [...a.pageErrors, ...b.pageErrors].join(' | '));
+
+  // Positive control for the two clearing checks below. getItem of a key that was never
+  // written is also null, so "cleared" and "never there" are the same reading: without
+  // this, both checks pass on a build that stopped storing the secret at all.
+  const held = await Promise.all([a, b].map((tab) => tab.eval(`
+    return JSON.stringify({ secret: sessionStorage.getItem('wg.secret') });
+  `)));
+  check('CONTROL: both devices are holding a room secret before anything is severed',
+    JSON.parse(held[0]).secret !== null && JSON.parse(held[1]).secret !== null,
+    held.join(' | '));
 
   await a.eval("document.getElementById('sever').click(); return true;");
   await a.waitFor("!document.getElementById('screen-severed').hidden", { timeout: 20000, label: 'gate severed' });

@@ -151,14 +151,41 @@ try {
       return true;
     `);
   }
-  // Whatever happens, the SENDER must be told, and must not sit waiting forever.
-  const senderTold = await a.waitFor(`(() => {
-    const t = document.getElementById('log').textContent;
-    return /refused the file|could not send|too large|save location/i.test(t) ? t.slice(-400) : '';
-  })()`, { timeout: 180000, label: 'the sender is told about the over-limit file' })
-    .catch((err) => `TIMEOUT: ${err.message}`);
+  // Whatever happens, the SENDER must not be left waiting with no information: either a
+  // refusal or send failure is surfaced, or the transfer is genuinely moving and ends
+  // (this browser streams over-limit receives into the download manager, so acceptance
+  // and completion are a legitimate outcome). A fixed duration cannot tell a slow
+  // healthy transfer from a wedged one, so progress is what resets the clock.
+  const overOutcome = await (async () => {
+    const deadline = Date.now() + 600000;
+    let lastSent = -1;
+    let lastMove = Date.now();
+    for (;;) {
+      const st = JSON.parse(await a.eval(`
+        const t = document.getElementById('log').textContent;
+        const r = __wgRows().find(x => x.title.includes('over-500MiB.bin'));
+        return JSON.stringify({
+          told: /refused the file|could not send|too large|save location/i.test(t) ? t.slice(-400) : '',
+          status: r ? r.status : '', sent: r ? Number(r.sent) : -1, total: r ? Number(r.total) : -1,
+        });
+      `));
+      if (st.told) return { kind: 'told', detail: st.told.slice(-300) };
+      if (st.sent >= 0 && st.sent >= st.total && /sent/i.test(st.status)) {
+        return { kind: 'completed', detail: `${st.status} ${st.sent}/${st.total}` };
+      }
+      if (st.sent !== lastSent) { lastSent = st.sent; lastMove = Date.now(); }
+      else if (Date.now() - lastMove > 120000) {
+        return { kind: 'stalled', detail: `no progress for 120s at ${st.sent}/${st.total}, status "${st.status}"` };
+      }
+      if (Date.now() >= deadline) {
+        return { kind: 'timeout', detail: `still unresolved after 600s at ${st.sent}/${st.total}, status "${st.status}"` };
+      }
+      await new Promise((res) => setTimeout(res, 5000));
+    }
+  })();
   check('a file over MEMORY_LIMIT_BYTES ends with the SENDER told why, not left waiting',
-    !String(senderTold).startsWith('TIMEOUT'), String(senderTold).slice(-300));
+    overOutcome.kind === 'told' || overOutcome.kind === 'completed',
+    `${overOutcome.kind}: ${overOutcome.detail}`);
 
   const stuck = await a.eval(`
     const rs = __wgRows().filter(r => r.title.includes('over-500MiB.bin'));

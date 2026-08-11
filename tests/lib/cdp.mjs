@@ -266,7 +266,10 @@ export async function launchBrowser({ port = 9333, extraArgs = [] } = {}) {
   const tabs = [];
 
   async function newTab(url) {
-    const res = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' });
+    // Unbounded, this hangs the whole suite when the browser accepts the connection and
+    // then stops answering: every later timeout is measured from a tab that never opened.
+    const res = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`,
+      { method: 'PUT', signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`could not open a tab: http ${res.status} ${await res.text()}`);
     const info = await res.json();
     const ws = new WebSocket(info.webSocketDebuggerUrl);

@@ -129,7 +129,10 @@ conclusions:
 - Check the address bar before sending anything sensitive.
 - If you need certainty, **host it yourself from source you have read**. Warp Gate has no
   dependencies and no build step precisely so that this is realistic: the files served
-  are the files in this repository, and there are about twenty of them.
+  are the files in this repository, 49 of them under `public/`.
+- Or install the browser extension, which ships the same client inside a store-signed
+  package so the server never chooses what code runs: see [EXTENSION.md](EXTENSION.md)
+  for what that buys and what it costs.
 - For something truly high-stakes, encrypt it yourself before sending it, so a
   compromised page never sees plaintext at all.
 

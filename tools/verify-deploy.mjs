@@ -4,7 +4,10 @@
 //
 // The reference side is a server started from THIS TREE on a private port, so every
 // expectation comes from the code rather than from a value typed here that drifts the
-// moment somebody edits a header. Exit 0 when everything matches, 1 otherwise.
+// moment somebody edits a header. Exit 0 when everything matches AND every probe's
+// needle is still alive in this tree, 1 otherwise: a probe whose needle has left the
+// reference side compares absent against absent forever, and that is reported as
+// VACUOUS rather than counted as a match.
 //
 // How to use it, and the part that makes it evidence rather than decoration:
 //
@@ -60,10 +63,38 @@ async function up() {
 }
 
 let pass = 0, fail = 0, vacuous = 0;
+
+// The two boolean fields whose healthy value on the reference side is false: both assert
+// the ABSENCE of something (the blanket reduced-motion nuke, the FAQ sentence denying the
+// extension exists). Every other boolean is a presence needle and must be true against
+// this tree, every status must be 2xx, and no string may be the '(absent)' sentinel:
+// otherwise the needle has died in the tree, both sides agree on nothing, and the probe
+// is measuring nothing. A new negated field must be named here or it reads as dead.
+const EXPECT_FALSE = new Set(['nuke', 'deniedItExists']);
+
+function deadNeedles(v, key = '', path = '', out = []) {
+  if (typeof v === 'boolean') {
+    if (v === EXPECT_FALSE.has(key)) out.push(path);
+  } else if (typeof v === 'string') {
+    if (v === '(absent)') out.push(path);
+  } else if (typeof v === 'number') {
+    if (/status$/i.test(key) && !(v >= 200 && v < 300)) out.push(path);
+  } else if (v && typeof v === 'object') {
+    for (const [k, val] of Object.entries(v)) deadNeedles(val, k, path ? `${path}.${k}` : k, out);
+  }
+  return out;
+}
+
 function report(name, refVal, tgtVal) {
   const same = JSON.stringify(refVal) === JSON.stringify(tgtVal);
+  const dead = typeof refVal === 'string' && refVal.startsWith('REF-ERROR')
+    ? [] // already loud: the error string cannot equal the target side
+    : deadNeedles(refVal, name);
   const line = `${name}\n     tree=${JSON.stringify(refVal)}\n     live=${JSON.stringify(tgtVal)}`;
-  if (same) { pass++; console.log('OK   ' + line); }
+  if (dead.length) {
+    vacuous++;
+    console.log(`VACUOUS ${line}\n     dead in this tree: ${dead.join(', ') || name}`);
+  } else if (same) { pass++; console.log('OK   ' + line); }
   else { fail++; console.log('BAD  ' + line); }
   return same;
 }
@@ -433,7 +464,8 @@ const probes = [
         tolerates: resume.text.includes('offset < 0 || offset > at'),
         strictGone: !resume.text.includes('offset !== at'),
         // A `let` deadline is the tell: the wall-clock version could not be reassigned.
-        deadlineMoves: peer.text.includes('let deadline = Date.now() + DRAIN_TIMEOUT_MS'),
+        // The clock became performance.now() on 2026-08-11; the needle follows the tree.
+        deadlineMoves: peer.text.includes('let deadline = performance.now() + DRAIN_TIMEOUT_MS'),
         handsBackOvershoot: peer.text.includes('if (late > 0) deadline += late;'),
       };
     },
@@ -470,8 +502,12 @@ for (const p of probes) {
   report(p.name, refVal, tgtVal);
 }
 
-console.log(`\n${pass} match, ${fail} differ`);
+console.log(`\n${pass} match, ${fail} differ, ${vacuous} vacuous`);
+if (vacuous > 0) {
+  console.log('VACUOUS probes have lost their needle in this tree: they can no longer fail,');
+  console.log('so they prove nothing about the deployment. Repair or retire them.');
+}
 srv.kill('SIGTERM');
 await sleep(300);
 srv.kill('SIGKILL');
-process.exit(fail === 0 ? 0 : 1);
+process.exit(fail === 0 && vacuous === 0 ? 0 : 1);

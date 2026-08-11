@@ -63,7 +63,10 @@ export const ORIGIN_KEY = 'wg.signalOrigin';
  * http is permitted only for loopback. A plain-http signalling server on a real network is
  * a downgrade of the transport the whole product depends on, and refusing it here is
  * cheaper than explaining it later. Loopback is exempt because a self-hoster testing on
- * 127.0.0.1 has no TLS to terminate and no network to intercept.
+ * 127.0.0.1 has no TLS to terminate and no network to intercept. `[::1]` is deliberately
+ * NOT on the loopback list: it is in neither host_permissions nor the manifest CSP's
+ * connect-src, and optional_host_permissions is https-only, so accepting it here would
+ * only defer the refusal to a permission error at Save and a CSP block at runtime.
  *
  * @param {string} raw
  * @returns {{ ok: true, origin: string } | { ok: false, reason: string }}
@@ -83,7 +86,7 @@ export function parseOrigin(raw) {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     return { ok: false, reason: `scheme ${url.protocol} is not http or https` };
   }
-  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
   if (url.protocol === 'http:' && !loopback) {
     return { ok: false, reason: 'plain http is only allowed for localhost' };
   }

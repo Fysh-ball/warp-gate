@@ -4,9 +4,12 @@ Written to be precise rather than reassuring. If something is not protected, it 
 
 ## The construction, in one paragraph
 
-A 128-bit room secret is generated in the creating browser and never sent to the
-server: it lives in the URL fragment, which browsers do not transmit, and it reaches
-each joining device by QR code or by a link you share. The room id the server sees is
+The creating browser draws an eight-word gate code from a fixed 7776-word list, worth
+103 bits, and stretches it into the 128-bit-wide room secret with PBKDF2-HMAC-SHA256 at
+600,000 iterations (`public/js/crypto.js`; the arithmetic is in DESIGN.md 3.2). The
+secret is derived from the code, never generated directly, and never sent to the
+server: the code lives in the URL fragment, which browsers do not transmit, and it
+reaches each joining device by QR code or by a link you share. The room id the server sees is
 derived from that secret through HKDF, so it reveals nothing. A gate seats up to six
 devices (`WG_MAX_PARTICIPANTS`, operator-configurable), and **every pair of devices**
 performs its own ephemeral ECDH P-256 exchange, mixes the room secret into that
@@ -28,14 +31,15 @@ schedule.
 |---|---|---|
 | The server operator reading messages or files | Payload keys come from ECDH plus a secret the server never receives | Holds only while the server serves honest code: see "You are trusting whoever serves the page" |
 | The server being compromised *after* you loaded the page | It holds no plaintext and no keys at any point. Gate state is a memory map with no storage layer behind it | None for anything sent through a gate. If the operator enabled the suggestion box there is one file on disk, holding suggestions and nothing from the signalling side: see "The suggestion box" below |
-| The server or Cloudflare learning peer IP addresses from the SDP | Signalling payloads are encrypted under a key derived from the room secret, so the relay sees only `{n, c}` | Cloudflare still sees every participant's client IP from the HTTP connections themselves |
+| The server or Cloudflare learning peer IP addresses from the SDP | Signalling payloads are encrypted under a key derived from the room secret, so the relay sees only `{n, c}`. On delivery it stamps the sender's seat id beside the envelope as `sfrom`: that names a seat it already authenticated by token, never anything from inside the envelope | Cloudflare still sees every participant's client IP from the HTTP connections themselves |
+| A participant forging the sender of a signalling frame | The server stamps the token-authenticated seat id (`sfrom`) beside the sealed envelope, and the client drops any frame where it is missing or disagrees with the sealed `from` (`public/js/signal.js`) | The server is trusted for that attribution: a hostile server could mis-attribute signalling frames, but it still cannot forge the sealed body or pass key confirmation |
 | An active man in the middle at the signalling layer | Each pair's key schedule mixes the room secret, and the two ends of every link exchange an explicit key confirmation before the UI reports that link connected | Someone who obtains the link is not a man in the middle; they are a participant |
 | Someone who obtains the link but not the room password | If a password was set, the key schedule needs it as well: PBKDF2-HMAC-SHA256 at 600,000 iterations, salted with the room secret, appended to the HKDF salt | Only helps if a password was set and did not travel alongside the link. The server does not and cannot enforce it |
 | Recording traffic now to decrypt later | Session keys need the ephemeral ECDH secret, which dies with the tab | None for message and file content |
 | Tampering with any payload | AEAD on every frame; a single altered bit fails authentication and the frame is dropped | None |
 | Replaying a captured frame | A strictly increasing per-direction counter, bound into both the nonce and the authenticated data | None |
 | Passing a file chunk off as a chat message | The frame type is authenticated, so relabelling breaks the tag | None |
-| Guessing a room code to read traffic | The room id is derived from a 128-bit secret; holding the id does not yield the secret, and key confirmation fails | A guessed id can confirm a room exists, and that probe is rate limited. It can no longer take a seat: see the next row |
+| Guessing a room code to read traffic | The room id is derived one-way from the room secret, whose 103 bits of entropy sit behind 600,000 PBKDF2 iterations; holding the id does not yield the secret, and key confirmation fails | A guessed id can confirm a room exists, and that probe is rate limited. It can no longer take a seat: see the next row |
 | A device without the link taking a seat | Joining requires presenting a proof derived from the room secret (a one-way HKDF value; the server stores only its hash and compares in constant time), and each seated participant holds an unguessable capability token. Rooms also cap at a configured seat limit (`WG_MAX_PARTICIPANTS`, default 6) | Anyone who obtains the link holds the secret, so they can take a seat: they are a participant, not an intruder |
 | Data outliving the session | Gate state is a single in-memory map. No database, no logs, and a restart destroys every room | None for gate content. The optional suggestion box is the one exception and it is a separate store: what you type into it is meant to outlive your session |
 | A session being reused after expiry | Idle, hard and absolute deadlines plus a sweeper, and the room is deleted on sever | None |
@@ -140,10 +144,24 @@ What follows from that:
    what is meant to be running and host it yourself. Warp Gate is AGPL-3.0 and section 13
    requires that offer to be a real one.
 3. **If you need certainty, host it yourself** from source you have read. That is the
-   only configuration where the trust question has a definite answer, and it is why the
+   configuration where the trust question answers itself, and it is why the
    project has no dependencies and no build step: the files served are the files in the
    repository, and you can read all of them.
-4. For something truly high-stakes, encrypt it yourself before sending it, so that a
+4. **The browser extension takes the client out of the delivery path.** `extension/`
+   ships the same client inside an MV3 package, installed once through a store's signed
+   channel instead of arriving from the server on every visit, so the party that
+   terminates TLS no longer chooses what code runs. Say what that costs with the same
+   precision as the rest of this document. The trust root moves rather than vanishes:
+   it is now the store's review and signing channel, and the manifest pins no Chromium
+   extension id, so the package proves it came through a store, not that it is this
+   repository's build. Retargeting the signalling origin is a feature (the server is
+   the untrusted party here), and it is granted through
+   `optional_host_permissions: ["https://*/*"]`, a user-gesture grant that can widen
+   the extension's reach to any https origin the user approves. And the signalling
+   metadata is unchanged: who connected to whom, when, and from which address is
+   exactly as visible to the server and its CDN as before. See `EXTENSION.md` and
+   `extension/README.md`.
+5. For something truly high-stakes, encrypt it yourself before sending it, so that a
    compromised page never sees the plaintext at all.
 
 ### This is not hypothetical, and it is happening on the official instance
@@ -171,8 +189,10 @@ Two things about it are worth knowing.
   dashboard toggle nobody in this repository controls.
 - **The CSP is a mitigation, not the answer.** It held because the injection was an
   inline script. The same party could serve a modified `app.js` from the same origin, and
-  `'self'` permits that by definition. There is no header that fixes that case. Point 3
-  above is still the only configuration where the trust question has a definite answer.
+  `'self'` permits that by definition. There is no header that fixes that case. What
+  answers it is taking delivery out of the request path: host it yourself from source
+  you have read (point 3), or install the extension (point 4), which ships the client
+  in a package this party never touches.
 
 ## Not protected against
 
@@ -240,13 +260,14 @@ link.** An earlier version of this document said there was no password option. T
 one now, and this is what it does and does not do.
 
 When the creator sets a password, it is stretched with **PBKDF2-HMAC-SHA256 at 600,000
-iterations**, salted with the 128-bit room secret itself (`secret || "wg/v1/password"`),
+iterations**, salted with the room secret itself (`secret || "wg/v1/password"`),
 and the result is **appended to the room secret in the HKDF salt** of the session key
 schedule. So the derived keys depend on both values. Someone who has the link but not
 the password derives different keys, fails key confirmation, and gets nothing.
 
 Why that is not the trap a spoken password usually is: the password is never the only
-secret. The 128-bit link secret is still there and still doing the authentication work.
+secret. The link secret, 103 bits behind its own 600,000-iteration stretch, is still
+there and still doing the authentication work.
 An observer of the signalling channel has no offline target to grind, because they do
 not hold the link secret either. The password's actual job is the case where **the link
 leaks** but the password did not travel with it: pasted into the wrong chat, shoulder
@@ -262,7 +283,8 @@ What it is not:
 - **It is not a PAKE.** A password used as the sole secret would still need CPace or
   similar, and no reviewed browser implementation is obtainable under this project's
   no-dependency constraint. That reasoning has not changed. What changed is that the
-  password here is layered on top of a 128-bit secret rather than standing in for one.
+  password here is layered on top of a high-entropy link secret rather than standing in
+  for one.
 - **It does not stop someone who has the link from occupying a seat.** The server
   admits anyone who proves knowledge of the link secret, and the password never reaches
   it, so a person with the link but not the password can still take a seat: they derive

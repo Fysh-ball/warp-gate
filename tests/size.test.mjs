@@ -54,17 +54,24 @@ const JS = path.join(ROOT, 'public', 'js');
  */
 function staticImports(source) {
   const out = [];
+  // Same comment strip as dynamicImports, for the same reason: a commented-out import
+  // would keep a deleted module "on the eager graph".
+  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const re = /(?:^|\n)\s*(?:import|export)\b[^'"()]*?['"]([^'"]+)['"]/g;
   let m;
-  while ((m = re.exec(source)) !== null) out.push(m[1]);
+  while ((m = re.exec(stripped)) !== null) out.push(m[1]);
   return out;
 }
 
 function dynamicImports(source) {
   const out = [];
+  // Comments are stripped first: an import() inside a comment is not an edge, and the
+  // reachability checks below exist to notice a call site being deleted. Matching the
+  // commented-out corpse of one would keep them green through exactly that deletion.
+  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const re = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
   let m;
-  while ((m = re.exec(source)) !== null) out.push(m[1]);
+  while ((m = re.exec(stripped)) !== null) out.push(m[1]);
   return out;
 }
 

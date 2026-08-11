@@ -467,16 +467,20 @@ export class Peer extends EventTarget {
         // stops reading dispatches nothing. Waiting on events alone wedged send() -- and
         // with it session.sendFile's `for await` -- forever, listeners still attached.
         // Running time, not wall-clock time. A backgrounded tab has its timers clamped to
-        // about a second and a frozen one runs none at all, while Date.now() keeps moving,
-        // so a fixed wall-clock deadline fires the moment the page thaws and reports the
+        // about a second and a frozen one runs none at all, while the clock keeps moving,
+        // so a fixed deadline fires the moment the page thaws and reports the
         // peer as dead for something this page did. link.js guards its two auth timers with
         // sleptThrough() for exactly this reason; that helper is not importable from here,
         // and it does not need to be: a poll that was due 250ms ago and ran 40s ago says the
         // same thing more directly. Only the OVERSHOOT is given back, so a hidden page that
-        // is genuinely blocked still times out, at roughly four times the interval a clamped
-        // poll can measure, rather than never.
-        let deadline = Date.now() + DRAIN_TIMEOUT_MS;
-        let lastTick = Date.now();
+        // is genuinely blocked still times out, after the full DRAIN_TIMEOUT_MS /
+        // DRAIN_POLL_MS = 120 polls at whatever interval the clamp allows (two minutes at
+        // a 1s clamp), rather than never.
+        // performance.now(), not Date.now(): the deadline must be monotonic. Date.now()
+        // follows wall-clock steps, so a backward step (NTP, DST fix) pushes rejection
+        // out by the size of the step while the poll runs the whole time.
+        let deadline = performance.now() + DRAIN_TIMEOUT_MS;
+        let lastTick = performance.now();
         let poll = null;
         const cleanup = () => {
           if (poll) { clearInterval(poll); poll = null; }
@@ -487,7 +491,7 @@ export class Peer extends EventTarget {
         const onLow = () => { cleanup(); resolve(); };
         const onClose = () => { cleanup(); reject(new Error('data channel closed while waiting to drain')); };
         poll = setInterval(() => {
-          const now = Date.now();
+          const now = performance.now();
           const late = now - lastTick - DRAIN_POLL_MS;
           lastTick = now;
           if (late > 0) deadline += late;

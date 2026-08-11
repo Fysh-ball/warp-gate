@@ -67,6 +67,13 @@ try {
     [webp, 'pic.webp'], [avif, 'pic.avif']]) {
     await a.setFileInput('#file-input', [file]);
     await waitRow(b, label);
+    // Save arrives first; the preview is decorated AFTER it and never awaited
+    // (app.js renderFilePreview), and the first row also pays the dynamic import of
+    // preview.js. Wait for the preview to settle before asserting on it.
+    await b.waitFor(`(() => {
+      const r = __wgRows().find(x => x.title.includes(${JSON.stringify(label)}));
+      return Boolean(r && ((r.img && r.img.complete) || /did not open/i.test(r.text)));
+    })()`, { timeout: 30000, label: `${label} preview settled` });
     const row = await rowFor(b, label);
     const got = await digestReceived(b, row.id);
     check(`${label}: content matches the source exactly`, got === chainHashFile(file), `want ${chainHashFile(file)} got ${got}`);
@@ -114,6 +121,15 @@ try {
     many.push(w(`batch-${i}.png`, Buffer.concat([bytes, Buffer.from(`\n<!--${i}-->`)])));
   }
   await a.setFileInput('#file-input', many);
+  // Several files chosen at once are announced as ONE batch with a single Accept
+  // (batchui.js): nothing is sent until the receiver spends that one gesture.
+  await b.waitFor("__wgRows().some(r => r.buttons.some(t => /^Accept \\d+ files/.test(t)))",
+    { timeout: 30000, label: 'the batch offer with its single Accept' });
+  await b.eval(`
+    const btn = [...document.querySelectorAll('#messages button')].find(x => /^Accept \\d+ files/.test(x.textContent));
+    btn.click();
+    return true;
+  `);
   await b.waitFor("__wgRows().filter(r => /batch-\\d\\.png/.test(r.title) && r.buttons.includes('Save')).length === 6",
     { timeout: 90000, label: 'all six batched images received' });
   let allMatched = true;
@@ -169,6 +185,14 @@ try {
     const veilUp = !document.getElementById('drop-veil').hidden;
     window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
     return veilUp;
+  `);
+  // A multi-file drop is announced as a batch too, behind the same single Accept.
+  await b.waitFor("__wgRows().some(r => r.buttons.some(t => /^Accept \\d+ files/.test(t)))",
+    { timeout: 30000, label: 'the dropped batch offer with its single Accept' });
+  await b.eval(`
+    const btn = [...document.querySelectorAll('#messages button')].find(x => /^Accept \\d+ files/.test(x.textContent));
+    btn.click();
+    return true;
   `);
   await b.waitFor("__wgRows().filter(r => /dropped-\\d\\.png/.test(r.title) && r.buttons.includes('Save')).length === 3",
     { timeout: 90000, label: 'all three dropped images received' });

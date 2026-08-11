@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { check, summary, startServer, request, makeJoinProof } from './lib/harness.mjs';
+import { check, summary, startServer, request, makeJoinProof, freePort } from './lib/harness.mjs';
 import { launchBrowser, findBrowser } from './lib/cdp.mjs';
 import { deriveSecret, deriveRoomId, deriveJoinProof } from '../public/js/crypto.js';
 import {
@@ -22,9 +22,9 @@ import {
 // A collision here does not read as a collision: the server refuses to bind, the page never
 // loads, and every geometry number comes back zero, which is a shape this file has no way to
 // tell apart from a stylesheet that stopped applying.
-const PORT = Number(process.env.WG_BROWSER_PORT || 3785);
+const PORT = Number(process.env.WG_BROWSER_PORT || 0) || await freePort(3785);
 const STUN = Number(process.env.WG_BROWSER_STUN || 3786);
-const CDP_PORT = Number(process.env.WG_BROWSER_CDP || 9762);
+const CDP_PORT = Number(process.env.WG_BROWSER_CDP || 0) || await freePort(9762);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 // The gate is its own document. ORIGIN is the LANDING, which holds no gate machinery
 // at all, so anything driving a room, a key or a screen has to be pointed here.
@@ -2349,13 +2349,24 @@ try {
   // the check that it is a gate rather than a decoration.
   await a.waitFor("!document.getElementById('net-modal').hidden", { timeout: 20000, label: 'the exposure notice' });
   // The notice is un-hidden and opaque in two steps, 180ms apart, so that it fades in
-  // rather than appearing mid-sentence. Sampling opacity the instant it stops being
-  // hidden measures the start of that fade and reports 0.
-  await new Promise((r) => setTimeout(r, 400));
+  // rather than appearing mid-sentence. This used to sleep a fixed 400ms and sample once,
+  // which measures the scheduler on a loaded box: a descheduled renderer read opacity 0
+  // at load average ~20 with the fade working perfectly. The claim is that the fade
+  // COMPLETES, so poll until it does or a 5s deadline reports how far it got. A broken
+  // fade still fails, now with the stalled opacity and how long it was given.
   const heldBack = await a.eval(`
+    const modal = document.getElementById('net-modal');
+    const t0 = performance.now();
+    let opacity = 0;
+    while (performance.now() - t0 < 5000) {
+      opacity = Number(getComputedStyle(modal).opacity);
+      if (opacity > 0.9) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
     return JSON.stringify({
       waiting: !document.getElementById('screen-waiting').hidden,
-      opacity: Number(getComputedStyle(document.getElementById('net-modal')).opacity),
+      opacity,
+      waitedMs: Math.round(performance.now() - t0),
       focused: document.activeElement && document.activeElement.id,
     });
   `);
@@ -2560,7 +2571,10 @@ try {
     canonicalNames(rosterA.names) === canonicalNames(rosterB.names),
     `${JSON.stringify(rosterA.names)} vs ${JSON.stringify(rosterB.names)}`);
   check('including each device\'s name for itself, which is what the other one calls it',
-    rosterA.names[rosterA.self] === rosterB.names[rosterA.self]
+    // Presence first: with a missing self id both lookups are undefined, and
+    // undefined === undefined passed this check over a roster that named nobody.
+    Boolean(rosterA.names[rosterA.self]) && Boolean(rosterB.names[rosterB.self])
+    && rosterA.names[rosterA.self] === rosterB.names[rosterA.self]
     && rosterB.names[rosterB.self] === rosterA.names[rosterB.self],
     `${JSON.stringify(rosterA)} | ${JSON.stringify(rosterB)}`);
 
@@ -2721,15 +2735,45 @@ try {
   await b.waitFor("[...document.querySelectorAll('#messages button')].some(x => x.textContent === 'Save')",
     { timeout: 40000, label: 'file fully received by tab B' });
 
-  const rowText = await b.eval("return document.getElementById('messages').textContent;");
+  // The file's OWN row title, not the whole transcript: the old form ran /293|300|0.3/
+  // over a transcript full of hex UUIDs, which contain those digits often enough that the
+  // size could be wrong or absent and the check still green.
+  const fileTitle = await b.eval(`return [...document.querySelectorAll('#messages .file-title')]
+    .map((x) => x.textContent).find((t) => t.includes('payload.bin')) ?? '';`);
   check('the received file shows its real name and size',
-    rowText.includes('payload.bin') && /293|300|0\.3/.test(rowText), rowText.slice(-140));
+    fileTitle === 'payload.bin (300 KB)', JSON.stringify(fileTitle));
 
   const senderLog = await a.eval("return document.getElementById('log').textContent;");
   check('no chunk was rejected during the transfer',
     !/frame rejected/.test(senderLog) && !/frame rejected/.test(await b.eval("return document.getElementById('log').textContent;")),
     'a frame was rejected mid-transfer');
-  void digest;
+
+  // The bytes themselves, not the row about them. Save hands the received Blob to
+  // URL.createObjectURL, so capturing that call gets the exact bytes the receiver holds;
+  // the anchor click is stubbed for the duration so headless Chromium does not also write
+  // a real download. Hashed in the page and compared against the sender's digest.
+  const received = JSON.parse(await b.eval(`
+    const realCreate = URL.createObjectURL.bind(URL);
+    const realClick = HTMLAnchorElement.prototype.click;
+    const blobs = [];
+    URL.createObjectURL = (blob) => { blobs.push(blob); return realCreate(blob); };
+    HTMLAnchorElement.prototype.click = function () {};
+    try {
+      [...document.querySelectorAll('#messages button')].find((x) => x.textContent === 'Save').click();
+      const blob = blobs[blobs.length - 1];
+      if (!blob) return JSON.stringify({ size: -1, hash: 'no blob captured' });
+      const buf = await blob.arrayBuffer();
+      const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))]
+        .map((x) => x.toString(16).padStart(2, '0')).join('');
+      return JSON.stringify({ size: blob.size, hash });
+    } finally {
+      URL.createObjectURL = realCreate;
+      HTMLAnchorElement.prototype.click = realClick;
+    }
+  `));
+  check('the received bytes hash to the sender\'s digest, byte for byte',
+    received.size === payload.length && received.hash === digest,
+    `size ${received.size}/${payload.length}, hash ${received.hash.slice(0, 16)}../${digest.slice(0, 16)}..`);
 
   // An image should appear inline rather than only as a download.
   const png = Buffer.from(

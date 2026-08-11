@@ -14,7 +14,7 @@
 // (app.html has no cards and no modal markup), while the source link is a licence obligation
 // both documents carry. Splitting them is what took the panel off the gate's load path.
 import { wireSupport } from './support.js';
-import { applySourceLink } from './common.js';
+import { applySourceLink, instanceKind } from './common.js';
 
 // Links minted before the split were `/#WARP-...`, and they are printed on QR codes
 // and pasted into chats that nobody can go back and edit. The fragment never reaches
@@ -32,6 +32,19 @@ if (/^#WARP-/i.test(location.hash)) {
   location.replace(`/app${location.hash}`);
 }
 
+// The hero's eyebrow is static copy written for the canonical host, so a self-hosted
+// copy served it verbatim and told every visitor it was "the only official instance".
+// Same classification the gate document uses for its instance disclosure, from common.js.
+{
+  const brow = document.querySelector('.lp-hero-brow');
+  const kind = instanceKind();
+  if (brow && kind !== 'official') {
+    brow.textContent = kind === 'local'
+      ? `${location.hostname}\u00a0/\u00a0your own copy`
+      : `${location.hostname}\u00a0/\u00a0not the official instance`;
+  }
+}
+
 const WORDS = [
   'Friends', 'Sysadmins', 'Regular people', 'Family', 'Photographers',
   'Yourself', 'Roommates', 'Freelancers', 'Journalists', 'Students',
@@ -39,6 +52,28 @@ const WORDS = [
 ];
 
 const FLIP_MS = 2400;
+
+// The word was drawn by walking WORDS in order, so every visit recited the same list from
+// the same place: the first four were the only ones most people ever saw, and the last few
+// needed half a minute of staring to reach. Draw from a shuffled bag instead. Every word
+// comes up once before any of them comes up twice, which pure random does not give you,
+// and the order is different on each load.
+let bag = [];
+function nextWord(previous) {
+  if (!bag.length) {
+    bag = WORDS.slice();
+    for (let i = bag.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [bag[i], bag[j]] = [bag[j], bag[i]];
+    }
+    // A bag refills without knowing what the old one ended on, and that seam is the one
+    // place the same word can still land twice running. Push it to the back of the queue.
+    if (bag.length > 1 && bag[bag.length - 1] === previous) {
+      [bag[bag.length - 1], bag[0]] = [bag[0], bag[bag.length - 1]];
+    }
+  }
+  return bag.pop();
+}
 
 // ------------------------------------------------------- the pause control (SC 2.2.2)
 //
@@ -230,7 +265,7 @@ if (shell && box && box.children.length === 4) {
     queued = requestAnimationFrame(() => { queued = 0; size(); });
   });
 
-  for (let i = 0; i < faces.length; i += 1) faces[i].textContent = WORDS[i];
+  for (let i = 0; i < faces.length; i += 1) faces[i].textContent = nextWord(null);
 
   const flipTimer = setInterval(() => {
     // Reduced motion is a standing preference, not a pause, so the timer goes away for
@@ -251,7 +286,7 @@ if (shell && box && box.children.length === 4) {
     // Re-label the face that is currently behind the box, one quarter turn ahead
     // of where it will be needed, so the swap is never visible.
     const incoming = (step + 1) % faces.length;
-    faces[incoming].textContent = WORDS[(step + 1) % WORDS.length];
+    faces[incoming].textContent = nextWord(faces[step % faces.length].textContent);
   }, FLIP_MS);
 }
 
@@ -696,6 +731,10 @@ wireSupport((message) => console.warn(`[warp gate] ${message}`));
 // it does not publish it; the two client-side copies are both advisory, and a mismatch
 // costs a refusal with a clear message rather than lost text.
 const SUGGEST_MAX = 600;
+// WG_SUGGESTIONS_MAX_TEXT_BYTES's default: the server refuses a line over this many
+// bytes with the same 400 as the character cap, and only this copy can say which one
+// the writer actually hit.
+const SUGGEST_MAX_BYTES = 1200;
 
 function armSuggestions() {
   const section = document.getElementById('suggest-section');
@@ -723,6 +762,15 @@ function armSuggestions() {
     event.preventDefault();
     const body = text.value.trim();
     if (!body) { said.textContent = 'Write something first.'; return; }
+    // The server also caps the LINE at 1200 bytes, so 401-600 CJK or emoji characters
+    // pass every character count here and are still refused. Checked before the send,
+    // and named as the byte limit it is, because "over 600 characters" was false for
+    // exactly the text that hit it.
+    if (new TextEncoder().encode(body).length > SUGGEST_MAX_BYTES) {
+      said.textContent = 'That is over the size limit: characters beyond plain letters '
+        + 'count for more than one. Trim it down a little.';
+      return;
+    }
 
     send.disabled = true;
     said.textContent = 'Sending...';
@@ -746,12 +794,14 @@ function armSuggestions() {
         429: 'That is a few in quick succession. Try again in a minute.',
         507: 'The box is full at the moment. Try again later.',
         404: 'This copy of Warp Gate does not collect suggestions.',
-        400: 'That was refused: it may be empty or over 600 characters.',
+        400: 'That was refused: it may be empty or too long.',
       }[res.status] ?? `That did not send (http ${res.status}). Try again in a moment.`;
     } catch (err) {
       // Never a bare catch: an aborted timeout and a dead network read differently to
       // whoever is looking at the console.
-      said.textContent = 'That did not send. Check the connection and try again.';
+      said.textContent = err.name === 'TimeoutError'
+        ? 'The server took too long to answer. Try again in a moment.'
+        : 'That did not send. Check the connection and try again.';
       console.warn(`[warp gate] suggestion failed: ${err.message}`);
     } finally {
       send.disabled = false;

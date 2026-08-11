@@ -8,9 +8,16 @@ set -u
 cd "$(dirname "$0")/../.."
 
 fail=0
-for t in smoke units composer-cost images weird messages large over-limit \
-         concurrency misc giant-image repro-read-error-hang repro-chat-blocked; do
-  printf '\n===== %s =====\n' "$t"
-  node "tests/stress/$t.mjs" || fail=1
+found=0
+for t in tests/stress/*.mjs; do
+  [ -e "$t" ] || continue
+  found=$((found + 1))
+  printf '\n===== %s =====\n' "$(basename "$t" .mjs)"
+  node "$t" || fail=1
 done
+if [ "$found" -eq 0 ]; then
+  printf 'BAD  tests/stress/*.mjs matched nothing: the runner ran no suites\n'
+  exit 2
+fi
+printf '\n%d stress files run\n' "$found"
 exit "$fail"

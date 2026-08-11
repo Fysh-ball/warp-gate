@@ -2,12 +2,12 @@
 //
 // Peer.send stops feeding the data channel above CHUNK_PAUSE_BYTES and waits for it to
 // drain. That wait needs a deadline, because 'bufferedamountlow' and 'close' are both
-// events that may simply never arrive. The deadline used to be wall clock:
-//
-//     const deadline = Date.now() + DRAIN_TIMEOUT_MS;
+// events that may simply never arrive. The deadline used to be wall clock
+// (Date.now() + DRAIN_TIMEOUT_MS); peer.js now reads performance.now(), and the
+// stand-in clock below swaps that same source.
 //
 // A phone that locks its screen, or a tab the user switches away from, has its timers
-// clamped to about a second and can be frozen outright, while Date.now() keeps moving.
+// clamped to about a second and can be frozen outright, while a wall clock keeps moving.
 // Thirty seconds of that and the first poll after the thaw is already past the deadline,
 // so the send rejects with "the other device stopped accepting data" about a peer that did
 // nothing wrong, and session.sendFile's loop stops. That is the user report this exists
@@ -30,7 +30,7 @@ const DRAIN_TIMEOUT_MS = 30_000;
 
 const realSetInterval = globalThis.setInterval;
 const realClearInterval = globalThis.clearInterval;
-const realNow = Date.now;
+const realNow = performance.now;
 const realSetTimeout = globalThis.setTimeout;
 
 /** Let the microtask queue and any real timer settle, on the real clock. */
@@ -64,7 +64,7 @@ async function driveSend() {
   let tick = null;
   globalThis.setInterval = (fn) => { tick = fn; return 'poll'; };
   globalThis.clearInterval = () => { tick = null; };
-  Date.now = () => clock;
+  performance.now = () => clock;
 
   // Imported INSIDE the swap so nothing in peer.js can have captured the real globals at
   // module scope. It does not today, and a test that would still pass if it did is not
@@ -96,7 +96,7 @@ async function driveSend() {
     restore() {
       globalThis.setInterval = realSetInterval;
       globalThis.clearInterval = realClearInterval;
-      Date.now = realNow;
+      performance.now = realNow;
     },
   };
 }

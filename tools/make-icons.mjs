@@ -36,7 +36,12 @@ export function readPaletteColour(css, name) {
 
 export function hexToRgb(hex) {
   const h = hex.replace('#', '');
-  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  // The palette regex accepts 3 to 8 digits. Only 3, 4, 6 and 8 are real colours; the
+  // rest used to slice past the end and hand back NaN channels, which render as black.
+  if (![3, 4, 6, 8].includes(h.length)) {
+    throw new Error(`${hex} is not a 3, 4, 6 or 8 digit hex colour`);
+  }
+  const full = h.length <= 4 ? h.split('').map((c) => c + c).join('') : h;
   return [
     parseInt(full.slice(0, 2), 16),
     parseInt(full.slice(2, 4), 16),

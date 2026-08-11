@@ -14,11 +14,11 @@ import { spawn } from 'node:child_process';
 import zlib from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { check, summary, startServer, request, delay, makeJoinProof } from './lib/harness.mjs';
+import { check, summary, startServer, request, delay, makeJoinProof, freePort } from './lib/harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const PORT = 3781;
+const PORT = await freePort(3781);
 // Every server this suite spawns beyond the first sits in a private band well clear of the
 // other suites. The offsets used to land on 3785 to 3793, which other suites in this repo
 // also use: a run could fail with EADDRINUSE for a reason that had nothing to do with the
@@ -182,7 +182,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 // against a server that actually has the variable set: a check run only with it unset
 // would pass on a build where the two documents share one policy again.
 {
-  const P = PORT + BAND + 2;
+  const P = await freePort(PORT + BAND + 2);
   const ADS = 'https://ads.example.net';
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_AD_ORIGINS: ADS,
@@ -221,7 +221,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 }
 
 {
-  const P = PORT + BAND + 1;
+  const P = await freePort(PORT + BAND + 1);
   const srv = await startServer({ WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_HSTS: '1' });
   const res = await request(P, 'GET', '/');
   check('HSTS IS sent once the deployment says TLS terminates in front',
@@ -236,7 +236,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 
 // ---------------------------------------------------------------- static containment
 {
-  const P = PORT + BAND + 2;
+  const P = await freePort(PORT + BAND + 2);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_REJECT_PER_WINDOW: '2000', WG_API_PER_WINDOW: '5000',
   });
@@ -339,7 +339,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
   // Five routes used to be entirely unmetered: /api/health, /api/config and /api/room
   // were free reads, and /api/relay and /api/bye would parse a full body from an
   // unauthenticated caller as often as asked.
-  const P = PORT + BAND + 3;
+  const P = await freePort(PORT + BAND + 3);
   const LIMIT = 4;
 
   const publicGets = [
@@ -384,7 +384,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
   // /api/relay and /api/bye sit behind the all-routes backstop rather than a limiter of
   // their own. Spend the backstop on cheap reads, then show that the two body-parsing
   // routes are refused as well.
-  const P = PORT + BAND + 4;
+  const P = await freePort(PORT + BAND + 4);
   const spend = async (port, n) => {
     for (let i = 0; i < n; i += 1) await request(port, 'GET', '/api/config');
   };
@@ -433,7 +433,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
   // A caller that keeps being refused is probing. That budget is separate and far
   // tighter than the others, and it is what stops the 404/403 split on /api/room being
   // a free room-existence oracle.
-  const P = PORT + BAND + 8;
+  const P = await freePort(PORT + BAND + 8);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_REJECT_PER_WINDOW: '5', WG_API_WINDOW_MS: '60000',
@@ -467,46 +467,48 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 {
   // Concurrent SSE streams are a gauge, not a counter: four per key, and a fifth must
   // be refused rather than quietly accepted.
-  const P = PORT + BAND + 5;
+  const P = await freePort(PORT + BAND + 5);
   const srv = await startServer({
-    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_STREAMS_PER_KEY: '2',
+    WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_STREAMS_PER_KEY: '1',
     WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
   });
-  // One stream per room, four rooms, all from the same address. Re-opening a stream for
-  // the same slot would not do: attaching a second one ends the first, so the gauge
-  // oscillates between one and two and never reaches the ceiling.
-  const rooms = ['STRM0001', 'STRM0002', 'STRM0003', 'STRM0004'];
+  // The gauge is keyed on the authenticated SEAT (room/slot), never on the address:
+  // behind one NAT hop every client shares an address, and the old per-address key let
+  // four strangers' streams lock out a fifth. Everything below runs from one address,
+  // ceiling 1, so: a second concurrent stream on the SAME seat is refused, and a stream
+  // on a DIFFERENT seat is untouched by it. That second half is the collapse the audit
+  // measured live, so it is the assertion that matters.
   const opened = [];
-  const statuses = [];
-  for (const id of rooms) {
-    const created = await request(P, 'POST', '/api/create', {
-      roomId: id, sessionMinutes: 10, joinProofHash: makeJoinProof().hash,
-    });
-    const res = await new Promise((resolve) => {
-      const req = http.get({ host: '127.0.0.1', port: P, path: `/api/events?room=${id}&token=${created.json.token}` }, resolve);
-      req.on('error', () => resolve({ statusCode: 0 }));
-      opened.push(req);
-    });
-    statuses.push(res.statusCode);
-  }
-  check('the first streams up to the per-key ceiling are accepted',
-    statuses[0] === 200 && statuses[1] === 200, `statuses ${statuses.join(',')}`);
-  check('concurrent streams past the per-key ceiling are refused',
-    statuses.filter((s) => s === 200).length === 2 && statuses.filter((s) => s === 429).length === 2,
-    `statuses ${statuses.join(',')}`);
-
-  // The gauge must come back down, or a client that reloads twice is locked out for good.
-  opened[0].destroy();
-  await delay(400);
-  const reopened = await new Promise((resolve) => {
-    const req = http.get({ host: '127.0.0.1', port: P, path: `/api/events?room=${rooms[2]}&token=x` }, resolve);
+  const openRaw = (roomId, token) => new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: P, path: `/api/events?room=${roomId}&token=${token}` }, resolve);
     req.on('error', () => resolve({ statusCode: 0 }));
     opened.push(req);
   });
-  // 403 is the right answer here (the token is wrong); what matters is that it is not
-  // 429, which would mean the closed stream never gave its slot back.
-  check('closing a stream returns its slot to the per-key gauge',
-    reopened.statusCode !== 429, `status ${reopened.statusCode}`);
+  const seatA = await request(P, 'POST', '/api/create', {
+    roomId: 'STRM0001', sessionMinutes: 10, joinProofHash: makeJoinProof().hash,
+  });
+  const seatB = await request(P, 'POST', '/api/create', {
+    roomId: 'STRM0002', sessionMinutes: 10, joinProofHash: makeJoinProof().hash,
+  });
+  const first = await openRaw('STRM0001', seatA.json.token);
+  const second = await openRaw('STRM0001', seatA.json.token);
+  const bystander = await openRaw('STRM0002', seatB.json.token);
+  check('the first stream on a seat is accepted',
+    first.statusCode === 200, `status ${first.statusCode}`);
+  check('a second concurrent stream on the SAME seat is past the per-seat ceiling and refused',
+    second.statusCode === 429, `status ${second.statusCode}`);
+  check('a stream on a DIFFERENT seat from the same address is untouched by that ceiling',
+    bystander.statusCode === 200, `status ${bystander.statusCode}`);
+
+  // The gauge must come back down, or a client that reloads twice is locked out for good.
+  // Proven with the seat's own valid token: a 200 here can only mean the closed stream
+  // gave its slot back, where the old wrong-token probe was answered 403 before the
+  // gauge was ever consulted.
+  opened[0].destroy();
+  await delay(400);
+  const reopened = await openRaw('STRM0001', seatA.json.token);
+  check('closing a stream returns its slot to the per-seat gauge',
+    reopened.statusCode === 200, `status ${reopened.statusCode}`);
 
   for (const req of opened) { try { req.destroy(); } catch (err) { void err; } }
   await srv.stop();
@@ -518,7 +520,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
   // the process: a few thousand cancelled loads and the server can no longer open a
   // file or accept a connection. The fix is pipeline(), which tears the read stream
   // down when its destination dies.
-  const P = PORT + BAND + 6;
+  const P = await freePort(PORT + BAND + 6);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_PUBLIC_GET_PER_WINDOW: '50000', WG_API_PER_WINDOW: '50000',
@@ -617,7 +619,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 
 // ---------------------------------------------------------------- malformed requests
 {
-  const P = PORT + BAND + 7;
+  const P = await freePort(PORT + BAND + 7);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_REJECT_PER_WINDOW: '2000', WG_API_PER_WINDOW: '5000', WG_PUBLIC_GET_PER_WINDOW: '2000',
@@ -668,7 +670,7 @@ function rawGet(port, target, { method = 'GET', headers = [] } = {}) {
 // hand-written, comment-heavy front end raw. These checks are about the server, so they
 // are made against the server, not against the deployment in front of it.
 {
-  const P = PORT + BAND + 8;
+  const P = await freePort(PORT + BAND + 8);
   const srv = await startServer({ WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0' });
 
   // The shared helper decodes the body as utf8, which turns a gzip stream into mojibake.
@@ -765,7 +767,7 @@ function bootOutcome(env) {
 }
 
 {
-  const P = PORT + BAND + 9;
+  const P = await freePort(PORT + BAND + 9);
   const base = { WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0' };
 
   // CONTROL FIRST. Every assertion below is "the process exited 1", which a server that
@@ -786,16 +788,23 @@ function bootOutcome(env) {
     ['WG_HEARTBEAT_MS', ' ', 'silently the default'],
   ];
   for (const [name, value, wasInterpretedAs] of badInts) {
-    const outcome = await bootOutcome({ ...base, [name]: value });
     // A blank value is the one case that is legitimately the default rather than an
     // error: an operator who writes FOO= in a compose file means "leave it alone".
     const wantExit = value.trim() === '' ? 0 : 1;
     if (wantExit === 1) {
+      const outcome = await bootOutcome({ ...base, [name]: value });
       check(`${name}=${value} refuses to boot rather than becoming ${wasInterpretedAs}`,
         outcome.code === 1 && outcome.err.includes(name),
         `exit ${outcome.code}: ${JSON.stringify(outcome.err.slice(0, 200))}`);
       check(`...and says so before listening, not at first request`,
         !/warp-gate http/.test(outcome.out), JSON.stringify(outcome.out.slice(0, 200)));
+    } else {
+      // This row used to emit ZERO checks: it walked the whole boot and asserted
+      // nothing, so a server that started refusing whitespace would never be seen here.
+      const srv = await startServer({ ...base, [name]: value });
+      check(`${name}=${JSON.stringify(value)} boots as ${wasInterpretedAs} rather than refusing`,
+        /warp-gate http/.test(srv.stdout()), JSON.stringify(srv.stdout().slice(0, 200)));
+      await srv.stop();
     }
   }
 
@@ -850,7 +859,7 @@ function bootOutcome(env) {
   // There is no symlink in public/ today. This plants one, so the check is measured
   // against the state it exists for rather than against its absence, and removes it in a
   // finally plus an exit hook so a crash cannot leave it behind.
-  const P = PORT + BAND + 10;
+  const P = await freePort(PORT + BAND + 10);
   const secret = path.join(ROOT, `.wg-symlink-target-${process.pid}`);
   // No .html suffix: the containment block above enumerates public/*.html and expects
   // every one of them to serve 200, and a probe file has no business appearing in that.
@@ -900,7 +909,7 @@ function bootOutcome(env) {
   // /api/suggest are reachable as the visitor. Write-only, since no CORS header is ever
   // set and the response cannot be read back, but burning a visitor's create budget and
   // posting suggestions as them are both real.
-  const P = PORT + BAND + 11;
+  const P = await freePort(PORT + BAND + 11);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
@@ -957,7 +966,7 @@ function bootOutcome(env) {
   // nobody's fault) could take live /api/events reconnects and /api/relay offline for the
   // rest of the window. Behind a proxy whose address is not trusted, every one of those
   // users shares a single key, so thirty of them is one bucket.
-  const P = PORT + BAND + 12;
+  const P = await freePort(PORT + BAND + 12);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_REJECT_PER_WINDOW: '3', WG_API_WINDOW_MS: '60000',
@@ -1029,15 +1038,18 @@ function bootOutcome(env) {
     !/req\.setTimeout\(0\)/.test(indexSrc) && !/res\.setTimeout\(0\)/.test(indexSrc),
     'server/index.js still calls setTimeout(0) before handleApi');
 
-  const gate = signalSrc.indexOf("if (!slot) return fail(res, 403, 'bad_token');");
-  const lift = signalSrc.indexOf('req.setTimeout(0)');
   const events = signalSrc.indexOf("url.pathname === '/api/events'");
+  // The gate is searched FROM the events branch. The same bad_token line exists in the
+  // relay route earlier in the file, and an unanchored indexOf found that one: the check
+  // then passed whether or not the events branch had a guard at all.
+  const gate = signalSrc.indexOf("if (!slot) return fail(res, 403, 'bad_token');", events);
+  const lift = signalSrc.indexOf('req.setTimeout(0)');
   check('signal.js lifts both timeouts, and only inside the /api/events branch',
     /req\.setTimeout\(0\)/.test(signalSrc) && /res\.setTimeout\(0\)/.test(signalSrc)
     && lift > events && events !== -1,
     `events at ${events}, lift at ${lift}`);
-  check('and does it only after a token has bought a seat',
-    gate !== -1 && lift > gate, `last bad_token guard at ${gate}, lift at ${lift}`);
+  check('and does it only after a token has bought a seat, in that same branch',
+    gate !== -1 && lift > gate, `events-branch bad_token guard at ${gate}, lift at ${lift}`);
 }
 
 process.exit(summary('http surface') ? 0 : 1);

@@ -20,12 +20,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { check, summary, startServer, request } from './lib/harness.mjs';
+import { check, summary, startServer, request, freePort } from './lib/harness.mjs';
 import { launchBrowser, findBrowser } from './lib/cdp.mjs';
 
-const PORT = 3800;
+const PORT = await freePort(3800);
 const STUN = 3801;
-const CDP_PORT = 9800;
+const CDP_PORT = await freePort(9800);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 // The gate is its own document; ORIGIN is the landing, which holds no gate machinery.
 const APP = `${ORIGIN}/app`;

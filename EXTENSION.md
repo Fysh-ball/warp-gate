@@ -12,8 +12,9 @@ the extension is discoverable from the repository root.
 
 The short version:
 
-- The whole client is copied into `extension/`, and four files are patched so the network
-  destination is explicit rather than inherited from `location`. `extension/js/endpoint.js`
+- The whole client is copied into `extension/`, and four JS files and five HTML pages are
+  patched: the JS so the network destination is explicit rather than inherited from
+  `location`, the pages for root links and extension-specific copy. `extension/js/endpoint.js`
   is the only place that knows where the signalling server is.
 - The signalling origin is configurable and defaults to `https://warpgate.fysh.site`. The
   server is the untrusted party in this design, so retargeting it is the feature.

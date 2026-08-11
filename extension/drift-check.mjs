@@ -9,45 +9,29 @@
 // cosmetic: the extension exists to be the trustworthy delivery path, and a trustworthy
 // delivery path serving a client six months behind the audited one is worse than useless.
 //
-// So the fork is made LOUD. Every file is compared against its public/ counterpart, and
-// exactly two outcomes are acceptable: byte-identical, or on the list of files this
-// directory deliberately patches, with the patch still present. Anything else fails.
-//
-// This does NOT verify the CONTENT of a patch is still correct, only that the set of
-// patched files has not grown or shrunk and that the copies are otherwise in step. That is
-// the part a human forgets; judging a patch is the part a human is for.
+// So the fork is made LOUD. Every file is compared against its public/ counterpart. A file
+// the recipe does not patch must be byte-identical. A file the recipe DOES patch must be
+// byte-identical to a FRESH application of sync-from-public.mjs's recipe to today's
+// public/, so its content is pinned exactly: an edit to public/, to the shipped copy, or
+// to the recipe itself all read as drift until the sync is rerun. The earlier version of
+// this check asserted only "differs from public and carries the patch marker", which is
+// permanently true of a patched file and therefore could not fail: a patched copy could
+// rot arbitrarily and the gate stayed green. Judging whether a patch is the RIGHT change
+// is still the part a human is for; that it is the change that shipped is machine-checked.
 //
 // Run with:  node extension/drift-check.mjs
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The recipe itself: the list of patched files and the function that applies their
+// patches. One source of truth, shared with the tool that writes the files.
+// extension/README.md explains WHY each file is patched.
+import { PATCHES, PATCHED_FILES, patchedText } from './sync-from-public.mjs';
+import { DEFAULT_ORIGIN, matchPatternFor } from './js/endpoint.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.resolve(HERE, '..', 'public');
-
-/**
- * Files copied from public/ that this directory deliberately changes, and the marker each
- * change carries. Keep this list and extension/README.md in step: the README explains WHY
- * each one is patched and this decides whether it still IS.
- */
-const PATCHED = new Map([
-  ['js/signal.js', 'EXTENSION PATCH'],
-  ['js/session.js', 'EXTENSION PATCH'],
-  ['js/app.js', 'EXTENSION PATCH'],
-  // Was js/download.js until the predicate moved upstream into js/streamable.js. The entry
-  // moved with the function, not with the filename: leaving it on download.js would have
-  // failed loudly here (a file on the patched list that is byte-identical), which is the
-  // behaviour this list is for.
-  ['js/streamable.js', 'EXTENSION PATCH'],
-  ['app.html', 'EXTENSION PATCH'],
-  // The legal pages differ by one mechanical rewrite: href="/" is the site's landing
-  // document, which this package does not ship, so it points at index.html instead.
-  ['faq.html', 'href="/index.html"'],
-  ['privacy.html', 'href="/index.html"'],
-  ['terms.html', 'href="/index.html"'],
-  ['acceptable-use.html', 'href="/index.html"'],
-]);
 
 /**
  * Files that exist only in the extension. Listed rather than inferred, so that a stray file
@@ -117,7 +101,8 @@ for (const rel of extFiles) {
     + 'unaccounted shipped file.');
 }
 
-// 3. Every shared file is either identical or a declared patch that still carries its marker.
+// 3. Every unpatched shared file is byte-identical; every patched one matches a fresh
+// application of the recipe to today's public/.
 let identical = 0;
 let patched = 0;
 for (const rel of publicFiles) {
@@ -129,25 +114,52 @@ for (const rel of publicFiles) {
   if (EXTENSION_ONLY.has(rel)) continue;
   const a = fs.readFileSync(path.join(PUBLIC, rel));
   const b = fs.readFileSync(path.join(HERE, rel));
-  const same = a.equals(b);
-  const marker = PATCHED.get(rel);
-  if (same && marker) {
-    fail(`extension/${rel} is byte-identical to public/${rel}, but it is on the patched list. `
-      + 'Either the patch was lost, or the list is stale. Both are wrong.');
-    continue;
-  }
-  if (same) { identical += 1; continue; }
-  if (!marker) {
+  if (!PATCHED_FILES.has(rel)) {
+    if (a.equals(b)) { identical += 1; continue; }
     fail(`extension/${rel} differs from public/${rel} and is NOT on the patched list. `
       + 'This is either drift between the two copies or an undocumented change.');
     continue;
   }
-  if (!b.toString('utf8').includes(marker)) {
-    fail(`extension/${rel} differs from public/${rel} but does not carry its "${marker}" marker, `
-      + 'so the difference is not the documented one.');
+  let expected;
+  try {
+    expected = patchedText(rel, a.toString('utf8'));
+  } catch (err) {
+    fail(`the recipe for extension/${rel} no longer applies to public/${rel}: ${err.message}`);
     continue;
   }
-  patched += 1;
+  if (b.toString('utf8') === expected) { patched += 1; continue; }
+  if (a.equals(b)) {
+    fail(`extension/${rel} is byte-identical to public/${rel}, but it is on the patched list. `
+      + 'Either the patch was lost, or the list is stale. Both are wrong.');
+    continue;
+  }
+  fail(`extension/${rel} does not match a fresh application of the recipe to public/${rel}. `
+    + 'Either public/ moved, the shipped copy was edited, or the recipe changed. '
+    + 'Run node extension/sync-from-public.mjs and read the resulting diff.');
+}
+
+// 4. The default origin lives in three places with three different owners: js/endpoint.js
+// (the value the client signals to), manifest.json host_permissions (what a fresh install
+// is allowed to contact), and the recipe's app.html disclosure (what the page tells the
+// user). If one moves and another lags, a fresh install signals to an origin it has no
+// permission for and every request fails opaquely, because only a user-gesture Save can
+// prompt for more. Assert agreement instead of hoping.
+const manifest = JSON.parse(fs.readFileSync(path.join(HERE, 'manifest.json'), 'utf8'));
+const pattern = matchPatternFor(DEFAULT_ORIGIN);
+if (!(manifest.host_permissions ?? []).includes(pattern)) {
+  fail(`manifest.json host_permissions ${JSON.stringify(manifest.host_permissions ?? [])} is missing `
+    + `${pattern}, the match pattern for js/endpoint.js DEFAULT_ORIGIN ${DEFAULT_ORIGIN}. `
+    + 'A fresh install would have no permission to reach its own default origin.');
+} else {
+  pass(`manifest host_permissions covers DEFAULT_ORIGIN ${DEFAULT_ORIGIN}`);
+}
+const disclosure = (PATCHES.get('app.html') ?? []).map(([, to]) => to).join('\n');
+if (!disclosure.includes(`<span id="instance-origin">${DEFAULT_ORIGIN}</span>`)) {
+  fail('the sync-from-public.mjs app.html disclosure does not name js/endpoint.js '
+    + `DEFAULT_ORIGIN ${DEFAULT_ORIGIN}, so the page would tell the user it signals `
+    + 'somewhere it does not.');
+} else {
+  pass('the app.html disclosure names the same DEFAULT_ORIGIN');
 }
 
 // The positive control. Every count above can be zero, and zero problems with zero files

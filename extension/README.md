@@ -100,10 +100,13 @@ than maintained by hand:
   exact string match and the script **exits non-zero if an anchor is missing or ambiguous**,
   because a patch that silently fails to apply leaves a file that looks patched and
   addresses the wrong origin at runtime.
-- `drift-check.mjs` verifies the result: every shared file is either byte-identical to
-  `public/` or on the patched list and still carrying its marker, nothing in `public/` has
-  gone missing without a stated reason, and nothing unaccounted for is sitting in this
-  directory waiting to ship inside the package.
+- `drift-check.mjs` verifies the result: every unpatched shared file is byte-identical to
+  `public/`, every patched file is byte-identical to a fresh application of the recipe to
+  today's `public/` (so an edit to `public/`, to the shipped copy, or to the recipe itself
+  reads as drift until the sync is rerun), nothing in `public/` has gone missing without a
+  stated reason, nothing unaccounted for is sitting in this directory waiting to ship
+  inside the package, and the default origin in `js/endpoint.js` agrees with
+  `manifest.json`'s host_permissions and with the patched disclosure in `app.html`.
 
 Neither is a build step. The package is complete and checked in; these are the tools that
 tell you when it has fallen behind.
@@ -117,7 +120,9 @@ tell you when it has fallen behind.
 | `js/app.js` | The shareable gate link is `gateLink(code)` instead of `location.origin + location.pathname`. The "who is serving you this page" block is rewritten. |
 | `js/streamable.js` | `supportsStreamDownload()` returns false on an extension origin. See "Streaming download" below. The patch used to sit in `js/download.js` and followed the function when upstream moved it into its own module; `download.js` re-exports the binding, so both call sites still get the patched answer. |
 | `app.html` | The web app manifest link is removed, the instance disclosure is rewritten, and links to `/` point at this package's `index.html`. |
-| `faq/privacy/terms/acceptable-use.html` | Links to `/` point at this package's `index.html`. |
+| `faq.html` | The operator-trust answer is split: the encryption code came from this package, not the server, while the signalling metadata claims stand; and the file-size answer drops the download-manager route, which needs a service worker an extension page cannot register. Links to `/` point at this package's `index.html`. |
+| `privacy.html` | The storage list ("only for") gains the `wg.signalOrigin` localStorage key this package writes, and the service-worker bullet is replaced: no worker can exist on an extension page. Links to `/` point at this package's `index.html`. |
+| `terms/acceptable-use.html` | Links to `/` point at this package's `index.html`. |
 
 Files added by this directory: `manifest.json`, `index.html`, `js/endpoint.js`,
 `js/options.js`, `js/background.js`, and the three `.mjs` tools.

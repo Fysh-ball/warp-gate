@@ -30,15 +30,15 @@
 //   - the CSP check plants a style attribute, which the policy refuses, and requires the
 //     listener to see it. An empty violation list is also what a listener that was never
 //     wired up reports.
-import { check, summary, startServer } from './lib/harness.mjs';
+import { check, summary, startServer, freePort } from './lib/harness.mjs';
 import { launchBrowser } from './lib/cdp.mjs';
 
 // Its own ports. These used to be 3788/9764, and 9764 is also motion.test.mjs's DevTools
 // port: the runner is sequential so the two never overlapped by design, but an aborted run
 // leaves its browser listening, and the next suite on the same port then refuses to attach
 // with an error that describes a collision it did not cause. One suite, one port.
-const PORT = Number(process.env.WG_LEGAL_PORT || 3789);
-const CDP_PORT = Number(process.env.WG_LEGAL_CDP || 9765);
+const PORT = Number(process.env.WG_LEGAL_PORT || 0) || await freePort(3789);
+const CDP_PORT = Number(process.env.WG_LEGAL_CDP || 0) || await freePort(9765);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const PAGES = ['privacy', 'terms', 'acceptable-use', 'faq'];
 
@@ -243,15 +243,21 @@ try {
     const after = JSON.parse(await tab.eval(`
       const nav = document.querySelector('.legal-toc');
       const bar = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bar-h')) || 46;
+      const links = [...document.querySelectorAll('.legal-toc-link')];
       const current = document.querySelector('.legal-toc-link[aria-current]');
       const target = current ? document.getElementById(decodeURIComponent(current.hash.slice(1))) : null;
+      const after = current ? links[links.indexOf(current) + 1] : null;
+      const next = after ? document.getElementById(decodeURIComponent(after.hash.slice(1))) : null;
       return JSON.stringify({
         navTop: nav ? Math.round(nav.getBoundingClientRect().top * 100) / 100 : null,
         bar,
         currentText: current ? current.textContent : null,
         // The marked section must be one the reader has actually reached: its heading is
-        // at or above the line under the masthead, and the next one is not.
+        // at or above the line under the masthead, and the next one is not. Both halves
+        // are measured: without the second, a spy stuck on section 1 passes, because
+        // section 1's heading is always above the line once the page has scrolled at all.
         targetTop: target ? Math.round(target.getBoundingClientRect().top) : null,
+        nextTop: next ? Math.round(next.getBoundingClientRect().top) : null,
       });
     `));
     check('the rail stays under the masthead when the page is scrolled 1400px',
@@ -259,8 +265,9 @@ try {
       && after.navTop >= after.bar && after.navTop <= after.bar + 40,
       `scrolled to ${scrolled.y}, nav top ${after.navTop}, bar ${after.bar}`);
     check('and the rail marks the section actually being read',
-      Boolean(after.currentText) && after.targetTop !== null && after.targetTop <= after.bar + 30,
-      `current "${after.currentText}" whose heading is at ${after.targetTop}`);
+      Boolean(after.currentText) && after.targetTop !== null && after.targetTop <= after.bar + 30
+      && (after.nextTop === null || after.nextTop > after.bar + 30),
+      `current "${after.currentText}" whose heading is at ${after.targetTop}, next heading at ${after.nextTop}`);
     tab.close();
   }
 

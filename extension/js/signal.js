@@ -17,6 +17,25 @@ import { sealEnvelope, openEnvelope } from './crypto.js';
 // EXTENSION PATCH: the API is not on this page's origin. See js/endpoint.js.
 import { api } from './endpoint.js';
 
+// The epoch must outlive the page (a slot survives a reload, so the peer's replay memory
+// does too) and must never move backwards, which Date.now() alone cannot promise: a
+// backward wall-clock step between page loads would stamp a LOWER epoch and every message
+// the resumed page sends would be refused as a replay. So the last stamped epoch is kept
+// in sessionStorage beside the slot and token, and a new page takes whichever is larger:
+// the clock, or one past what this tab already used.
+const EPOCH_KEY = 'wg.signal.epoch';
+
+const nextEpoch = () => {
+  let stored = 0;
+  try {
+    const parsed = Number(globalThis.sessionStorage?.getItem(EPOCH_KEY));
+    if (Number.isSafeInteger(parsed) && parsed > 0) stored = parsed;
+  } catch (err) { void err; }
+  const epoch = Math.max(Date.now(), stored + 1);
+  try { globalThis.sessionStorage?.setItem(EPOCH_KEY, String(epoch)); } catch (err) { void err; }
+  return epoch;
+};
+
 export class Signal extends EventTarget {
   constructor({ roomId, token, signalKey }) {
     super();
@@ -63,10 +82,15 @@ export class Signal extends EventTarget {
     //
     // So each page load stamps an epoch, and a message is accepted when it is newer by
     // (epoch, seq) than anything already seen from that sender. A reloaded peer presents
-    // a HIGHER epoch, so it is accepted from sequence 1. A replayed envelope always
-    // carries an epoch and sequence that have already been seen, so it is still refused.
-    this.epoch = Date.now();
+    // a HIGHER epoch (nextEpoch above guarantees it even across a backward clock step),
+    // so it is accepted from sequence 1. A replayed envelope always carries an epoch and
+    // sequence that have already been seen, so it is still refused.
+    this.epoch = nextEpoch();
     this.sendSeq = 0;
+    // Sends are serialised so seq order on the wire matches seq assignment. Each send is
+    // an independent POST and trickle-ICE fires them unawaited; without the chain, seq
+    // n+1 can arrive before n and the receiver refuses n as a replay, silently.
+    this.sendChain = Promise.resolve();
     /** @type {Map<string, {epoch: number, seq: number}>} sender slot id -> newest accepted */
     this.seenSeq = new Map();
   }
@@ -231,22 +255,29 @@ export class Signal extends EventTarget {
     if (typeof to !== 'string' || !to) {
       throw new Error('a signalling message must be addressed at one participant');
     }
-    this.sendSeq += 1;
-    const envelope = await sealEnvelope(this.signalKey, {
-      ...message, from: this.selfId, seq: this.sendSeq, epoch: this.epoch,
+    const run = this.sendChain.then(async () => {
+      if (this.closed) return false;
+      this.sendSeq += 1;
+      const envelope = await sealEnvelope(this.signalKey, {
+        ...message, from: this.selfId, seq: this.sendSeq, epoch: this.epoch,
+      });
+      const res = await fetch(api('/api/relay'), { // EXTENSION PATCH: absolute URL
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ roomId: this.roomId, token: this.token, to, envelope }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `http ${res.status}` }));
+        throw new Error(`relay failed: ${body.error ?? res.status}`);
+      }
+      const { delivered } = await res.json();
+      return delivered;
     });
-    const res = await fetch(api('/api/relay'), { // EXTENSION PATCH: absolute URL
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ roomId: this.roomId, token: this.token, to, envelope }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: `http ${res.status}` }));
-      throw new Error(`relay failed: ${body.error ?? res.status}`);
-    }
-    const { delivered } = await res.json();
-    return delivered;
+    // One send failing must not wedge the chain; its rejection still reaches the caller
+    // through `run`.
+    this.sendChain = run.catch((err) => void err);
+    return run;
   }
 
   /** Tell the server to delete the room. Best effort: teardown must not depend on it. */
@@ -277,13 +308,22 @@ export class Signal extends EventTarget {
 // these helpers never knew about. They are gone rather than left as two exported functions
 // that would be refused by the server the moment anything used them.
 
-/** Check whether a stored slot is still valid, so a reload can resume rather than fail. */
+/**
+ * Check whether a stored slot is still valid, so a reload can resume rather than fail.
+ *
+ * Null means the server ANSWERED that the slot is dead: 400 bad_room_id, 403 bad_token,
+ * 404 no_room are the only statuses /api/room uses to say so, and they are the only ones
+ * that may return null, because the caller discards the slot on null. Everything else
+ * (429, 5xx, a proxy) is the server failing to answer and throws instead: reporting a
+ * failure as absence would destroy a live slot the moment the server was busy.
+ */
 export async function checkRoom(roomId, token) {
   const res = await fetch(api(`/api/room?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}`), { // EXTENSION PATCH: absolute URL
     signal: AbortSignal.timeout(8000),
   });
-  if (!res.ok) return null;
-  return res.json();
+  if (res.ok) return res.json();
+  if (res.status === 400 || res.status === 403 || res.status === 404) return null;
+  throw new Error(`room check failed: http ${res.status}`);
 }
 
 export async function fetchConfig() {

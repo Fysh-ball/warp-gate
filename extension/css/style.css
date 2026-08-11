@@ -282,8 +282,6 @@ html, body {
   display: inline-block;
   padding: 3px 9px;
   border-radius: var(--radius-pill);
-  font-size: 12px;
-  font-weight: 600;
   border: 1px solid var(--line);
   background: var(--panel-2);
   color: var(--muted);
@@ -474,7 +472,7 @@ button.link:active { transform: none; }
 
 .messages {
   min-height: 180px;
-  max-height: 46vh;
+  max-height: 46dvh;
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -621,7 +619,7 @@ button.link:active { transform: none; }
  * entries is still 64 lines, and a failed file carries a whole sentence of detail as its
  * state, which wraps by design rather than being truncated. What changed is that the cap is
  * now rarely reached instead of being reached by any batch of five. */
-@media (max-width: 699px) {
+@media (max-width: 699.98px) {
   .msg.is-file .file-names {
     max-height: 116px;
     overflow-y: auto;
@@ -738,8 +736,6 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
   /* Above the sticky bar, below the drop veil. */
   z-index: 40;
 }
-.log-dock[hidden] { display: none; }
-
 /* The resting state: the latest line and, when it repeated, how many times.
    A button rather than a bare row because it IS the control that opens the history, and
    the whole line is the hit target: a 12px chevron on a phone is not one. */
@@ -775,7 +771,7 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
 .log-more { flex: 0 0 auto; opacity: 0.7; }
 /* The chevron, drawn rather than typed: a glyph would inherit the monospace metrics and
    sit off the baseline of the text beside it. Rotates to point up when the history is
-   open, and the transition is the shared token so reduced-motion already covers it. */
+   open. */
 .log-toggle::after {
   content: '';
   flex: 0 0 auto;
@@ -784,9 +780,12 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
   border-bottom: 1.5px solid currentColor;
   transform: rotate(-45deg);
   transform-origin: 60% 60%;
-  transition: transform var(--motion-fast, 0.15s) ease;
+  transition: transform var(--motion-micro) ease;
 }
 .log-dock[data-open] .log-toggle::after { transform: rotate(135deg); }
+@media (prefers-reduced-motion: reduce) {
+  .log-toggle::after { transition: none; }
+}
 
 .log {
   padding: 0 14px 8px;
@@ -881,8 +880,6 @@ progress { width: 100%; height: 6px; margin-top: 6px; }
 .log .ok { color: var(--ok); }
 
 /* ---------------------------------------------- progressive disclosure */
-
-.lede { color: var(--muted); margin: -8px 0 18px; }
 
 details.disc {
   background: var(--panel);
@@ -1568,7 +1565,7 @@ main.legal a { color: var(--accent); }
  * 20px of padding and `.lp-actions`' 52px top margin, none of which knew about the other
  * two. `vh` rather than a constant so a 2560x1440 display gets a proportionally larger
  * opening and a 1280x720 laptop does not lose its fold to one; the clamp floor keeps it
- * sane on a short window. The `max-width: 899px` rule further down this file sets 12px for
+ * sane on a short window. The `max-width: 899.98px` rule further down this file sets 12px for
  * a phone and comes later, so it still wins there. */
 main:has(> #screen-home:not([hidden])) { padding-top: clamp(12px, 4.5vh, 52px); }
 
@@ -1696,9 +1693,6 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
      no shape in it for a curve to describe. */
   transition: opacity var(--motion-small) linear;
 }
-/* The base rule sets display:flex, which beats the hidden attribute's UA style. Without
-   this the overlay is "hidden" and still painted over the whole page. */
-.qr-modal[hidden] { display: none; }
 .qr-modal.qr-open { opacity: 1; }
 
 .qr-modal-scrim {
@@ -1813,7 +1807,7 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
 #transcript-holder { margin: 18px 0 4px; }
 #transcript-holder h2 { color: var(--text); }
 .messages.transcript {
-  max-height: 50vh;
+  max-height: 50dvh;
   background: var(--panel-2);
   opacity: 0.95;
 }
@@ -1945,7 +1939,7 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
  * is no rail, so the code box and Burn are IN the column and the same window has 120px less
  * to give. Measured at 820x900 with the 400px constant: the composer landed at y=941, still
  * past the fold. With 520 it lands at 821. */
-@media (min-width: 700px) and (max-width: 1023px) {
+@media (min-width: 700px) and (max-width: 1023.98px) {
   #screen-connected > #messages { max-height: max(240px, calc(100dvh - 520px)); }
 }
 @media (min-width: 1024px) {
@@ -1954,7 +1948,7 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
 
 /* A phone has no rail and no spare height. Nothing is removed, only tightened: the
    composer has to be fully on screen with the transcript above it. */
-@media (max-width: 699px) {
+@media (max-width: 699.98px) {
   /* ONE gap, the home screen's gap.
    *
    * Measured at 390x844 in a connected gate before this block, top to bottom, the space
@@ -2020,7 +2014,7 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
    rail is still `display: contents` and Burn is a sibling of the drawers, but this rule was
    scoped to `max-width: 699px` and did not reach it, so measured at 768x1024 the gap above
    the destructive control was 0 and it sat flush against the Games drawer. */
-@media (min-width: 700px) and (max-width: 1023px) {
+@media (min-width: 700px) and (max-width: 1023.98px) {
   #screen-connected > .conn-rail > #sever { margin-top: 14px; }
 }
 
@@ -2043,7 +2037,7 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
  * 700px, not 640: at 700 the same arithmetic leaves about 40px of headroom, and headroom
  * smaller than the amount the verification box moves by when its two words wrap is not
  * headroom. Better to apply this one band early than to have it arrive one device late. */
-@media (max-width: 699px) and (max-height: 700px) {
+@media (max-width: 699.98px) and (max-height: 700px) {
   #screen-connected > #chat-form .hint-fold { display: none; }
   #screen-connected > #chat-form textarea { min-height: 48px; }
   #screen-connected > #messages { max-height: clamp(110px, 20dvh, 200px); min-height: 110px; }
@@ -2202,7 +2196,7 @@ body:has(#screen-connected:not([hidden])) .foot {
 /* On a phone there is no rail: the code sits above the thread, where every pixel it
    takes is a pixel of conversation. The instruction stays: it is the one thing a person
    is asked to do, and hiding it to save 30px would be hiding the point. */
-@media (max-width: 699px) {
+@media (max-width: 699.98px) {
   .sas-box { padding: 8px 11px 9px; }
   #sas { font-size: 22px; letter-spacing: 0.11em; }
   .sas-words { font-size: 13px; }
@@ -2457,7 +2451,7 @@ body:has(#screen-connected:not([hidden])) .foot {
    both inside the first 844px of a 390px-wide viewport, measured, not assumed. It
    buys that back from spacing rather than from content: nothing here is hidden,
    only tightened. */
-@media (max-width: 899px) {
+@media (max-width: 899.98px) {
   main:has(> #screen-home:not([hidden])) { padding-top: 12px; }
   .lp-hero { gap: 12px; }
   .lp-h1 { font-size: clamp(24px, 5.2vw, 52px); margin-top: 2px; }
@@ -2575,7 +2569,6 @@ body:has(#screen-connected:not([hidden])) .foot {
   text-transform: uppercase;
   color: var(--muted);
 }
-.lp-slot-free .lp-slot-label { color: var(--accent); }
 .lp-list { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 14.5px; }
 .lp-list li { margin-bottom: 7px; }
 .lp-list li:last-child { margin-bottom: 0; }
@@ -2604,7 +2597,6 @@ body:has(#screen-connected:not([hidden])) .foot {
   border: 1px solid var(--line);
   color: var(--muted);
 }
-.lp-tag-gap { color: var(--warn); border-color: var(--line-warn); }
 .lp-tag-live { color: var(--ok); border-color: var(--line-ok); }
 
 /* ---------------------------------------------- pledge */
@@ -2633,7 +2625,7 @@ body:has(#screen-connected:not([hidden])) .foot {
 }
 
 /* The three light-mode patches that used to live here are gone: --warn, --ok and
-   --accent-text are tokens now, so .lp-tag-gap, .lp-tag-live and .lp-slot-label pick up
+   --accent-text are tokens now, so .lp-tag-live and .lp-slot-label pick up
    legible light values from the palette instead of from one-off rules that had to be
    remembered every time a warn or ok colour was used somewhere new. The teal that used
    to sit on .lp-slot-label went with them: teal means live, it is not a second accent. */
@@ -2787,15 +2779,12 @@ body:has(#screen-connected:not([hidden])) .foot {
   font-size: 13px;
   color: var(--muted);
 }
-.lp-msg-wait[hidden] { display: none; }
 
 /* The typing indicator is `hidden` in the markup and stays hidden for good if the
-   script never runs: three dots that never resolve are worse than no dots. Restating
-   [hidden] is NOT redundant here. The rules above are author rules and would beat the
-   UA sheet's `[hidden] { display: none }` on their own, so without this line a page
-   with no JavaScript would print a permanent typing indicator. */
+   script never runs: three dots that never resolve are worse than no dots. The global
+   `[hidden] { display: none !important; }` at the top of this file is what keeps it
+   hidden; no author rule here can beat that. */
 .lp-msg-typing { padding: 9px 11px; }
-.lp-msg[hidden] { display: none; }
 
 .lp-dot {
   display: inline-block;
@@ -2880,14 +2869,6 @@ body:has(#screen-connected:not([hidden])) .foot {
   letter-spacing: -0.03em;
   font-weight: 800;
   margin: 10px 0 0;
-  text-wrap: balance;
-}
-.wg-h2 {
-  font-size: clamp(19px, 1.75vw, 34px);
-  line-height: 1.2;
-  letter-spacing: -0.02em;
-  font-weight: 700;
-  margin: 8px 0 0;
   text-wrap: balance;
 }
 .wg-h3 {
@@ -3126,7 +3107,7 @@ progress { accent-color: var(--accent); }
 
 #screen-waiting .qr-wrap { padding: 16px; }
 #screen-waiting .code-block { border-color: var(--accent-dim); }
-#screen-severed .messages.transcript { max-height: 40vh; }
+#screen-severed .messages.transcript { max-height: 40dvh; }
 #transcript-holder .eyebrow { margin-top: 26px; }
 
 @media (min-width: 900px) {
@@ -3211,13 +3192,6 @@ main.legal .doc-meta {
   margin: 14px 0 0;
   max-width: var(--measure-legal);
 }
-main.legal .doc-lede {
-  color: var(--muted);
-  font-size: 16.5px;
-  line-height: 1.6;
-  max-width: 58ch;
-  margin: 16px 0 0;
-}
 /* A hairline above every section is the same rule the landing sections use, and
    it is what turns a wall of policy into something you can scan. */
 main.legal h2 {
@@ -3258,7 +3232,6 @@ main.legal pre.diag {
   margin: 16px 0 0;
   max-width: var(--measure-legal);
 }
-main.legal pre.diag code { background: none; border: 0; padding: 0; }
 /* The link row at the foot of a policy page is navigation, so it gets the footer
    treatment the app's own pages have rather than looking like a stray sentence. */
 main.legal .doc-foot {
@@ -3395,7 +3368,7 @@ main.legal .doc-foot a:hover { color: var(--accent); text-decoration: underline;
    the screen instead of before it: same page, same words, out of the way of the headline.
    `order` on the page's flex column moves it without moving it in the DOM, so the reading
    order for a screen reader is unchanged on a wide screen where it is genuinely first. */
-@media (max-width: 899px) {
+@media (max-width: 899.98px) {
   #receive-note { font-size: 13px; }
   /* The triad costs vertical space, and on a phone every pixel above the agreement is a
      pixel of scrolling before you can act. Tightened, not removed: the structure is what
@@ -3583,7 +3556,7 @@ main.legal .doc-foot a:hover { color: var(--accent); text-decoration: underline;
      letterbox it down to a strip too small to aim with. 4/3 is the compromise that keeps
      both orientations usable, and object-fit: cover fills whichever one arrives. */
   aspect-ratio: 4 / 3;
-  max-height: 46vh;
+  max-height: 46dvh;
   object-fit: cover;
   background: #000;
   border-radius: var(--radius-sm);

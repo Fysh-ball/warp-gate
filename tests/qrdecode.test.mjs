@@ -257,6 +257,17 @@ function damageData(qr, positions, flips, seed) {
     decoded !== null && decoded.text === WORST_CASE,
     decoded ? JSON.stringify(decoded.text) : 'null');
   check('nothing threw on the way through', lastDecodeError() === null, String(lastDecodeError()));
+  // "No error" is only evidence if an error CAN be reported: with the reporter deleted,
+  // the line above stays green forever. A frame whose pixel reads throw proves the
+  // capture path is alive, and the next decodeQr call resets it, so nothing leaks on.
+  {
+    const hostile = new Proxy({ length: 40 * 40 * 4 }, {
+      get(target, prop) { if (prop === 'length') return target.length; throw new Error('hostile frame'); },
+    });
+    const got = decodeQr({ width: 40, height: 40, data: hostile });
+    check('CONTROL: a frame that breaks the decoder is reported through lastDecodeError, not swallowed',
+      got === null && lastDecodeError() !== null, `returned ${got}, error ${String(lastDecodeError())}`);
+  }
 
   const payloads = [
     'WARP',

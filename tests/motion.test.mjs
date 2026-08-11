@@ -12,12 +12,12 @@
 // FIRST, which requires the document as a whole to be animating something, and only then
 // asks whether one particular element is still.
 
-import { check, summary, startServer, request, delay } from './lib/harness.mjs';
+import { check, summary, startServer, request, delay, freePort } from './lib/harness.mjs';
 import { launchBrowser, findBrowser } from './lib/cdp.mjs';
 
-const PORT = 3787;
+const PORT = await freePort(3787);
 const STUN = 3788;
-const CDP_PORT = 9764;
+const CDP_PORT = await freePort(9764);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 // The gate is a separate document from the landing. Anything about screens, messages or
 // the SAS has to be pointed here; anything about the hero, the reveal or the pause
@@ -173,16 +173,42 @@ try {
   // unscoped rule would leave every section at opacity 0 forever the moment the script
   // failed for any reason at all.
   const cssText = (await request(PORT, 'GET', '/css/style.css')).text;
-  const scoped = (cssText.match(/html\.js-reveal\s+\.u-reveal\s*\{\s*opacity:\s*0/g) ?? []).length;
-  const bare = (cssText.match(/^\s*\.u-reveal\s*\{\s*opacity:\s*0/gm) ?? []).length;
+  // Rule blocks, not line-anchored regexes: the old bare-rule pattern matched exactly one
+  // spelling (`.u-reveal {` at line start, opacity first), so a selector list, a reordered
+  // block or a minified rule all hid an unscoped opacity 0 from it.
+  const revealZeroRules = (css) => {
+    const hits = { scoped: 0, bare: 0 };
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/(?:^|[;\s{])opacity\s*:\s*0(?![.\d])/.test(m[2])) continue;
+      for (const sel of m[1].split(',')) {
+        if (!sel.includes('.u-reveal')) continue;
+        if (/html\.js-reveal[^,]*\.u-reveal/.test(sel)) hits.scoped += 1;
+        else hits.bare += 1;
+      }
+    }
+    return hits;
+  };
+  const { scoped, bare } = revealZeroRules(cssText);
   check('the reveal start state is scoped to html.js-reveal, exactly once',
     scoped === 1, `${scoped} scoped occurrences`);
   check('and .u-reveal is never given opacity 0 unscoped, so a dead script shows everything',
     bare === 0, `${bare} bare occurrences`);
-  // The regexes have to be able to find something, or "0 bare occurrences" is equally
-  // consistent with a regex that matches nothing anywhere.
-  check('CONTROL: the bare-rule regex does match an unscoped rule when there is one',
-    /^\s*\.u-reveal\s*\{\s*opacity:\s*0/gm.test('.u-reveal { opacity: 0; }'));
+  // The classifier has to be able to find something, or "0 bare occurrences" is equally
+  // consistent with a scan that matches nothing anywhere. One control per spelling the
+  // old regex missed.
+  check('CONTROL: the bare-rule scan matches every spelling of an unscoped rule',
+    revealZeroRules('.u-reveal { opacity: 0; }').bare === 1
+    && revealZeroRules('.u-reveal{opacity:0}').bare === 1
+    && revealZeroRules('.other, .u-reveal { color: red; opacity: 0; }').bare === 1
+    && revealZeroRules('.u-reveal { transform: none; opacity: 0 }').bare === 1
+    && revealZeroRules('html.js-reveal .u-reveal { opacity: 0; }').bare === 0
+    && revealZeroRules('.u-reveal { opacity: 0.4; }').bare === 0,
+    JSON.stringify(['plain', 'minified', 'list', 'reordered', 'scoped', 'nonzero']
+      .map((s, i) => `${s}=${JSON.stringify(revealZeroRules([
+        '.u-reveal { opacity: 0; }', '.u-reveal{opacity:0}',
+        '.other, .u-reveal { color: red; opacity: 0; }',
+        '.u-reveal { transform: none; opacity: 0 }',
+        'html.js-reveal .u-reveal { opacity: 0; }', '.u-reveal { opacity: 0.4; }'][i]))}`)));
   check('CONTROL: the served stylesheet is a real stylesheet, not an error page',
     cssText.length > 20000 && cssText.includes('@keyframes wg-rise'), `${cssText.length} bytes`);
 
@@ -201,14 +227,34 @@ try {
     heroExempt.enrolled > 10, `${heroExempt.enrolled} elements enrolled`);
 
   // ============================================================== 2. a section reveals
+  // #how-it-works used to be named here, but hero layout growth put its top at 748px,
+  // inside the observer's intersection line (viewport bottom minus the 6% rootMargin) at
+  // this 1440x900 viewport: it revealed at page load and had settled before this ran, so
+  // the check measured a finished element and could never pass. The target is found at
+  // runtime instead: the first element still holding .u-reveal whose top sits below that
+  // line. A hero that grows or shrinks now moves the target rather than breaking the
+  // premise, and a page with nothing left unrevealed fails the CONTROL loudly.
   const revealed = JSON.parse(await land.eval(ANIM_FNS + `
-    const el = document.getElementById('how-it-works');
+    window.scrollTo(0, 0);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const line = window.innerHeight * 0.94;
+    const el = [...document.querySelectorAll('.u-reveal')]
+      .find((e) => e.getBoundingClientRect().top > line);
+    if (!el) return JSON.stringify({ candidate: null, before: -1, anims: [] });
+    const before = el.getAnimations({ subtree: false }).length;
     el.scrollIntoView({ block: 'center' });
     // Two frames, which is what an IntersectionObserver needs to deliver and the class to
     // take effect. No layout is read here to force it: the observer is the clock.
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-    return JSON.stringify({ anims: animationsOn('#how-it-works'), total: pageAnimates() });
+    return JSON.stringify({
+      candidate: el.id || el.className,
+      before,
+      anims: el.getAnimations({ subtree: false }).map(describe),
+      total: pageAnimates(),
+    });
   `));
+  check('CONTROL: an enrolled section below the fold existed and was not already animating',
+    revealed.candidate !== null && revealed.before === 0, JSON.stringify(revealed));
   check('scrolling a section into view starts a wg-rise animation on it',
     revealed.anims.some((a) => a.name === 'wg-rise'), JSON.stringify(revealed.anims));
   check('and it is 250ms of the medium token, not some other number',
@@ -704,7 +750,17 @@ try {
   // so a burst well inside 200ms can still straddle a boundary and get two allowances.
   // Waiting out a full window first makes the burst's own first row reset it, which is the
   // only way "3 of 10" is a fact about the guard rather than about scheduling.
-  const guarded = JSON.parse(await a.eval(`
+  // The span assertion below is not a product performance budget: it is the validity
+  // gate for the marked count, because rows spread past one 200ms window collect two
+  // allowances and "5 of 10" becomes a fact about scheduling. On a loaded box the
+  // encrypt-and-append path for ten rows can be spread by the scheduler alone, so the
+  // burst is tried up to three times and judged on the first clean one, exactly like the
+  // INP press. A guard that mandatorily serialises rows spreads EVERY burst and still
+  // fails; scheduler noise does not survive three fresh attempts.
+  const burstAttempts = [];
+  let guarded = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    guarded = JSON.parse(await a.eval(`
     await new Promise((r) => setTimeout(r, 400));
     const form = document.getElementById('chat-form');
     const input = document.getElementById('chat-input');
@@ -733,12 +789,15 @@ try {
       spanMs: times.length ? Math.round(Math.max(...times) - Math.min(...times)) : 0,
     });
   `));
+    burstAttempts.push(guarded);
+    if (guarded.added === 10 && guarded.spanMs < 200) break;
+  }
   check('ten rows in one burst all land in the list',
-    guarded.added === 10, JSON.stringify(guarded));
+    guarded.added === 10, JSON.stringify(burstAttempts));
   check('and they land inside one burst window, so the count below is measuring the guard',
-    guarded.spanMs < 200, JSON.stringify(guarded));
+    guarded.spanMs < 200, JSON.stringify(burstAttempts));
   check('but exactly three of them are animated: a burst is not information',
-    guarded.marked === 3, JSON.stringify(guarded));
+    guarded.marked === 3, JSON.stringify(burstAttempts));
 
   // -------------------------------------------------- 17. the security surfaces stand still
   //
@@ -813,20 +872,102 @@ try {
   await inp.send('Page.reload', {});
   await inp.waitFor("!document.getElementById('screen-home').hidden", { timeout: 30000, label: 'INP tab home' });
   await inp.send('Page.bringToFront', {});
-  const inpResult = JSON.parse(await inp.eval(`
-    const seen = [];
-    const po = new PerformanceObserver((list) => {
-      for (const e of list.getEntries()) seen.push({ name: e.name, duration: e.duration });
+  // Event Timing ignores untrusted element.click(), so the old form of this measurement
+  // observed a synthetic click, always read {worst: 0} and could not fail. Both presses
+  // below are real trusted input, dispatched through the browser's input pipeline over
+  // CDP. The control press lands on a planted 120ms handler FIRST: a pipeline that
+  // cannot see that slow press has no business calling the real one fast.
+  const trustedClick = async (tab, x, y) => {
+    await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+    await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+  };
+  const controlRect = JSON.parse(await inp.eval(`
+    window.__inpSeen = [];
+    window.__inpObserver = new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) window.__inpSeen.push({ name: e.name, duration: e.duration, interactionId: e.interactionId, processing: e.processingEnd - e.processingStart });
     });
-    po.observe({ type: 'event', durationThreshold: 16, buffered: true });
-    document.getElementById('create-btn').click();
-    await new Promise((r) => setTimeout(r, 1200));
-    po.disconnect();
-    const worst = seen.reduce((m, e) => Math.max(m, e.duration), 0);
-    return JSON.stringify({ worst, count: seen.length, seen: seen.slice(0, 6) });
+    window.__inpObserver.observe({ type: 'event', durationThreshold: 16 });
+    const btn = document.createElement('button');
+    btn.id = 'inp-control';
+    btn.textContent = 'control';
+    btn.style.cssText = 'position:fixed;left:8px;top:8px;z-index:99999;width:80px;height:40px;';
+    btn.addEventListener('click', () => { const t = performance.now(); while (performance.now() - t < 120) {} });
+    document.body.appendChild(btn);
+    const r = btn.getBoundingClientRect();
+    return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
   `));
-  check('pressing the gate button costs well under the 200ms INP budget',
-    inpResult.worst < 200, JSON.stringify(inpResult));
+  // Only entries belonging to a discrete interaction (interactionId > 0) are scored:
+  // under system load every hover and focus event on the page stretches past the 16ms
+  // observer floor, and the maximum over those measures the box, not the press. The
+  // press is retried while the observer reports nothing, because on a saturated machine
+  // presentation of the control click can itself land after a fixed collection window.
+  let controlResult = { worst: 0, processing: 0, count: 0 };
+  for (let i = 0; i < 3 && controlResult.count === 0; i += 1) {
+    await trustedClick(inp, controlRect.x, controlRect.y);
+    controlResult = JSON.parse(await inp.eval(`
+      await new Promise((r) => setTimeout(r, 1200));
+      const scored = window.__inpSeen.filter((e) => e.interactionId > 0);
+      const worst = scored.reduce((m, e) => Math.max(m, e.duration), 0);
+      const processing = scored.reduce((m, e) => Math.max(m, e.processing), 0);
+      return JSON.stringify({ worst, processing, count: scored.length });
+    `));
+  }
+  await inp.eval(`
+    document.getElementById('inp-control').remove();
+    window.__realClicks = 0;
+    const real = document.getElementById('create-btn');
+    real.addEventListener('click', () => { window.__realClicks += 1; });
+    return true;
+  `);
+  check('CONTROL: a trusted press on a planted 120ms handler is measured at least that slow, '
+    + 'so a zero below is a measurement and not a blind instrument',
+    controlResult.count > 0 && controlResult.processing >= 100, JSON.stringify(controlResult));
+
+  // 200ms total INP is the web.dev "good" ceiling and remains the product goal, but an
+  // entry's full duration ends at the next paint, and on this shared box presentation
+  // delay measures the machine: a clean button read 664-1384ms wall duration at load
+  // average ~20 while its handler processing stayed in single digits, indistinguishable
+  // from a planted 300ms handler. So the VERDICT binds the slice the page controls,
+  // processing duration (processingEnd - processingStart), to RAIL's 100ms response
+  // bound: mandatory blocking work on the press path lands in processing on every press
+  // and cannot hide in load, while load cannot fail a clean handler. Full durations are
+  // still recorded in the detail for the human reading a failure. Best of up to five
+  // presses, each on a freshly loaded page, because even processing can be stretched by
+  // a descheduled renderer; a clean press passes on the first calm one.
+  const attempts = [];
+  let best = Infinity;
+  for (let i = 0; i < 5 && best >= 100; i += 1) {
+    await inp.send('Page.reload', {});
+    await inp.waitFor("!document.getElementById('screen-home').hidden", { timeout: 30000, label: 'INP tab home again' });
+    await inp.send('Page.bringToFront', {});
+    const rect = JSON.parse(await inp.eval(`
+      window.__inpSeen = [];
+      window.__realClicks = 0;
+      window.__inpObserver = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) window.__inpSeen.push({ name: e.name, duration: e.duration, interactionId: e.interactionId, processing: e.processingEnd - e.processingStart });
+      });
+      window.__inpObserver.observe({ type: 'event', durationThreshold: 16 });
+      const real = document.getElementById('create-btn');
+      real.addEventListener('click', () => { window.__realClicks += 1; });
+      const r = real.getBoundingClientRect();
+      return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+    `));
+    await trustedClick(inp, rect.x, rect.y);
+    const m = JSON.parse(await inp.eval(`
+      await new Promise((r) => setTimeout(r, 1200));
+      window.__inpObserver.disconnect();
+      const scored = window.__inpSeen.filter((e) => e.interactionId > 0);
+      const worst = scored.reduce((m, e) => Math.max(m, e.duration), 0);
+      const processing = scored.reduce((m, e) => Math.max(m, e.processing), 0);
+      return JSON.stringify({ worst, processing, count: scored.length, clicks: window.__realClicks });
+    `));
+    attempts.push(m);
+    if (m.clicks === 1 && m.count > 0) best = Math.min(best, m.processing);
+  }
+  check('CONTROL: every measured press landed on the gate button',
+    attempts.length > 0 && attempts.every((m) => m.clicks === 1), JSON.stringify(attempts));
+  check('the gate button press does no mandatory blocking work: best-press processing inside RAIL 100ms',
+    best < 100, JSON.stringify(attempts));
   inp.close();
   a.close();
   b.close();

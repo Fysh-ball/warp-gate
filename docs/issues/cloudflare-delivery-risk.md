@@ -2,6 +2,29 @@
 
 **Labels:** security, threat-model, enhancement
 
+**Status: shipped, 2026-08-11.** The extension exists at `extension/` and meets the three
+design constraints below: MV3, no build step, no dependencies, and a configurable
+signalling origin defaulting to `https://warpgate.fysh.site`. The three open questions
+were answered against the code:
+
+1. No. There is no `Origin` check, and the `Sec-Fetch-Site` guard in `server/signal.js`
+   treats an absent header as allow, so an extension-initiated request passes without any
+   server change. If an origin check is ever added, `chrome-extension://` must be allowed.
+2. The streaming path depends on registering a page service worker, which Chromium
+   refuses on extension pages, so `sw.js` is not shipped and the capability probe reports
+   it honestly: above 500 MB on a browser without `showSaveFilePicker`, a receive is
+   refused rather than attempted.
+3. Yes, four modules did, and they are the four JS files the sync recipe patches
+   (`extension/sync-from-public.mjs`); pasted website links are parsed for the fragment
+   in place rather than navigated to.
+
+Acceptance, item by item: the installable extension with its non-working parts named is
+met (`extension/README.md` names them, the 500 MB loss included); the UI stating what it
+does and does not protect is met (`extension/index.html`, "What installing this does not
+fix", metadata first); the `THREAT-MODEL.md` update is met as of this issue's closing
+edit, which added the extension to "You are trusting whoever serves the page" with the
+metadata exposure still listed as unmitigated.
+
 ## Summary
 
 Warp Gate's encryption is sound and the server never holds a key. The residual risk is not

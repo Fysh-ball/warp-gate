@@ -259,6 +259,7 @@ export function renderBatchOffer(d, ui) {
   refuse.textContent = 'Refuse';
 
   accept.addEventListener('click', async () => {
+    if (!ui.session) { ui.log('this gate has ended, so these files cannot be accepted', 'bad'); return; }
     accept.disabled = true;
     refuse.disabled = true;
     let directory = null;
@@ -308,6 +309,7 @@ export function renderBatchOffer(d, ui) {
   });
 
   refuse.addEventListener('click', async () => {
+    if (!ui.session) { ui.log('this gate has ended, so there is nothing to refuse', 'warn'); return; }
     accept.disabled = true;
     refuse.disabled = true;
     try {

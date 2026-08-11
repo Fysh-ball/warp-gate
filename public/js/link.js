@@ -335,6 +335,11 @@ export class Link extends EventTarget {
     this.recvQueue = Promise.resolve();
     // Set synchronously by connect(); this.keyPair only exists two awaits later.
     this.handshaking = false;
+    // Which handshake currently owns this link. Bumped by resetForRenegotiation, which
+    // also clears the latch above while a connect() body can still be parked at an await:
+    // that body compares its captured generation after every await and stands down when it
+    // has been superseded, instead of racing the fresh handshake for this.peer.
+    this.handshakeGen = 0;
     // The in-flight key derivation, so two callers share one instead of racing.
     this.deriving = null;
     // Frames the peer sent before this side had a channel to open them with.
@@ -358,6 +363,7 @@ export class Link extends EventTarget {
     // absent still fails, just not because the user changed apps. See sleptThrough().
     this.revealGrace = 0;
     this.confirmGrace = 0;
+    this.watchdogGrace = 0;
     // Has this link ever actually been up? Everything about how a stall is reported hangs
     // on this one bit.
     this.everConnected = false;
@@ -459,8 +465,11 @@ export class Link extends EventTarget {
     this.earlyFrames = [];
     this.deriving = null;
     // The session this handshake belonged to is gone, so it must not keep the latch and
-    // block the fresh handshake that renegotiation exists to run.
+    // block the fresh handshake that renegotiation exists to run. The generation bump is
+    // what stops the OLD connect() body, if one is parked at an await, from resuming into
+    // the fresh state this reset just built.
     this.handshaking = false;
+    this.handshakeGen += 1;
 
     // this.incoming is deliberately NOT dropped. The sink is open, the bytes are already
     // in the user's own file or in this page's memory, and destroying that because the
@@ -722,7 +731,11 @@ export class Link extends EventTarget {
    * new frame counter, which is exactly when the receiver has to say where it got to.
    */
   async restartConnection() {
-    if (this.severed || this.restarting) return;
+    if (this.severed) return;
+    // An attempt is already running. wake() may have just cleared the pending timer on
+    // the strength of THIS call, so dropping it silently would leave nothing re-armed if
+    // the running attempt succeeds partially; a scheduled retry no-ops once connected.
+    if (this.restarting) { this.scheduleRestart('a reconnect attempt is already running'); return; }
     // It may have come back by itself while the timer was pending.
     if (this.state === STATE.CONNECTED && this.peer?.channel?.readyState === 'open') return;
     // A handshake that started moments ago has not had a chance to succeed yet, and both
@@ -877,6 +890,15 @@ export class Link extends EventTarget {
         this.startWatchdog(ms);
         return;
       }
+      // Same reasoning as armRevealTimer and the confirm timer: a deadline this page
+      // slept through says nothing about the peer, and app.js treats UNREACHABLE as
+      // fatal. Serve the sentence again rather than convicting on it.
+      if (sleptThrough(ms) && this.watchdogGrace < BACKGROUND_GRACE_MAX) {
+        this.watchdogGrace += 1;
+        this.emit('warning', 'this page was in the background while connecting: waiting again.');
+        this.startWatchdog(ms);
+        return;
+      }
       const detail = this.peer ? this.peer.explainStall({ peerLeft: this.peerGone }) : 'The connection never started.';
       // Report the connection's own state, not just what the UI happened to observe.
       this.emit('diagnostics', this.peer ? this.peer.diagnostics() : null);
@@ -898,14 +920,25 @@ export class Link extends EventTarget {
     // its own public key. Latch synchronously, before the first await.
     if (this.handshaking || this.keyPair || this.severed) return;
     this.handshaking = true;
+    // A peer 'restart' arriving while this body is parked at an await runs
+    // resetForRenegotiation, which clears the latch above and lets a second connect()
+    // start; when the await settles, both bodies would otherwise resume and each build a
+    // Peer, the loser overwritten without close(). The generation captured here is
+    // re-checked after every await: stale means a newer handshake owns the link and this
+    // body stands down. `severed` alone cannot say that, and the settle guard in
+    // restartConnection cannot protect a FIRST handshake: lastRenegotiationAt is still 0.
+    const gen = this.handshakeGen;
+    const stale = () => this.severed || gen !== this.handshakeGen;
     try {
       // Never derive keys before the password is known, or the first attempt would
       // always be made without it and always fail.
       await this.session.passwordGate;
-      if (this.severed) return;
+      if (stale()) return;
       this.setState(STATE.EXCHANGING);
       this.startWatchdog();
-      this.keyPair = await generateKeyPair();
+      const keyPair = await generateKeyPair();
+      if (stale()) return;
+      this.keyPair = keyPair;
       if (this.keyPair.privateExtractable) {
         this.emit('warning', 'This browser would not create a non-extractable key; key hygiene is degraded.');
       }
@@ -914,6 +947,7 @@ export class Link extends EventTarget {
       if (this.needsRestart) {
         this.needsRestart = false;
         await this.signal.send({ t: 'restart' });
+        if (stale()) return;
       }
       // COMMIT-THEN-REVEAL. The initiator publishes only a digest of its public key here;
       // the key itself does not go out until the responder's key has arrived. The
@@ -922,23 +956,30 @@ export class Link extends EventTarget {
       if (this.initiator) {
         // Kept as well as sent: it names this handshake, which is how a reveal meant for it
         // is told from one still in flight from the handshake before.
-        this.handshakeId = b64u.encode(await commitPublicKey(this.keyPair.publicRaw));
+        const handshakeId = b64u.encode(await commitPublicKey(keyPair.publicRaw));
+        if (stale()) return;
+        this.handshakeId = handshakeId;
         await this.signal.send({ t: 'pkc', h: this.handshakeId });
+        if (stale()) return;
       }
       // Whichever half of the exchange this side is now owed may already have arrived:
       // onSignalMessage stored it and returned without acting, because we had no key pair
       // of our own yet. Both of these are idempotent and cover that ordering.
       await this.maybeSendPublicKey();
+      if (stale()) return;
       await this.deriveKeys();
+      if (stale()) return;
 
       if (this.initiator) {
         this.setState(STATE.NEGOTIATING);
         await this.peer.start();
       }
     } finally {
-      // Released either way. On success this.keyPair now holds the guard; on an early
-      // return or a throw the handshake must stay retryable.
-      this.handshaking = false;
+      // Released only by the body that still owns the handshake: a stale body's latch was
+      // already cleared by resetForRenegotiation and now belongs to the newer connect().
+      // On success this.keyPair holds the guard; on an early return or a throw the
+      // handshake must stay retryable.
+      if (gen === this.handshakeGen) this.handshaking = false;
     }
   }
 
@@ -1323,6 +1364,11 @@ export class Link extends EventTarget {
     // is not optional.
     const onConfirmTimeout = () => {
       if (this.confirmedByPeer) return;
+      // Confirmation travels over the data channel. If that channel is no longer open,
+      // its absence says the network dropped, not that the secret mismatched: AUTH_FAILED
+      // here would delete the remembered password key over a blink. The reconnect path
+      // owns this case, and the next handshake arms a fresh timer.
+      if (this.peer?.channel?.readyState !== 'open') return;
       // Same reasoning as armRevealTimer: a deadline this page slept through says nothing
       // about the peer. See sleptThrough() for why AUTH_FAILED in particular must not be
       // reached this way.
@@ -2411,6 +2457,7 @@ export class Link extends EventTarget {
   async acceptIncoming() {
     if (!this.incoming) throw new Error('no incoming file to accept');
     const inbound = this.incoming;
+    if (inbound.sink) throw new Error('this file is already being received');
     const { meta } = inbound;
     // Fetched HERE, before the save dialog, and deliberately not beside adoptSink below: the
     // check that this is still the transfer in progress is immediately followed by the adopt,
@@ -2444,8 +2491,13 @@ export class Link extends EventTarget {
     // this may no longer be the transfer in progress. Adopting the sink anyway left a live
     // writable nobody would ever close, holding a lock on the file the user had just picked,
     // and a row that sat at 0% for the rest of the session.
-    if (this.incoming !== inbound) {
-      const reason = 'the connection dropped while the save dialog was open';
+    // inbound.sink is the overlapping-call half of this: two accepts can both pass the
+    // null-sink check at the top while the first is still inside its save dialog, and
+    // adopting a second sink would orphan the first writable with a lock on the file.
+    if (this.incoming !== inbound || inbound.sink) {
+      const reason = inbound.sink
+        ? 'this file is already being received'
+        : 'the connection dropped while the save dialog was open';
       try {
         await sink.abort(reason);
       } catch (abortErr) {
@@ -2718,8 +2770,11 @@ export class Link extends EventTarget {
     // The file is whole and closed, so there is nothing left to resume and the record must
     // not outlive it: a stale handle would offer to continue a transfer that is finished.
     await this.forgetInboundRecord();
-    // The file is already on disk at this point, so failing to tell the sender is a
-    // reporting problem on their end, not a failed transfer on this one.
+    // The bytes are out of this page's hands at this point: the disk and memory sinks
+    // hold them all, and the stream sink has handed every byte to the browser's download
+    // with end-of-stream committed (the flush to disk is the download shelf's business
+    // and is not observable from here). So failing to tell the sender is a reporting
+    // problem on their end, not a failed transfer on this one.
     try {
       await this.control({ kind: 'file-complete', id: inbound.meta.id, bytes: inbound.received });
     } catch (err) {
@@ -2755,9 +2810,23 @@ export class Link extends EventTarget {
    * re-offer, and a rejected promise on every click is not how that gets said.
    */
   async sendGame(payload) {
-    if (this.peer?.channel?.readyState !== 'open') return false;
-    await this.control({ kind: 'game', payload });
-    return true;
+    if (!this.channel || this.peer?.channel?.readyState !== 'open') return false;
+    // Not routed through control(): control returns silently when the channel closed
+    // between the check above and the queued send, and a swallowed drop here reads as
+    // true, which is the one loss signal the game layer has. The re-check runs inside
+    // the queue, at the moment the frame would actually go out.
+    let sent = false;
+    try {
+      await this.enqueue(async () => {
+        if (!this.channel || this.peer?.channel?.readyState !== 'open') return;
+        await this.peer.send(await this.channel.sealJson(TYPE.CONTROL, { kind: 'game', payload }));
+        sent = true;
+      });
+    } catch (err) {
+      this.emit('warning', `could not send a game message: ${err.message}`);
+      return false;
+    }
+    return sent;
   }
 
   // ---- teardown

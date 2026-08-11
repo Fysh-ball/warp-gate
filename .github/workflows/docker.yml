@@ -1,4 +1,5 @@
-# Build the image, prove it actually serves a gate, and publish it to GHCR on a tag.
+# Run the test suite, build the image, prove it actually serves a gate, and publish it
+# to GHCR on a tag.
 #
 # No secret beyond the built-in GITHUB_TOKEN, deliberately. A self-hostable project whose
 # release pipeline needs a hand-provisioned registry credential is one that only its
@@ -27,6 +28,29 @@ permissions:
   contents: read
 
 jobs:
+  tests:
+    name: run every suite
+    runs-on: ubuntu-latest
+    # A suite that hangs must fail the run, not hold a runner for the 6 hour default.
+    # The full local run completes in minutes; 30 is headroom, not a target.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 26 is what the suite is developed and proven against. The image's runtime
+      # floor (22.7, see the header) is proven separately by the smoke job actually
+      # booting the container, so this job does not need to match it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      # tests/run-all.sh exits non-zero when any suite fails and refuses to run at all
+      # (exit 2) when a test file exists that it neither runs nor excludes, so a failing
+      # or unlisted suite fails this job rather than shipping. The browser suites find
+      # the runner's own google-chrome via tests/lib/cdp.mjs.
+      - name: Run the test suite
+        run: bash tests/run-all.sh
+
   smoke:
     name: build and prove it serves
     runs-on: ubuntu-latest
@@ -112,9 +136,10 @@ jobs:
 
   publish:
     name: publish to ghcr.io
-    # Only on a tag, and only after the image has been proven to serve.
+    # Only on a tag, and only after the suite has passed and the image has been proven
+    # to serve.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: smoke
+    needs: [smoke, tests]
     runs-on: ubuntu-latest
     permissions:
       contents: read

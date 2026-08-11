@@ -5,6 +5,7 @@
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -61,6 +62,32 @@ for (const signal of ['SIGINT', 'SIGTERM', 'uncaughtException', 'unhandledReject
 // wrong spelling at the door rather than letting it produce a false clean result.
 const PORT_ALIASES = ['WG_PORT', 'WG_HTTPPORT', 'PORT', 'WG_HTTP_PORT_NUMBER'];
 const HOST_ALIASES = ['WG_HOST', 'WG_HTTPHOST', 'HOST'];
+
+/**
+ * A usable port, preferring the one asked for.
+ *
+ * Every suite used to hard-code its port, so a second session on the same box turned
+ * EADDRINUSE into an aborted run. The preferred port keeps runs reproducible when it is
+ * free; when something else holds it, the kernel picks a free one instead. The port is
+ * released again before the server binds it, so a racing process can still steal it in
+ * the gap: startServer's banner comparison catches that case loudly rather than letting
+ * a measurement land on the wrong process.
+ */
+export function freePort(preferred) {
+  const probe = (port) => new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once('error', reject);
+    srv.listen({ port, host: '127.0.0.1' }, () => {
+      const got = srv.address().port;
+      srv.close(() => resolve(got));
+    });
+  });
+  return probe(preferred).catch((err) => {
+    if (err.code !== 'EADDRINUSE' && err.code !== 'EACCES') throw err;
+    return probe(0);
+  });
+}
 
 /** Start a server process, wait until it reports listening, then prove it answers. */
 export function startServer(env = {}) {

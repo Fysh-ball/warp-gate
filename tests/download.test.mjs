@@ -12,11 +12,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { check, summary, startServer } from './lib/harness.mjs';
+import { check, summary, startServer, freePort } from './lib/harness.mjs';
 import { launchBrowser } from './lib/cdp.mjs';
 
-const PORT = 3771;
-const CDP = 9771;
+const PORT = await freePort(3771);
+const CDP = await freePort(9771);
 const CHUNKS = 8;
 const CHUNK_BYTES = 1024 * 1024;
 

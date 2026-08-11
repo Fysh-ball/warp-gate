@@ -50,8 +50,16 @@ const CDP_PORT = Number(process.env.WG_EXT_TEST_CDP ?? 9821);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 if (!findBrowser()) {
-  process.stdout.write('SKIP extension.test.mjs: no Chromium-based browser on PATH\n');
-  process.exit(0);
+  // A missing browser is a FAILURE by default, not a skip: an environment that quietly
+  // lost its Chromium would otherwise read as a pass forever. The opt-out is explicit,
+  // for machines that knowingly cannot run a browser.
+  if (process.env.WG_EXT_TEST_ALLOW_SKIP === '1') {
+    process.stdout.write('SKIP extension.test.mjs: no Chromium-based browser on PATH (WG_EXT_TEST_ALLOW_SKIP=1)\n');
+    process.exit(0);
+  }
+  process.stdout.write('FAIL extension.test.mjs: no Chromium-based browser on PATH. '
+    + 'Set WG_EXT_TEST_ALLOW_SKIP=1 to skip knowingly.\n');
+  process.exit(1);
 }
 
 /**
@@ -158,7 +166,7 @@ try {
     "const m = await import('/js/endpoint.js');"
     + " return JSON.stringify([m.parseOrigin('http://example.com'), m.parseOrigin('https://x.test/path'),"
     + " m.parseOrigin('javascript:alert(1)'), m.parseOrigin('https://x.test'),"
-    + " m.matchPatternFor('https://gate.example:8443')]);",
+    + " m.matchPatternFor('https://gate.example:8443'), m.parseOrigin('http://[::1]:3095')]);",
   );
   const parsed = JSON.parse(badOrigin);
   check('plain http on a real host is refused', parsed[0].ok === false, badOrigin);
@@ -168,6 +176,10 @@ try {
   // Chrome rejects a match pattern whose host carries a port, so a self-hoster on a
   // non-standard port would hit a permissions.request() that throws rather than prompts.
   check('a permission match pattern drops the port', parsed[4] === 'https://gate.example/*', badOrigin);
+  // [::1] is refused up front: it is in neither host_permissions nor the CSP connect-src,
+  // and optional_host_permissions is https-only, so accepting it would only defer the
+  // failure to a permission error at Save.
+  check('http://[::1] is refused as an origin', parsed[5].ok === false, badOrigin);
 
   // The options page's Save button, driven for real.
   //

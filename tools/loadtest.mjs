@@ -264,4 +264,7 @@ process.stdout.write(`severed ${severed}/${created.length} gates\n`);
 const verdict = stillHeld === 0 && unknown === 0 ? 'OK  ' : 'BAD ';
 process.stdout.write(`${verdict} of ${sample.length} sampled ids, ${stillHeld} still held, ${unknown} unanswerable\n`);
 const end = await request('GET', '/api/health', undefined, SPREAD ? addrFor(probeIdx++) : undefined);
-process.stdout.write(`${end.json?.ok === true ? 'OK  ' : 'BAD '} server still answering after the run\n`);
+const healthy = end.json?.ok === true;
+process.stdout.write(`${healthy ? 'OK  ' : 'BAD '} server still answering after the run\n`);
+// A run that printed BAD and exited 0 is a load test nothing can gate on.
+process.exit(stillHeld === 0 && unknown === 0 && healthy ? 0 : 1);

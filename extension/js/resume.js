@@ -309,6 +309,20 @@ export function createIndexedSink(sink, { chunkSize, size, ledger = null, writte
     }
   };
 
+  // write(), drain() and finish() run through this queue, so two overlapping calls cannot
+  // both observe the same frontier and append twice. The duplicate-drop guarantee
+  // documented above is owned HERE: it must hold even if a caller stops serializing
+  // inbound frames. A rejected job releases the queue for the next one; the rejection
+  // still reaches that job's caller. abort() stays OUTSIDE the queue on purpose: it must
+  // be able to cut loose a write that is parked inside the sink underneath, and queued
+  // behind that write it never could.
+  let queue = Promise.resolve();
+  const serialize = (job) => {
+    const turn = queue.then(job);
+    queue = turn.then(() => {}, () => {});
+    return turn;
+  };
+
   return {
     get kind() { return sink.kind; },
     get note() { return sink.note ?? null; },
@@ -336,41 +350,43 @@ export function createIndexedSink(sink, { chunkSize, size, ledger = null, writte
       if (chunk.byteLength !== want) {
         throw new Error(`chunk ${index} arrived with ${chunk.byteLength} bytes, expected ${want}`);
       }
-      if (book.has(index)) return { written: false, duplicate: true, dropped: false };
-      if (index < next) {
-        // Below the frontier but not in the ledger is a contradiction: the frontier is
-        // derived from the ledger. Fail loudly rather than write into the middle of a file
-        // that is already past this point.
-        throw new Error(`chunk ${index} is behind the write position with no record of it`);
-      }
-      if (index === next) {
-        await sink.write(chunk);
-        position += chunk.byteLength;
-        next += 1;
+      return serialize(async () => {
+        if (book.has(index)) return { written: false, duplicate: true, dropped: false };
+        if (index < next) {
+          // Below the frontier but not in the ledger is a contradiction: the frontier is
+          // derived from the ledger. Fail loudly rather than write into the middle of a file
+          // that is already past this point.
+          throw new Error(`chunk ${index} is behind the write position with no record of it`);
+        }
+        if (index === next) {
+          await sink.write(chunk);
+          position += chunk.byteLength;
+          next += 1;
+          book.mark(index);
+          // Whatever was waiting on this chunk can go now. Buffered chunks were recorded when
+          // they were buffered, so the drain moves bytes and never touches the ledger, and it
+          // drops each chunk from the buffer only once that chunk's write has resolved. A
+          // failure part way through therefore leaves the ledger describing chunks this side
+          // still holds, in the buffer, rather than chunks it has lost.
+          await drainAhead();
+          return { written: true, duplicate: false, dropped: false };
+        }
+        if (ahead.size >= MAX_AHEAD_CHUNKS || aheadBytes + chunk.byteLength > MAX_AHEAD_BYTES) {
+          // Deliberately NOT recorded. A ledger entry for a chunk that exists nowhere would
+          // make the next resume skip it and leave a hole nothing later detects.
+          return { written: false, duplicate: false, dropped: true };
+        }
+        // Copy: the caller's view may be over a buffer that gets reused or transferred, and
+        // this one is kept until the gap in front of it fills.
+        ahead.set(index, chunk.slice());
+        aheadBytes += chunk.byteLength;
         book.mark(index);
-        // Whatever was waiting on this chunk can go now. Buffered chunks were recorded when
-        // they were buffered, so the drain moves bytes and never touches the ledger, and it
-        // drops each chunk from the buffer only once that chunk's write has resolved. A
-        // failure part way through therefore leaves the ledger describing chunks this side
-        // still holds, in the buffer, rather than chunks it has lost.
-        await drainAhead();
-        return { written: true, duplicate: false, dropped: false };
-      }
-      if (ahead.size >= MAX_AHEAD_CHUNKS || aheadBytes + chunk.byteLength > MAX_AHEAD_BYTES) {
-        // Deliberately NOT recorded. A ledger entry for a chunk that exists nowhere would
-        // make the next resume skip it and leave a hole nothing later detects.
-        return { written: false, duplicate: false, dropped: true };
-      }
-      // Copy: the caller's view may be over a buffer that gets reused or transferred, and
-      // this one is kept until the gap in front of it fills.
-      ahead.set(index, chunk.slice());
-      aheadBytes += chunk.byteLength;
-      book.mark(index);
-      return { written: false, duplicate: false, dropped: false };
+        return { written: false, duplicate: false, dropped: false };
+      });
     },
 
     /** Flush anything the frontier has caught up with. Safe to call at any time. */
-    drain() { return drainAhead(); },
+    drain() { return serialize(drainAhead); },
 
     async checkpoint() {
       if (typeof sink.checkpoint !== 'function') return position;
@@ -378,14 +394,16 @@ export function createIndexedSink(sink, { chunkSize, size, ledger = null, writte
     },
 
     async finish() {
-      await drainAhead();
-      if (next < totalChunks) {
-        throw new Error(`the file is missing ${totalChunks - next} of its ${totalChunks} chunks, so it cannot be closed`);
-      }
-      if (position !== total) {
-        throw new Error(`the file was announced as ${total} bytes but ${position} were written`);
-      }
-      return sink.finish();
+      return serialize(async () => {
+        await drainAhead();
+        if (next < totalChunks) {
+          throw new Error(`the file is missing ${totalChunks - next} of its ${totalChunks} chunks, so it cannot be closed`);
+        }
+        if (position !== total) {
+          throw new Error(`the file was announced as ${total} bytes but ${position} were written`);
+        }
+        return sink.finish();
+      });
     },
 
     async abort(reason) {

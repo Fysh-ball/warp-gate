@@ -624,7 +624,19 @@ export class Session extends EventTarget {
           + 'Open a new gate and send the rest.');
         return;
       }
-      this.teardown(reason === 'ttl' ? 'The gate expired.' : 'The other device burned the gate.');
+      // Every reason the server can write (rooms.js destroyRoom) plus 'closed', which is
+      // this side's stand-in for a frame with no reason. 'severed' goes only to the side
+      // that did NOT sever, so the accusation is earned there and nowhere else: collapsing
+      // the rest into it blamed a peer for a server restart. An unmapped reason is named,
+      // not absorbed, so the next new reason cannot hide behind a wrong message.
+      const endings = {
+        severed: 'The other device burned the gate.',
+        ttl: 'The gate expired.',
+        abandoned: 'Nobody was connected for too long, so this gate has ended.',
+        shutdown: 'The server restarted, so this gate has ended.',
+        closed: 'This gate has ended.',
+      };
+      this.teardown(endings[reason] ?? `This gate has ended (${String(reason).slice(0, 40)}).`);
     });
 
     this.signal.addEventListener('undecryptable', (event) => {
@@ -1294,11 +1306,11 @@ export class Session extends EventTarget {
     // this derivation exists to avoid creating.
     this.nameSeeds.clear();
     this.names.clear();
-    try { this.signal?.close(); } catch (err) { void err; }
+    try { this.signal?.close(); } catch (err) { this.emit('warning', `closing the signalling stream failed: ${err.message}`); }
     // The gate is gone, so nothing here can ever be continued. The stored handle goes with
     // it: leaving it would offer to resume into a dead room, and "nothing outlives the
     // gate" is a promise this makes to the user.
-    this.forgetInboundRecord().catch(() => {});
+    this.forgetInboundRecord().catch((err) => this.emit('warning', `could not forget the stored transfer record: ${err.message}`));
     this.pendingInbound = null;
     this.lostInbound = null;
     // The stored password key goes with the gate, exactly as the secret does. Leaving it

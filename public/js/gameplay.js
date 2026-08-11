@@ -108,7 +108,9 @@ export class GameSession extends EventTarget {
     const mine = SEATS[gameId].includes(seat) ? seat : SEATS[gameId][0];
     const mid = randomHex(8);
     this.match = null;
+    const displaced = this.incoming;
     this.incoming = null;
+    if (displaced) await this.transport(displaced.peer, { t: 'decline', mid: displaced.mid });
     this.notice = null;
     this.outgoing = { mid, peer, gameId, name: entry.name, seat: mine };
     this.changed();
@@ -133,6 +135,13 @@ export class GameSession extends EventTarget {
     const inv = this.incoming;
     if (!inv || this.busy) return false;
     this.incoming = null;
+    // An unanswered invitation of ours cannot survive into this match: its peer could
+    // still accept it later and that acceptance must not find a live outgoing to match.
+    const out = this.outgoing;
+    if (out) {
+      this.outgoing = null;
+      await this.transport(out.peer, { t: 'cancel', mid: out.mid });
+    }
     this.start(inv.mid, inv.peer, inv.gameId, otherSeat(inv.gameId, inv.seat));
     const ok = await this.transport(inv.peer, { t: 'accept', mid: inv.mid });
     if (!ok) {
@@ -173,6 +182,7 @@ export class GameSession extends EventTarget {
       // games cannot use it: the two sides apply different numbers of moves.
       n: 0,
       readySent: false,
+      opponentWasReady: false,
       lastEffect: null,
       ended: null,
     };
@@ -224,13 +234,29 @@ export class GameSession extends EventTarget {
     if (before.turn !== m.seat) return { ok: false, error: 'it is not your turn' };
     const res = m.engine.applyMove(m.state, move);
     if (!res.ok) return res;
+    const prev = { state: m.state, lastEffect: m.lastEffect, ended: m.ended };
     m.state = res.state;
     m.lastEffect = res.effect ?? null;
     const n = m.n;
     m.n += 1;
     this.settle(m);
+    const applied = { state: m.state, ended: m.ended };
     this.changed();
-    await this.transport(m.peer, { t: 'move', mid: m.mid, n, move });
+    const ok = await this.transport(m.peer, { t: 'move', mid: m.mid, n, move });
+    if (!ok) {
+      // The move never left, so the peer's board never saw it: keeping it here is the
+      // silent divergence this layer exists to prevent. Take it back and say so, unless
+      // something else (a resign, the peer leaving) already moved the match on.
+      if (m.state === applied.state && m.n === n + 1 && m.ended === applied.ended) {
+        m.state = prev.state;
+        m.lastEffect = prev.lastEffect;
+        m.ended = prev.ended;
+        m.n = n;
+        this.notice = 'the move did not reach the other device: try again once the connection is back';
+        this.changed();
+      }
+      return { ok: false, error: 'the move did not reach the other device' };
+    }
     return { ok: true };
   }
 
@@ -246,7 +272,7 @@ export class GameSession extends EventTarget {
       if (!placed.ok) return placed;
       m.state = placed.ok ? placed.state : fresh;
       // Their readiness is theirs, not ours: keep it across a re-roll of our own fleet.
-      if (this.opponentWasReady) {
+      if (m.opponentWasReady) {
         const again = m.engine.applyMove(m.state, { type: 'opponentReady' });
         if (again.ok) m.state = again.state;
       }
@@ -258,7 +284,13 @@ export class GameSession extends EventTarget {
       if (m.readySent) return { ok: false, error: 'you are already ready' };
       m.readySent = true;
       this.changed();
-      await this.transport(m.peer, { t: 'move', mid: m.mid, move: { type: 'ready' } });
+      const ok = await this.transport(m.peer, { t: 'move', mid: m.mid, move: { type: 'ready' } });
+      if (!ok) {
+        m.readySent = false;
+        this.notice = 'ready did not reach the other device: try again once the connection is back';
+        this.changed();
+        return { ok: false, error: 'ready did not reach the other device' };
+      }
       return { ok: true };
     }
 
@@ -266,9 +298,19 @@ export class GameSession extends EventTarget {
       if (!m.readySent) return { ok: false, error: 'lock your fleet in first' };
       const res = m.engine.applyMove(m.state, { type: 'fire', x: move.x, y: move.y });
       if (!res.ok) return res;
+      const prevState = m.state;
       m.state = res.state;
       this.changed();
-      await this.transport(m.peer, { t: 'move', mid: m.mid, move: { type: 'fire', x: move.x, y: move.y } });
+      const ok = await this.transport(m.peer, { t: 'move', mid: m.mid, move: { type: 'fire', x: move.x, y: move.y } });
+      if (!ok) {
+        // The shot never left: a pending shot the peer never saw would strand this board.
+        if (m.state === res.state && !m.ended) {
+          m.state = prevState;
+          this.notice = 'the shot did not reach the other device: try again once the connection is back';
+          this.changed();
+        }
+        return { ok: false, error: 'the shot did not reach the other device' };
+      }
       return { ok: true };
     }
 
@@ -326,14 +368,31 @@ export class GameSession extends EventTarget {
 
     if (t === 'accept') {
       const out = this.outgoing;
-      if (!out || out.mid !== payload.mid || out.peer !== peer) return undefined;
+      if (!out || out.mid !== payload.mid || out.peer !== peer) {
+        // A duplicate accept for the match already running is noise, not a stale invite.
+        if (this.match && this.match.mid === payload.mid && this.match.peer === peer) return undefined;
+        // A stale invite they accepted after it stopped existing here: end their ghost
+        // match rather than leave their board running against nobody.
+        return this.transport(peer, { t: 'end', mid: payload.mid, reason: 'unknown match' });
+      }
       this.outgoing = null;
+      if (this.busy) {
+        // The invite was displaced by a match that started in the meantime; starting this
+        // one too would silently replace a live board. Their side gets an end instead.
+        return this.transport(peer, { t: 'end', mid: payload.mid, reason: 'busy' });
+      }
       this.start(out.mid, peer, out.gameId, out.seat);
       return undefined;
     }
 
     const m = this.match;
-    if (!m || m.mid !== payload.mid || m.peer !== peer) return undefined;
+    if (!m || m.mid !== payload.mid || m.peer !== peer) {
+      // A move for a match this side does not hold (a reload resumed our slot, so no
+      // peer-left ever fired at them): answer it, or their board waits on us forever.
+      // Only moves are answered: replying to a stray 'end' with an 'end' would loop.
+      if (t === 'move') return this.transport(peer, { t: 'end', mid: payload.mid, reason: 'unknown match' });
+      return undefined;
+    }
 
     if (t === 'resign') {
       if (m.ended) return undefined;
@@ -414,7 +473,7 @@ export class GameSession extends EventTarget {
       const res = m.engine.applyMove(m.state, { type: 'opponentReady' });
       if (!res.ok) return this.fail(m, `they said ready twice: ${res.error}`);
       m.state = res.state;
-      this.opponentWasReady = true;
+      m.opponentWasReady = true;
       this.changed();
       return undefined;
     }
@@ -428,11 +487,14 @@ export class GameSession extends EventTarget {
       m.lastEffect = res.effect ?? null;
       this.settle(m);
       this.changed();
-      await this.transport(m.peer, {
+      const ok = await this.transport(m.peer, {
         t: 'move',
         mid: m.mid,
         move: { type: 'result', x: move.x, y: move.y, outcome: res.effect.outcome },
       });
+      // The shot landed here but its answer never left: nothing retransmits it, so the
+      // shooter would wait on a pending shot forever while this board carries the hit.
+      if (!ok) return this.fail(m, 'the connection dropped before their shot could be answered');
       return undefined;
     }
 
@@ -507,7 +569,6 @@ export class GameSession extends EventTarget {
     this.outgoing = null;
     this.incoming = null;
     this.notice = null;
-    this.opponentWasReady = false;
     this.changed();
   }
 }

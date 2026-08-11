@@ -395,9 +395,12 @@ export async function handleApi(req, res, url) {
       return fail(res, 400, 'bad_envelope');
     }
     // Bytes, not UTF-16 code units: .length admits 1.5x the advertised cap on 3-byte
-    // characters and 2x on astral ones, and bytes are both what /api/config advertises
-    // and what actually gets written into the peer's socket.
-    if (Buffer.byteLength(env.n) + Buffer.byteLength(env.c) > config.limits.maxRelayBytes) {
+    // characters and 2x on astral ones. Measured over the WHOLE serialized envelope, not
+    // just n and c: every sibling key a sender adds is carried to the peer as well, so a
+    // cap that skipped them bounded only the two keys an honest client sends, and the
+    // real ceiling was the body cap. This serialization is for measurement alone; what is
+    // delivered is still the parsed object, untouched.
+    if (Buffer.byteLength(JSON.stringify(env)) > config.limits.maxRelayBytes) {
       return fail(res, 413, 'envelope_too_large');
     }
 
@@ -456,7 +459,10 @@ export async function handleApi(req, res, url) {
     const slot = slotFor(room, token);
     if (!slot) return fail(res, 403, 'bad_token');
 
-    if (!streamOpen(key, config.limits.streamsPerKey)) return fail(res, 429, 'too_many_streams');
+    // Keyed by the seat the token authorised, never by address: every client behind one
+    // NAT or proxy hop shares an address, and seats are bounded by maxRooms x maxParticipants.
+    const streamKey = `${room.id}/${slot}`;
+    if (!streamOpen(streamKey, config.limits.streamsPerKey)) return fail(res, 429, 'too_many_streams');
 
     // Only now, and not a moment earlier. An SSE stream is long lived by definition, so
     // its request and response timeouts have to be lifted; but index.js used to do that
@@ -485,7 +491,7 @@ export async function handleApi(req, res, url) {
     const cleanup = () => {
       if (closed) return;
       closed = true;
-      streamClose(key);
+      streamClose(streamKey);
       detach(room, slot, res);
     };
     res.on('close', cleanup);

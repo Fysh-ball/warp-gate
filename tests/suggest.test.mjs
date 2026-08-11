@@ -15,9 +15,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { check, summary, startServer, request, delay } from './lib/harness.mjs';
+import { check, summary, startServer, request, delay, freePort } from './lib/harness.mjs';
 
-const PORT = 3782;
+const PORT = await freePort(3782);
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wg-suggest-'));
 const STORE = path.join(tmp, 'suggestions.jsonl');
 
@@ -410,7 +410,7 @@ function runReader(file, env = {}) {
 // So the thing under test is not "the write fails", which was already true and already
 // silent. It is that the process SAYS SO at boot, once, where an operator will see it.
 {
-  const PORT = 3783;
+  const PORT = await freePort(3783);
   const walled = path.join(tmp, 'no-entry');
   fs.mkdirSync(walled, { recursive: true });
   // 0o500: readable and traversable, not writable. The same shape as the production
@@ -435,8 +435,9 @@ function runReader(file, env = {}) {
   // The warning must be earned, not printed unconditionally. Same server, writable store.
   const okDir = path.join(tmp, 'can-write');
   fs.mkdirSync(okDir, { recursive: true });
+  const P2 = await freePort(PORT + 1);
   const srv2 = await startServer({
-    WG_HTTP_PORT: String(PORT + 1),
+    WG_HTTP_PORT: String(P2),
     WG_STUN_ENABLED: '0',
     WG_SUGGESTIONS_PATH: path.join(okDir, 'suggestions.jsonl'),
   });
@@ -444,7 +445,7 @@ function runReader(file, env = {}) {
     !/store is unusable/.test(srv2.stdout()), srv2.stdout());
 
   // And the box genuinely works there, so "no warning" means usable rather than unchecked.
-  const posted = await request(PORT + 1, 'POST', '/api/suggest', { text: 'this one lands' });
+  const posted = await request(P2, 'POST', '/api/suggest', { text: 'this one lands' });
   check('CONTROL: and a submission to the unwarned store actually reaches disk',
     posted.status === 204 && fs.readFileSync(path.join(okDir, 'suggestions.jsonl'), 'utf8').includes('this one lands'),
     `http ${posted.status}`);

@@ -194,12 +194,12 @@ export const ROOM_ID_CHARS = 8; // 40 bits
  *   S = PBKDF2-HMAC-SHA256(phrase, salt = "wg/v1/gate-code", c = 600000, dkLen = 16)
  *
  * S stays 16 bytes because every derivation below expects 16 bytes, but its ENTROPY is
- * the code's 103.02 bits (8 words from 7776) and no amount of hashing invents more. The
+ * the code's 103.40 bits (8 words from 7776) and no amount of hashing invents more. The
  * stretch is what makes 103 acceptable. DESIGN.md 3.2 sets the bar: S must survive an
  * OFFLINE attack, because S also encrypts the SDP and ICE candidates, so recovering it
  * later reveals both peers' IP addresses. One PBKDF2 attempt at 600,000 iterations is
  * about 1.2 million SHA-256 compressions, near 2^20.2, so a full search costs
- * 2^103.0 * 2^20.2 = 2^123.2 compressions: the same order as the 2^128 the old base32
+ * 2^103.4 * 2^20.2 = 2^123.6 compressions: the same order as the 2^128 the old base32
  * code offered, and out of reach of anything short of a state actor. The ONLINE bar from
  * 3.2 is about 40 bits, because a wrong guess fails key confirmation and destroys the
  * room, and 103 bits was never close to it.

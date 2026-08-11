@@ -2,7 +2,7 @@
 //
 // A gate code is what a person reads out, types on a phone keyboard, or pastes into a
 // chat. It replaced a 26-symbol base32 string because that string was accurate and
-// unusable. Eight words out of 7776 is log2(7776) * 8 = 103.02 bits of entropy, which is
+// unusable. Eight words out of 7776 is log2(7776) * 8 = 103.40 bits of entropy, which is
 // less than the 128 bits the base32 code carried, and crypto.js buys the difference back
 // with 600,000 rounds of PBKDF2 between the code and the room secret S. See crypto.js
 // deriveSecret and DESIGN.md 3.2 for that arithmetic; this file only deals in words.
@@ -720,7 +720,7 @@ export const WORDS = Object.freeze(WORDLIST.trim().split(/\s+/));
 export const WORDLIST_SHA256 = 'bcc957797cf6e7ce41a54ca0e0873946330bdc8390688eabc801906f7f120176';
 
 export const WORD_COUNT = WORDS.length; // 7776 = 6^5, one five-dice throw per word
-export const CODE_WORDS = 8; // 8 * log2(7776) = 103.02 bits
+export const CODE_WORDS = 8; // 8 * log2(7776) = 103.40 bits
 export const WORD_BITS = 13; // 2^13 = 8192, the smallest power of two >= 7776
 export const PREFIX_LEN = 4; // the guaranteed-unique prefix
 export const CODE_PREFIX = 'WARP';

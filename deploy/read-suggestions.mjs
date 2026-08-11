@@ -12,11 +12,29 @@
 // repaint your terminal. It re-checks anyway, because a file edited by hand is a file
 // nobody sanitised.
 
+import fs from 'node:fs';
 import { read, clean, SuggestionsTooLarge } from '../server/suggestions.js';
 
 const file = process.argv[2] || process.env.WG_SUGGESTIONS_PATH || '';
 if (!file) {
   console.error('no path: pass one, or set WG_SUGGESTIONS_PATH');
+  process.exit(2);
+}
+
+// read() maps ENOENT to an empty store, which is right for the server and wrong here: a
+// typo'd or stale path would print "0 suggestion(s)" and exit 0, and the operator's only
+// view of the box would read "it broke" as "it is empty". A file that does not exist may
+// well BE the empty store (nothing has ever been written), but it gets said out loud so
+// a wrong path never looks like an empty box. Any other failure is an error, not absence.
+try {
+  fs.statSync(file);
+} catch (err) {
+  if (err.code === 'ENOENT') {
+    console.log(`0 suggestion(s): ${file} does not exist. Either nothing has ever been `
+      + 'written, or this is not the path the server writes to.');
+    process.exit(0);
+  }
+  console.error(`cannot read ${file}: ${err.message}`);
   process.exit(2);
 }
 

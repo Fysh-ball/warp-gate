@@ -354,16 +354,27 @@ function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   process.stdout.write(`warp-gate shutting down (${signal})\n`);
-  destroyAll('shutdown');
+  const notified = destroyAll('shutdown');
   for (const t of timers) clearInterval(t);
   for (const sock of stunSockets) {
     try { sock.close(); } catch (err) { void err; }
   }
-  // server.close() waits for every open connection, so an idle keep-alive socket alone
-  // would hold the process until the force-exit timer. The rooms are already gone.
-  server.closeIdleConnections();
-  server.closeAllConnections();
-  server.close(() => process.exit(0));
+  // When anyone was just told 'closed', NOTHING is cut in this tick, server.close()
+  // included: a stream whose response destroyAll just ended but has not flushed carries
+  // no active request, so closeIdleConnections, closeAllConnections AND close() (which
+  // closes idle connections itself since Node 19) all count it idle and cut it, and the
+  // frame a backpressured reader has not taken yet dies in this process's write queue.
+  // The user is then told nothing, which is the flush window destroyLingerMs exists to
+  // give: destroyRoom destroys each stream itself after that window, so the cut here is
+  // the backstop for everything else. Capped below the harness/deploy SIGKILL horizon
+  // and the force-exit stays the absolute ceiling; with nobody to tell, shutdown is as
+  // immediate as it always was.
+  const graceMs = notified > 0 ? Math.min(config.destroyLingerMs, 1500) : 0;
+  setTimeout(() => {
+    server.closeIdleConnections();
+    server.closeAllConnections();
+    server.close(() => process.exit(0));
+  }, graceMs).unref();
   setTimeout(() => process.exit(0), 3000).unref();
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));

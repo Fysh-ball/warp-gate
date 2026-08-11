@@ -421,6 +421,10 @@ async function openGate({ holdAt = 6, autoAccept = true } = {}) {
 
   check('CONTROL: the quiet timer really did fire while the channel was down',
     ran >= 1, `fired=${ran}`);
+  // "No second account" is only a verdict if there was a first: with zero accounts this
+  // check would pass over a drop nobody explained at all.
+  check('CONTROL: the drop really was explained once before the quiet timer fired',
+    before >= 1, `${before} accounts of the drop`);
   check('a quiet timer on a channel that is down adds no second account of the drop',
     g.receiver.said('file-stalled').length === before,
     `${before} -> ${g.receiver.said('file-stalled').length}`);
@@ -863,6 +867,11 @@ async function openGate({ holdAt = 6, autoAccept = true } = {}) {
   await A.session.signal.send(held);
   await waitUntil(() => B.link.restartTimer);
 
+  // Every verdict below is pass-on-absence: "no key adopted", "no sever", "nobody told".
+  // A guard that THREW would satisfy all three equally well, so the handler error the
+  // relay captures is read before any of them is allowed to mean anything.
+  check('CONTROL: the guard judged the stale answer rather than throwing out of it',
+    !B.error, `B handler error: ${B.error}`);
   check('an answer from a handshake that has been restarted is not taken as the answer to '
     + 'the current one', !B.link.peerPublicRaw, `B peer key adopted=${Boolean(B.link.peerPublicRaw)}`);
   check('and neither end burns the gate over it, because a crossing renegotiation is not a '
@@ -923,6 +932,8 @@ async function openGate({ holdAt = 6, autoAccept = true } = {}) {
   A.link.clearRestartTimer();
   await B.session.signal.send(heldB);
   await waitUntil(() => A.link.restartTimer);
+  check('CONTROL: the guard judged the unbound reveal rather than throwing out of it',
+    !A.error, `A handler error: ${A.error}`);
   check('a reveal that lands on an end which has just torn its handshake down is not read as '
     + 'a peer skipping the commitment',
     !A.session.severed && A.authFailed.length === authFailedBefore,
@@ -974,6 +985,11 @@ async function openGate({ holdAt = 6, autoAccept = true } = {}) {
     + 'restart while the request is still on the wire',
     bResets === 1, `${bResets} resets for one restart`);
   B.link.resetForRenegotiation = realReset;
+
+  // The relay's catch keeps every handler error; a section that ends with one recorded
+  // has been running past a crashed guard, whatever its individual verdicts said.
+  check('CONTROL: no relayed handler threw anywhere in this section',
+    !A.error && !B.error, `A: ${A.error} B: ${B.error}`);
 
   A.link.close('test over');
   B.link.close('test over');

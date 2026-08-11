@@ -20,7 +20,7 @@ const CDP = 9779;
 if (!findBrowser()) { process.stdout.write('BAD  no browser\n'); process.exit(1); }
 const server = await startServer({ WG_HTTP_PORT: String(PORT), WG_PUBLIC_GET_PER_WINDOW: '500' });
 const browser = await launchBrowser({ port: CDP });
-const tab = await browser.newTab(`http://127.0.0.1:${PORT}/`);
+const tab = await browser.newTab(`http://127.0.0.1:${PORT}/app`);
 await tab.waitFor("!!document.getElementById('screen-home')", { label: 'page loaded' });
 
 const run = (body) => tab.eval(`
@@ -293,14 +293,14 @@ try {
     const grab = async (fn) => { try { return { ok: true, v: await fn() }; } catch (e) { return { ok: false, v: e.message }; } };
     const root = await navigator.storage.getDirectory();
     const h = await root.getFileHandle('rec.bin', { create: true });
-    await T.saveResume('ROOM1234', { id: 'x', meta: { name: 'n', size: 1 }, received: 5, handle: h });
-    const back = await T.loadResume('ROOM1234');
+    await T.saveResume('ROOM1234', 'PEER1', { id: 'x', meta: { name: 'n', size: 1 }, received: 5, handle: h });
+    const back = await T.loadResume('ROOM1234', 'PEER1');
     const isHandle = Boolean(back && back.handle && typeof back.handle.getFile === 'function');
-    await T.clearResume('ROOM1234');
-    const gone = await T.loadResume('ROOM1234');
-    const noRoom = await grab(() => T.saveResume('', {}));
+    await T.clearResume('ROOM1234', 'PEER1');
+    const gone = await T.loadResume('ROOM1234', 'PEER1');
+    const noRoom = await grab(() => T.saveResume('', 'PEER1', {}));
     // A live, non-cloneable object must be reported, not swallowed.
-    const live = await grab(() => T.saveResume('ROOM1234', { sink: { write() {} } }));
+    const live = await grab(() => T.saveResume('ROOM1234', 'PEER1', { sink: { write() {} } }));
     return JSON.stringify({ received: back && back.received, isHandle, gone, noRoom, live });
   `));
   check('a resume record round-trips with a live file handle',

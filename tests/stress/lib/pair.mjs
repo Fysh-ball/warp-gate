@@ -135,7 +135,7 @@ export async function openPair({ port, stunPort, cdpPort, serverEnv = {} }) {
 
   const a = await browser.newTab('about:blank');
   await instrument(a);
-  await a.send('Page.navigate', { url: origin });
+  await a.send('Page.navigate', { url: `${origin}/app` });
   await a.waitFor("!!document.getElementById('screen-onboarding')", { label: 'tab A loaded' });
   // Clear the clickwrap the same way a user does.
   await a.waitFor("!document.getElementById('screen-onboarding').hidden || !document.getElementById('screen-home').hidden",
@@ -152,6 +152,10 @@ export async function openPair({ port, stunPort, cdpPort, serverEnv = {} }) {
   await a.waitFor("!document.getElementById('screen-home').hidden", { label: 'tab A home' });
 
   await a.eval("document.getElementById('create-btn').click(); return true;");
+  // The pre-flight network notice stands in front of both create and join; click
+  // through it the way a person does.
+  await a.waitFor("!document.getElementById('net-modal').hidden", { timeout: 20000, label: 'tab A network notice' });
+  await a.eval("document.getElementById('net-continue').click(); return true;");
   await a.waitFor("!document.getElementById('screen-waiting').hidden", { timeout: 25000, label: 'tab A waiting' });
   await a.eval("document.getElementById('reveal-share').click(); return true;");
   const code = await a.waitFor("(document.getElementById('room-code').textContent || '').trim()",
@@ -159,8 +163,11 @@ export async function openPair({ port, stunPort, cdpPort, serverEnv = {} }) {
 
   const b = await browser.newTab('about:blank');
   await instrument(b);
-  await b.send('Page.navigate', { url: `${origin}/#${code}` });
+  await b.send('Page.navigate', { url: `${origin}/app#${code}` });
   await b.waitFor("!!document.getElementById('screen-home')", { label: 'tab B loaded' });
+  // The notice is per tab, so tab A answering it does nothing for tab B.
+  await b.waitFor("!document.getElementById('net-modal').hidden", { timeout: 20000, label: 'tab B network notice' });
+  await b.eval("document.getElementById('net-continue').click(); return true;");
 
   await a.waitFor("!document.getElementById('screen-connected').hidden", { timeout: 40000, label: 'tab A connected' });
   await b.waitFor("!document.getElementById('screen-connected').hidden", { timeout: 40000, label: 'tab B connected' });

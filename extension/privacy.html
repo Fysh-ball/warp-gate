@@ -7,6 +7,10 @@
 <meta name="color-scheme" content="dark light">
 <title>Warp Gate: Privacy Policy</title>
 <link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
 </head>
 <body>
 <header class="bar">
@@ -109,8 +113,10 @@ please do not put anything in it that you would not want kept.</p>
 <p>We cannot make the network invisible, and we will not pretend otherwise.</p>
 <ul>
   <li><strong>Cloudflare</strong> sits in front of the Service and terminates the HTTPS
-      connection. It can observe your IP address, the time and size of requests, and the
-      room identifier. It cannot read message or file content, which is separately
+      connection. It can observe your IP address, the time and size of requests, the
+      room identifier, and the per-seat capability token that authorises your
+      connection to a gate's signalling. The token decrypts nothing; it only
+      authorises the seat. It cannot read message or file content, which is separately
       encrypted. Its handling of that data is governed by Cloudflare's own policies.</li>
   <li><strong>A STUN server</strong> is contacted by your browser to discover your public
       network address, which is a necessary step in making a direct connection. We
@@ -128,13 +134,23 @@ please do not put anything in it that you would not want kept.</p>
 <p>The Service sets no cookies. It uses browser storage only for:</p>
 <ul>
   <li><code>localStorage</code>: a record that you accepted the Terms, with the version
-      and date. This exists so you are not asked on every visit.</li>
+      and date, so you are not asked on every visit; and, if you used the motion toggle
+      on the front page, your animation preference, so it holds on your next visit.</li>
+  <!-- EXTENSION PATCH: the extension stores one thing the website does not, and a list
+       introduced with "only" has to name it. -->
+  <li><code>localStorage</code>: <code>wg.signalOrigin</code>, the signalling server you
+      chose on the extension's own page, if you changed it from the default. It stays
+      until you clear it there.</li>
   <li><code>sessionStorage</code>: your session token <em>and the room secret</em> for a
-      gate that is currently open, so that reloading the page does not destroy the
-      session; and, while you are sending a file, a note of what is being sent (its name,
-      size, type and a fingerprint of its first bytes) so that a reload can offer to
-      continue rather than start over. All of it is scoped to that tab, removed the
-      moment the gate ends, and discarded when the tab closes. The secret is held here
+      gate that is currently open, and, for a password-protected gate, a key stretched
+      from that password (never the password itself), so that reloading the page does
+      not destroy the session; a counter that keeps old signalling messages from being
+      replayed after a reload; while you are sending a file, a note of what is being
+      sent (its name, size, type and a fingerprint of its first bytes) so that a reload
+      can offer to continue rather than start over; and a marker for each notice you
+      have dismissed, so it stays dismissed in that tab. All of it is scoped to that tab
+      and discarded when the tab closes; the token, the secret and the stretched key are
+      also removed the moment the gate ends. The secret is held here
       rather than in the address bar so that it is not readable by anyone who can see
       your screen. Note that some browsers write sessionStorage to disk for crash
       recovery, so treat this as a short-lived convenience rather than a vault.</li>
@@ -148,14 +164,17 @@ please do not put anything in it that you would not want kept.</p>
       you chose, on your own disk. The entry is deleted when the transfer finishes, when
       the gate ends, and when you cancel; if you close the tab mid-transfer and never
       return to that gate, the entry lingers until you clear this site's data.</li>
-  <li><strong>A service worker</strong>, registered only when a file is too large to hold
-      in memory. It is a small script this site installs in your browser so that a
-      received file can be handed to your browser's own download manager and written
-      straight to disk, instead of being held in the page. <strong>It never sees a key
-      and never decrypts anything</strong>: the page decrypts and passes it finished
-      bytes. Unlike the storage above it is not removed when the gate ends, because a
-      service worker belongs to the site rather than to a session. You can remove it at
-      any time by clearing site data for this site in your browser's settings.</li>
+  <!-- EXTENSION PATCH: the website installs a service worker for app install, the
+       share sheet and very large files, and parks share-sheet files in Cache Storage.
+       An extension page cannot register a service worker, so neither exists here and
+       describing them would disclose storage that cannot exist. -->
+  <li><strong>No service worker, and no Cache Storage.</strong> The website version
+      installs a worker so the site can be installed like an app, shared into from a
+      device's share sheet, and so very large files can be handed to the browser's own
+      download manager, keeping a shared file's contents in Cache Storage on the way
+      through. An extension page cannot register a service worker, so this package
+      never installs any script that outlives its pages and never writes a file's
+      contents to browser storage.</li>
 </ul>
 <p>All of these can be cleared at any time through your browser's settings. Messages, and
 received files that are being held in memory rather than saved to a location you chose,

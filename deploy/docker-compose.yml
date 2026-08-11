@@ -28,8 +28,11 @@ services:
     #
     # So the rule for ./data is simple and there is no way around it: it must be owned by
     # the uid named here. Set WG_UID/WG_GID in a .env beside this file to whichever user
-    # owns the deployment directory (`id -u`), and chown ./data to match.
-    user: "${WG_UID:-1000}:${WG_GID:-1000}"
+    # owns the deployment directory (`id -u`), and chown ./data to match. The fallbacks
+    # are this host's measured owner of ./data (3003:999, the deploy user), not a generic
+    # 1000:1000: a redeploy that loses the .env used to fall back to a uid that owns
+    # nothing here, which is the 2026-08-10 unwritable-store incident again.
+    user: "${WG_UID:-3003}:${WG_GID:-999}"
     environment:
       - WG_HTTP_PORT=3095
       - WG_HTTP_HOST=0.0.0.0
@@ -51,13 +54,20 @@ services:
       # single rate-limit bucket. Safe here only because 3095 is bound to loopback, so
       # nothing external can forge the header.
       #
-      # UNVERIFIED, see "OPEN: WG_TRUST_PROXY=1 may be inert" in NOTES.md: this service is
-      # bridge-networked, so the address the process actually sees may be the bridge
-      # gateway rather than 127.0.0.1. The server only reads the forwarding header from an
-      # address on its trusted list, and WG_TRUSTED_PROXIES is deliberately NOT set here
-      # because the right value has not been measured. Measure it before setting it: a
-      # wrong entry trusts something that is not the proxy.
+      # This service is bridge-networked, so the address the process actually sees is the
+      # bridge gateway rather than 127.0.0.1, and the server only reads the forwarding
+      # header from an address on its trusted list. See "CONFIRMED: WG_TRUST_PROXY=1 is
+      # inert on a bridge network" in NOTES.md.
       - WG_TRUST_PROXY=${WG_TRUST_PROXY:-1}
+      # The live stack's bridge gateway, measured 2026-08-11 inside the running container
+      # (`docker exec warp-gate ip route` -> default via 172.16.28.1) after the server's
+      # own "forwarding header arrived from a hop that is not trusted" warning confirmed
+      # the default allowlist was rejecting it. This is the gateway of THIS project's
+      # compose network and nothing else: it goes stale if the network is ever recreated
+      # or the topology changes, so re-measure with the same command before trusting a
+      # different value. Takes effect only when the container is recreated, which
+      # destroys live rooms: it rides the next restart-worthy deploy, not a static one.
+      - WG_TRUSTED_PROXIES=${WG_TRUSTED_PROXIES:-172.16.28.1}
       # TLS terminates at Cloudflare, so the response is served over HTTPS.
       - WG_HSTS=${WG_HSTS:-1}
       # AGPL-3.0 section 13: network users must be offered the corresponding source.
@@ -74,12 +84,18 @@ services:
       #
       # Unset it and the box disappears from the landing and /api/suggest 404s, which is
       # the right default for a self-hosted copy: it is the operator's own inbox and there
-      # is nobody to write to it. Read what has come in with:
+      # is nobody to write to it. Read what has come in, on the host, with:
+      #
+      #   cat data/suggestions.jsonl
+      #
+      # It is JSON Lines, one per line, holding the text and the hour and nothing else
+      # (server/suggestions.js says why). The sanitising reader also works in-container,
       #
       #   docker compose exec warp-gate node deploy/read-suggestions.mjs /data/suggestions.jsonl
       #
-      # or just `cat` the file on the host under ./data. It is JSON Lines, one per line,
-      # holding the text and the hour and nothing else (server/suggestions.js says why).
+      # but ONLY once a deploy has shipped it: /app holds what the deploy sequence in
+      # NOTES.md rsyncs there, which was server/ and public/ alone until 2026-08-11, so on
+      # a tree synced before then /app/deploy does not exist and the exec form fails.
       - WG_SUGGESTIONS_PATH=${WG_SUGGESTIONS_PATH:-/data/suggestions.jsonl}
     volumes:
       - ./app:/app:ro
@@ -113,7 +129,10 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3095/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      # Same probe as the image's own HEALTHCHECK (Dockerfile): port from the environment,
+      # j.ok parsed rather than the status trusted, a 3s abort so a hang is not billed the
+      # full timeout, and the failure message preserved.
+      test: ["CMD", "node", "-e", "const p=process.env.WG_HTTP_PORT||3095;fetch('http://127.0.0.1:'+p+'/api/health',{signal:AbortSignal.timeout(3000)}).then(r=>r.json()).then(j=>process.exit(j&&j.ok?0:1)).catch(e=>{console.error(e.message);process.exit(1)})"]
       interval: 30s
       timeout: 5s
       retries: 3

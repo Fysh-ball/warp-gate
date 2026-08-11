@@ -35,11 +35,11 @@
 //     it passes trivially in a page that threw nothing at all. So it plants one, by
 //     reaching the exact call the pre-fix build reached, and requires the probe to catch
 //     it. An empty pageErrors list is also what a listener that was never wired reports.
-import { check, summary, startServer, delay } from './lib/harness.mjs';
+import { check, summary, startServer, delay, freePort } from './lib/harness.mjs';
 import { launchBrowser } from './lib/cdp.mjs';
 
-const PORT = Number(process.env.WG_SECURE_PORT || 3793);
-const CDP_PORT = Number(process.env.WG_SECURE_CDP || 9793);
+const PORT = Number(process.env.WG_SECURE_PORT || 0) || await freePort(3793);
+const CDP_PORT = Number(process.env.WG_SECURE_CDP || 0) || await freePort(9793);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 // The onboarding gate stands in front of every screen. Accepted up front so that what is

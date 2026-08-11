@@ -8,7 +8,7 @@
 // The negative controls are at the bottom and each one runs the SAME predicate the real
 // check ran, against input it must reject. A check that has never failed is not evidence.
 
-import { check, summary, startServer } from './lib/harness.mjs';
+import { check, summary, startServer, freePort } from './lib/harness.mjs';
 import { launchBrowser, findBrowser } from './lib/cdp.mjs';
 import { GameSession, SEATS, MIRRORED, playableGames } from '../public/js/gameplay.js';
 import { GAME_IDS, getGame } from '../public/js/games/index.js';
@@ -185,14 +185,15 @@ for (const id of GAME_IDS) {
 }
 
 {
-  const { a } = await seated('chess');
+  // One fresh match per payload. The first protocol failure ends a match, so feeding all
+  // five to one match validated only the first: the other four landed on a corpse whose
+  // guards never ran.
   for (const junk of [null, 'e2e4', [1, 2], { from: 'zz', to: '99' }, { from: 'e2' }]) {
-    const before = a.match.ended;
+    const { a } = await seated('chess');
     await a.receive('peer-b', { t: 'move', mid: a.match.mid, n: 0, move: junk });
-    void before;
+    check(`junk ${JSON.stringify(junk)} in place of a move ends the match rather than throwing`,
+      a.match.ended?.reason === 'protocol', JSON.stringify(a.match.ended));
   }
-  check('junk in place of a move ends the match rather than throwing', a.match.ended?.reason === 'protocol',
-    JSON.stringify(a.match.ended));
 }
 
 {
@@ -332,8 +333,12 @@ for (const id of GAME_IDS) {
   await a.play({ type: 'ready' });
   await b.play({ type: 'ready' });
   await a.play({ type: 'fire', x: 4, y: 4 });
-  const largest = Math.max(...sent.a.concat(sent.b).map((p) => JSON.stringify(p).length));
-  check('every message this layer sends fits well inside the 4096-byte cap', largest < 512, `largest ${largest} bytes`);
+  const payloads = sent.a.concat(sent.b);
+  // Math.max of an empty set is -Infinity, which is under any cap: with no messages
+  // captured this check used to pass while measuring nothing.
+  const largest = Math.max(...payloads.map((p) => JSON.stringify(p).length));
+  check('every message this layer sends fits well inside the 4096-byte cap',
+    payloads.length >= 3 && largest < 512, `${payloads.length} messages, largest ${largest} bytes`);
 }
 
 // ---------------------------------------------------------------- negative controls
@@ -394,9 +399,9 @@ if (!findBrowser()) {
   check('a browser is available to test the games drawer in', false,
     'no Chromium-based browser found, so the drawer regression was NOT measured');
 } else {
-  const PORT = 3843;
+  const PORT = await freePort(3843);
   const STUN = 3844;
-  const CDP_PORT = 9843;
+  const CDP_PORT = await freePort(9843);
   const server = await startServer({
     WG_HTTP_PORT: String(PORT),
     WG_STUN_PORT: String(STUN),

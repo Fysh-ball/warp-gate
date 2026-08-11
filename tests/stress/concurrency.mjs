@@ -264,7 +264,7 @@ const nextPorts = () => {
       return JSON.stringify(rs.map(r => ({ buttons: r.buttons, sent: r.sent, total: r.total, text: r.text.slice(0, 160) })));
     `);
     check('a burned transfer is never offered as a saveable file',
-      !partial.includes('"Save"'), partial);
+      partial !== '[]' && !partial.includes('"Save"'), partial);
     process.stdout.write(`     note: receiver row after the burn: ${partial}\n`);
 
     const aSevered = await a.eval("return !document.getElementById('screen-severed').hidden;");

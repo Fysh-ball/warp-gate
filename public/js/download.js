@@ -10,6 +10,11 @@
 
 const PREFIX = '/wg-download/';
 const START_TIMEOUT_MS = 10_000;
+// How long finish() waits for the worker to confirm the close landed. The confirmation
+// arrives on a reply port carried by wg-close; a worker from before that protocol never
+// answers, so the wait is bounded and a timeout falls back to the old fire-and-forget
+// behaviour rather than failing a transfer the browser may have saved fine.
+const CLOSE_TIMEOUT_MS = 10_000;
 // Enough credit to keep bytes moving before the browser's first pull arrives, small
 // enough that a download nobody is consuming cannot pile up in the worker.
 const INITIAL_CREDITS = 8;
@@ -52,8 +57,10 @@ async function ensureWorker() {
   });
 }
 
-let counter = 0;
-const nextId = () => `${Date.now().toString(36)}-${(counter += 1).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+// The id is the handle the fetch handler selects a stream by, and the fetch side cannot
+// be bound to the opening client (the iframe navigation arrives as a fresh client), so
+// the id itself is the bearer token: it must be unguessable, not merely unique.
+const nextId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 /**
  * Open a download the browser writes to disk itself.
@@ -71,6 +78,7 @@ export async function openStreamDownload({ name, size, mime, note = null }) {
   let credits = INITIAL_CREDITS;
   let waiter = null;
   let started = false;
+  let startedWaiter = null;
   let dead = null;
 
   // Mark the transfer dead AND wake a write() parked waiting for credit. A parked waiter
@@ -80,6 +88,7 @@ export async function openStreamDownload({ name, size, mime, note = null }) {
   const fail = (err) => {
     dead = dead || err;
     if (waiter) { const w = waiter; waiter = null; w.reject(dead); }
+    if (startedWaiter) { const w = startedWaiter; startedWaiter = null; w.reject(dead); }
   };
 
   const onMessage = (event) => {
@@ -87,6 +96,7 @@ export async function openStreamDownload({ name, size, mime, note = null }) {
     if (!msg || msg.id !== id) return;
     if (msg.type === 'wg-started') {
       started = true;
+      if (startedWaiter) { const w = startedWaiter; startedWaiter = null; w.resolve(); }
     } else if (msg.type === 'wg-pull') {
       credits += 1;
       if (waiter) { const w = waiter; waiter = null; w.resolve(); }
@@ -167,7 +177,8 @@ export async function openStreamDownload({ name, size, mime, note = null }) {
     /**
      * Bytes handed to the worker, which is the only count this side can honestly report.
      *
-     * The worker is a pipe with no acknowledgement: once a chunk is posted, what the
+     * The worker is a pipe with no per-chunk acknowledgement (finish() alone gets a
+     * reply): once a chunk is posted, what the
      * browser's download manager has committed to disk is not observable from here. So this
      * is an upper bound on what is on disk, and it is only safe to resume from because the
      * stream stays open across a data channel drop. A reload closes it, and that is the
@@ -191,12 +202,43 @@ export async function openStreamDownload({ name, size, mime, note = null }) {
       handed += length;
     },
     async finish() {
+      if (dead) throw dead;
+      if (!started) {
+        // A transfer small enough to fit in the initial credit window can reach here
+        // before the browser has ever requested the download. Reporting success then
+        // would report a file that does not exist, so wait for wg-started, backed by
+        // the same startedCheck timer that turns "it never came" into a failure.
+        await new Promise((resolve, reject) => { startedWaiter = { resolve, reject }; });
+      }
       clearTimeout(startedCheck);
-      worker.postMessage({ type: 'wg-close', id });
-      cleanup();
-      // Leave the frame briefly: removing it the instant the body closes can cancel the
-      // download in some browsers before it has committed the last bytes.
-      setTimeout(removeFrame, 2000);
+      // Completion must not outrun the bytes. postMessage is async, so returning right
+      // after posting wg-close used to declare the file complete while the final chunks
+      // and the close were still in flight to the worker. The reply port makes the
+      // worker answer once it has taken every prior chunk and committed end-of-stream
+      // to the browser's download; only then, or after the bounded fallback, is the
+      // peer told the file arrived. What the download manager has flushed to disk is
+      // still not observable from here: the browser's own download UI is the authority
+      // for that last step.
+      try {
+        await new Promise((resolve, reject) => {
+          const channel = new MessageChannel();
+          const timer = setTimeout(resolve, CLOSE_TIMEOUT_MS);
+          channel.port1.onmessage = () => { clearTimeout(timer); resolve(); };
+          try {
+            worker.postMessage({ type: 'wg-close', id }, [channel.port2]);
+          } catch (err) {
+            // The worker went away, so the close never reached it: the download cannot
+            // have ended cleanly, and saying so beats a success the shelf contradicts.
+            clearTimeout(timer);
+            reject(err);
+          }
+        });
+      } finally {
+        cleanup();
+        // Leave the frame briefly: removing it the instant the body closes can cancel the
+        // download in some browsers before it has committed the last bytes.
+        setTimeout(removeFrame, 2000);
+      }
       return null;
     },
     async abort(reason) {

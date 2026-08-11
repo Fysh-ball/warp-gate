@@ -1,16 +1,17 @@
 // Signalling server behaviour, tested over the wire against a real process.
 // Run: node tests/signalling.test.mjs
 
+import fs from 'node:fs';
 import crypto from 'node:crypto';
 import dgram from 'node:dgram';
 import http from 'node:http';
 import net from 'node:net';
 import {
-  check, summary, startServer, request, openStream, delay, makeJoinProof, distinctTokens,
+  check, summary, startServer, request, openStream, delay, makeJoinProof, distinctTokens, freePort,
 } from './lib/harness.mjs';
 import { stunBinding } from '../tools/stun-client.mjs';
 
-const PORT = 3196;
+const PORT = await freePort(3196);
 const STUN = 3480;
 let ok = true;
 
@@ -303,7 +304,7 @@ async function relaysAfter(stream, seenAlready, ms) {
   // This is strictly stronger than the count it replaces: a stale or lying counter would
   // have satisfied `rooms === 0`, whereas nothing but a genuinely empty map lets the
   // refused create through.
-  const P = PORT + 8;
+  const P = await freePort(PORT + 8);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_MAX_ROOMS: '2', WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500',
@@ -352,7 +353,7 @@ async function relaysAfter(stream, seenAlready, ms) {
 
 // ---------------------------------------------------------------- rate limits
 {
-  const P = PORT + 1;
+  const P = await freePort(PORT + 1);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_CREATE_PER_WINDOW: '3', WG_RATE_WINDOW_MS: '60000',
@@ -382,7 +383,7 @@ async function relaysAfter(stream, seenAlready, ms) {
   // Behind a proxy, every request arrives from the proxy's address. If the real client
   // address is not recovered from CF-Connecting-IP, all users share one rate-limit
   // bucket and any single client can lock out everybody else.
-  const P = PORT + 5;
+  const P = await freePort(PORT + 5);
   const ids = ['PRXY0001', 'PRXY0002', 'PRXY0003', 'PRXY0004', 'PRXY0005'];
 
   const srvTrust = await startServer({
@@ -456,7 +457,7 @@ async function relaysAfter(stream, seenAlready, ms) {
 
 // ---------------------------------------------------------------- expiry
 {
-  const P = PORT + 2;
+  const P = await freePort(PORT + 2);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_UNCLAIMED_TTL_MS: '700', WG_SWEEP_MS: '150',
@@ -496,7 +497,7 @@ async function relaysAfter(stream, seenAlready, ms) {
 
 // ---------------------------------------------------------------- races
 {
-  const P = PORT + 4;
+  const P = await freePort(PORT + 4);
   // Pinned to two seats, because this block is about the race for the LAST one. With the
   // default six every join below would simply succeed and the assertion would prove
   // nothing about contention.
@@ -580,7 +581,7 @@ async function relaysAfter(stream, seenAlready, ms) {
   // from a train is not an idle gate, and treating it as one destroyed the room out from
   // under the side that was still there. What must still stop the clock is nobody being
   // attached at all, which is what lets a gate expire.
-  const P = PORT + 6;
+  const P = await freePort(PORT + 6);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_SWEEP_MS: '150',
     WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500',
@@ -637,7 +638,7 @@ async function relaysAfter(stream, seenAlready, ms) {
 // ---------------------------------------------------------------- hard limit
 {
   // The extension must not be unbounded, or two forgotten tabs would pin a room.
-  const P = PORT + 7;
+  const P = await freePort(PORT + 7);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_SWEEP_MS: '150',
     WG_MAX_SESSION_MS: '900',
@@ -666,7 +667,7 @@ async function relaysAfter(stream, seenAlready, ms) {
 
 // ---------------------------------------------------------------- STUN
 {
-  const P = PORT + 3;
+  const P = await freePort(PORT + 3);
   const S = STUN + 3;
   // WG_STUN_ENABLED is opt-in, and without it startStun() returns no sockets at all.
   // Omitting it left every assertion below measuring a port with nothing behind it.
@@ -773,7 +774,7 @@ async function relaysAfter(stream, seenAlready, ms) {
   // every request while the room secret never leaves the browser, so without a proof
   // anyone who can watch or operate this process could squat the second slot and lock
   // the real peer out.
-  const P = PORT + 9;
+  const P = await freePort(PORT + 9);
   // Two seats, so the occupancy-oracle ordering below can actually be reached: the check
   // is that a caller who cannot prove knowledge of the secret is refused BEFORE being told
   // whether the gate is full, and a gate that is never full would never test it.
@@ -851,7 +852,7 @@ async function relaysAfter(stream, seenAlready, ms) {
   // The password never reaches the server. All it may learn is the boolean it needs in
   // order to prompt the joiner, and that flag has to survive to every reader: create,
   // join and the resume path all show it, so a page that reloads still knows to ask.
-  const P = PORT + 10;
+  const P = await freePort(PORT + 10);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_PUBLIC_GET_PER_WINDOW: '200',
@@ -903,7 +904,7 @@ async function relaysAfter(stream, seenAlready, ms) {
 {
   // A gate seats config.limits.maxParticipants devices. Set low here so the ceiling can
   // actually be reached, and so the refusal past it is observed rather than assumed.
-  const P = PORT + 11;
+  const P = await freePort(PORT + 11);
   // Six, the shipped default, so this exercises the real ceiling and a full six-way roster
   // rather than a number chosen to make the test short. Fifteen links is what the cap is
   // actually there to bound.
@@ -975,7 +976,7 @@ async function relaysAfter(stream, seenAlready, ms) {
   // The most important property in the mesh. Every pair runs its own ECDH, and that is
   // only private to the pair because the server delivers a relay to the addressed slot and
   // to nothing else. A fallback broadcast here would hand one pair's handshake to everyone.
-  const P = PORT + 12;
+  const P = await freePort(PORT + 12);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
     WG_CREATE_PER_WINDOW: '500', WG_JOIN_PER_WINDOW: '500', WG_REJECT_PER_WINDOW: '500',
@@ -1146,8 +1147,35 @@ function stalledStream(port, roomId, token) {
   });
   return {
     opened,
+    localPort: () => sock.localPort,
     close: () => { try { sock.destroy(); } catch (err) { void err; } },
   };
+}
+
+/**
+ * Does `pid` still hold an open fd for the TCP connection whose REMOTE end is
+ * 127.0.0.1:clientPort?
+ *
+ * A stalled reader cannot observe its own closure (the FIN sits behind the data it
+ * refuses to read, and a graceful close sends no reset), so the release is read from the
+ * server process itself: /proc/net/tcp names the server-side socket's inode, and the
+ * inode either is or is not among the process's fds. res.destroy() drops the fd and
+ * fires the response's `close` (which is what releases the stream gauge) in the same
+ * act, so this is the released resource itself, not a proxy for it.
+ */
+function serverHoldsSocket(pid, clientPort) {
+  const remoteHex = `0100007F:${clientPort.toString(16).toUpperCase().padStart(4, '0')}`;
+  const inodes = new Set();
+  for (const row of fs.readFileSync('/proc/net/tcp', 'utf8').split('\n').slice(1)) {
+    const cols = row.trim().split(/\s+/);
+    if (cols.length > 9 && cols[2] === remoteHex) inodes.add(cols[9]);
+  }
+  return fs.readdirSync(`/proc/${pid}/fd`).some((fd) => {
+    try {
+      const target = fs.readlinkSync(`/proc/${pid}/fd/${fd}`);
+      return [...inodes].some((inode) => target === `socket:[${inode}]`);
+    } catch (err) { void err; return false; }
+  });
 }
 
 /**
@@ -1202,7 +1230,7 @@ async function twoSeats(port, roomId) {
   // WG_MAX_PARTICIPANTS 6 that is 1,200 possible streams and about 1.2 GB of allowance
   // against a 128 MB container. The attack is two seats: open both streams, stall one,
   // and POST 64 KiB envelopes at the stalled seat.
-  const P = PORT + 20;
+  const P = await freePort(PORT + 20);
   const ROOM = 'BACK0001';
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
@@ -1250,7 +1278,7 @@ async function twoSeats(port, roomId) {
   // number of relays, and the ONLY difference is that the aggregate ceiling is out of
   // reach. Against the pre-fix server, which had no aggregate bound, this is what the
   // block above also did.
-  const P = PORT + 21;
+  const P = await freePort(PORT + 21);
   const ROOM = 'BACK0002';
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
@@ -1278,7 +1306,7 @@ async function twoSeats(port, roomId) {
 {
   // The per-stream cap still does its own job, and it is configurable now rather than a
   // hard-coded 1 MiB that was sixteen times the relay cap for no stated reason.
-  const P = PORT + 22;
+  const P = await freePort(PORT + 22);
   const ROOM = 'BACK0003';
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
@@ -1307,12 +1335,15 @@ async function twoSeats(port, roomId) {
 // probes defers that indefinitely. After slot.res is null nothing writes to it again,
 // so the backlog guard cannot fire on it and the heartbeat skips it.
 //
-// What is observed is the PER-KEY STREAM GAUGE, not the socket, because a socket that is
-// not being read cannot see its own closure. The gauge is the resource the finding names
-// alongside the socket: streamClose only runs on the response's `close`, so a response
-// that was ended but never actually closed holds its entry indefinitely. With
-// WG_STREAMS_PER_KEY at 1 that entry is directly readable over HTTP: a second stream is
-// either accepted or refused 429, and the whole difference is whether the first one let go.
+// What is observed is the server process LETTING GO OF THE FD, via serverHoldsSocket
+// above. The gauge used to be the observable here, read over HTTP from another room, but
+// that worked only because it was keyed on the shared ADDRESS: now it is keyed on the
+// seat, a destroyed room's leaked entry blocks no other principal and no other principal
+// can see it over HTTP; and the stalled client cannot watch its own socket either,
+// because a graceful close sends no reset through data it refuses to read. So each arm
+// asks two questions: did the server drop the stalled connection inside the linger
+// window (the release), and was a different seat's stream untouched either way (the
+// per-seat keying itself).
 {
   const env = {
     WG_STUN_ENABLED: '0', WG_STREAMS_PER_KEY: '1',
@@ -1337,34 +1368,45 @@ async function twoSeats(port, roomId) {
     const pumped = await pumpRelays(port, room, seats.a.token, seats.b.slotId, 400);
     // A second room for the probe, created while the gauge is still held.
     const spareSeats = await twoSeats(port, spare);
+    const heldBefore = serverHoldsSocket(srv.child.pid, stalled.localPort());
     const bye = await request(port, 'POST', '/api/bye', { roomId: room, token: seats.a.token });
     await delay(Math.min(lingerMs, 1200) + 900);
+    const heldAfter = serverHoldsSocket(srv.child.pid, stalled.localPort());
     const probe = await streamAccepted(port, spare, spareSeats.a.token);
-    const out = { seats, pumped, spareSeats, bye, probe };
+    const out = { seats, pumped, spareSeats, bye, heldBefore, heldAfter, probe };
     stalled.close();
     await srv.stop();
     return out;
   };
 
-  const short = await arm(PORT + 23, 'PNND0001', 'PNND0003', 300);
-  check('CONTROL: the short-linger arm seated, flooded and destroyed a room',
+  const short = await arm(await freePort(PORT + 23), 'PNND0001', 'PNND0003', 300);
+  check('CONTROL: the short-linger arm seated, flooded and destroyed a room, and the '
+    + 'fd probe could see the stalled connection while it was held',
     short.seats.ok && short.spareSeats.ok && short.pumped.sent === 400
-    && !short.pumped.dropped && short.bye.status === 200,
-    `seated=${short.seats.ok} flooded=${short.pumped.sent} droppedAt=${short.pumped.stoppedAt} bye=${short.bye.status}`);
+    && !short.pumped.dropped && short.bye.status === 200 && short.heldBefore === true,
+    `seated=${short.seats.ok} flooded=${short.pumped.sent} droppedAt=${short.pumped.stoppedAt} `
+    + `bye=${short.bye.status} heldBefore=${short.heldBefore}`);
   check('a destroyed room lets go of its stalled stream rather than waiting for TCP',
-    short.probe === 200, `a later stream on the same key got ${short.probe}`);
+    short.heldAfter === false, 'the server still holds the stalled connection past the linger window');
 
   // THE CONTROL, and it is the whole evidence. Identical, except the linger is longer than
   // the window above waits in: this IS the pre-fix server, expressed as configuration. If
-  // the gauge were released here too, the assertion above would print OK against a server
+  // the fd were dropped here too, the assertion above would print OK against a server
   // that never let go, which is exactly the state it exists to detect.
-  const long = await arm(PORT + 24, 'PNND0002', 'PNND0004', 600_000);
+  const long = await arm(await freePort(PORT + 24), 'PNND0002', 'PNND0004', 600_000);
   check('CONTROL: the long-linger arm seated, flooded and destroyed a room too',
     long.seats.ok && long.spareSeats.ok && long.pumped.sent === 400
-    && !long.pumped.dropped && long.bye.status === 200,
-    `seated=${long.seats.ok} flooded=${long.pumped.sent} droppedAt=${long.pumped.stoppedAt} bye=${long.bye.status}`);
-  check('CONTROL: with the linger long the stream is still pinned, so the release above was the linger',
-    long.probe === 429, `a later stream on the same key got ${long.probe}, expected 429`);
+    && !long.pumped.dropped && long.bye.status === 200 && long.heldBefore === true,
+    `seated=${long.seats.ok} flooded=${long.pumped.sent} droppedAt=${long.pumped.stoppedAt} `
+    + `bye=${long.bye.status} heldBefore=${long.heldBefore}`);
+  check('CONTROL: with the linger long the stalled connection is still held, so the release above was the linger',
+    long.heldAfter === true, 'the fd was dropped with a 600s linger: something else tore it down');
+  // The seat keying itself, in both arms: a leaked or held gauge entry belongs to the
+  // destroyed room's seat and must refuse nobody else, pinned hardest by the arm where
+  // the entry is still held.
+  check('a different seat\'s stream is untouched by a destroyed room\'s held stream, in both arms',
+    short.probe === 200 && long.probe === 200,
+    `bystander probes got ${short.probe} (short) / ${long.probe} (long), expected 200/200`);
 }
 
 // ------------------------------------ the relay stamps the sender the token authorised
@@ -1374,7 +1416,7 @@ async function twoSeats(port, roomId) {
   // is forgeable by anyone in the room: one seat could seal a `pk` as another peer and
   // the victim would pin it forever, or seal a `sever` and end the victim's gate. This
   // server authorised the POST with a per-seat token, so it knows who really sent it.
-  const P = PORT + 25;
+  const P = await freePort(PORT + 25);
   const ROOM = 'STMP0001';
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0',
@@ -1460,7 +1502,7 @@ async function twoSeats(port, roomId) {
   });
   const WARN = /WG_TRUST_PROXY=1 but a forwarding header arrived from a hop that is/;
 
-  const P = PORT + 26;
+  const P = await freePort(PORT + 26);
   const srv = await startServer({
     WG_HTTP_PORT: String(P), WG_STUN_ENABLED: '0', WG_TRUST_PROXY: '1',
     WG_PUBLIC_GET_PER_WINDOW: '500', WG_API_PER_WINDOW: '500',

@@ -363,12 +363,7 @@
                change link. They used to be a disclosure panel that had to be opened
                before it could be understood, on a screen whose problem was too many
                panels. The line is written by app.js from the live values, so it cannot
-               drift from what pressing Create will actually do.
-
-               #create-options is a plain container now, not a <details>. landing.js
-               still opens it on a wide viewport, which is a no-op on a div and is
-               deliberately left alone: this file does not own landing.js, and the dead
-               block there should be deleted by whoever does. -->
+               drift from what pressing Create will actually do. -->
           <div id="create-options" class="gate-opts">
             <p class="gate-opts-line">
               <span id="gate-opts-summary">30 minutes &middot; no password</span>
@@ -437,7 +432,7 @@
           <p class="muted small">Paste the link, or type the eight words shown on the other
              device. Capitals, spaces and hyphens all work.</p>
           <label class="sr-only" for="join-input">Gate link or gate code</label>
-          <input id="join-input" type="text" inputmode="latin" autocomplete="off"
+          <input id="join-input" type="text" inputmode="text" autocomplete="off"
                  autocapitalize="characters" spellcheck="false"
                  placeholder="WARP-WORD-WORD-WORD-...">
           <label class="sr-only" for="join-password">Room password, if the gate has one</label>
@@ -711,7 +706,9 @@
   <section id="screen-failed" class="screen" hidden>
     <div class="pane">
     <p class="eyebrow">Connection failed</p>
-    <h1 id="failed-title" class="wg-h1">Unable to establish a direct connection</h1>
+    <!-- No static text: both paths that reveal this screen set the title per cause in
+         app.js, so markup copy here would be unreachable and free to rot unseen. -->
+    <h1 id="failed-title" class="wg-h1"></h1>
     <!-- Two lines, because there are two different things to say and one sentence cannot
          say both: what happened in plain words, then the specific reason the code found.
          The plain-words line is set per cause in app.js and is deliberately NOT shared

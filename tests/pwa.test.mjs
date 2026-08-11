@@ -22,11 +22,11 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { check, summary, startServer } from './lib/harness.mjs';
+import { check, summary, startServer, freePort } from './lib/harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const PORT = 3799;
+const PORT = await freePort(3799);
 const ORIGIN = 'https://gate.test';
 
 // The policy as it stood BEFORE the manifest work, written out rather than derived. A
