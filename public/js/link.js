@@ -1552,7 +1552,13 @@ export class Link extends EventTarget {
       }
       const reason = typeof control.reason === 'string' ? control.reason : 'the other device refused the transfer';
       this.settleAcceptance(out.id, reason);
-      this.emit('file-rejected', { id: out.id, name: out.name, reason });
+      // settleAcceptance is a no-op once the transfer has been accepted, so a rejection
+      // that arrives mid-send used to reach the UI and nothing else: the loop kept pushing
+      // bytes at a receiver that had already given up. Releasing here is what actually
+      // stops it. Not abandonOutbound: the peer is the one who just told us, and answering
+      // its file-reject with a file-abort is a message it has no use for.
+      if (out.active) this.releaseOutbound(out, reason);
+      else this.emit('file-rejected', { id: out.id, name: out.name, reason });
       return;
     }
     if (control.kind === 'file-progress') {
@@ -1745,12 +1751,28 @@ export class Link extends EventTarget {
     this.emit('warning', `ignored a refusal to continue a transfer this device does not have: ${reason}`);
   }
 
-  /** Give up on an inbound transfer: release the sink, forget the record, say why. */
-  async failInbound(inbound, reason) {
+  /**
+   * Give up on an inbound transfer: release the sink, forget the record, say why.
+   *
+   * `tell` is false on exactly one path: the sender is the one who just aborted, and
+   * answering its file-abort with a file-reject reattributes its own decision to this
+   * device, so its row would end up saying the receiver refused a file the sender pulled.
+   */
+  async failInbound(inbound, reason, { tell = true } = {}) {
     if (this.incoming === inbound) this.incoming = null;
     this.clearInboundQuiet(inbound);
     try { await inbound.sink?.abort(reason); } catch (err) { this.emit('warning', `could not close the partial file: ${err.message}`); }
     await this.forgetInboundRecord();
+    // The peer MUST be told, for the same reason abandonOutbound gives below in full. This
+    // is that fix in the other direction, which it did not have: a receiver-side sink
+    // failure (its disk fills, the download is cancelled, a chunk will not write) was
+    // entirely invisible to the sender, which went on streaming the whole file into a sink
+    // that no longer existed with its row still reading "Sending". Fire-and-forget for the
+    // same reason: what we are failing over may itself be the channel.
+    if (tell) {
+      this.control({ kind: 'file-reject', id: inbound.meta.id, reason: String(reason).slice(0, 300) })
+        .catch((err) => this.emit('warning', `could not tell the other device the transfer failed: ${err.message}`));
+    }
     this.emit('file-failed', { ...inbound.meta, reason });
   }
 
@@ -1767,6 +1789,20 @@ export class Link extends EventTarget {
    * channel is unhappy, and this must not itself throw into the caller's failure path.
    */
   abandonOutbound(out, reason) {
+    this.control({ kind: 'file-abort', id: out.id, reason: String(reason).slice(0, 300) })
+      .catch((err) => this.emit('warning', `could not tell the other device the transfer stopped: ${err.message}`));
+    this.releaseOutbound(out, reason);
+  }
+
+  /**
+   * Stop sending and settle the row, without telling the peer.
+   *
+   * Split out of abandonOutbound because the peer telling US is the other way this ends,
+   * and that path had no cleanup at all: it emitted the event and left the send loop
+   * running. Two copies of this body is how one direction gets fixed and the other does
+   * not, which is the bug this exists to close.
+   */
+  releaseOutbound(out, reason) {
     out.active = false;
     out.stalled = false;
     // `streaming` is NOT cleared here, for the reason markTransfersStalled gives in full:
@@ -1774,8 +1810,6 @@ export class Link extends EventTarget {
     // actually stops the loop. Found by grepping for the pattern after fixing it there.
     out.file = null;
     this.forgetOutboundIntent();
-    this.control({ kind: 'file-abort', id: out.id, reason: String(reason).slice(0, 300) })
-      .catch((err) => this.emit('warning', `could not tell the other device the transfer stopped: ${err.message}`));
     this.emit('file-rejected', { id: out.id, name: out.name, reason });
     const settle = out.settle;
     out.settle = null;
@@ -1792,7 +1826,7 @@ export class Link extends EventTarget {
     const why = typeof control.reason === 'string' && control.reason
       ? control.reason.slice(0, 300)
       : 'the other device stopped sending';
-    await this.failInbound(inbound, `the other device stopped sending: ${why}`);
+    await this.failInbound(inbound, `the other device stopped sending: ${why}`, { tell: false });
   }
 
   /**
