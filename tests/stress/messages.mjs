@@ -151,7 +151,11 @@ try {
       form.requestSubmit();
     }
     return true;
-  `);
+  // 2000 synchronous submits, each one a row, an autoGrow relayout, an encrypt and a send.
+  // That is the load being applied and it does not fit in the harness default of 30s, so
+  // this call aborted the whole file before the assertions below could run even once. The
+  // waitFor that follows already allowed 180s; only the half doing the work did not.
+  `, { timeoutMs: 300000 });
   const tail = await b.waitFor(`(() => {
     const rows = [...document.querySelectorAll('#messages .msg-text')].map(x => x.textContent);
     return rows.includes('seq-${N - 1}') ? JSON.stringify(rows.filter(t => t.startsWith('seq-'))) : '';

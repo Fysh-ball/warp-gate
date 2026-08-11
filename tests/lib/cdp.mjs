@@ -49,7 +49,7 @@ class Tab {
     });
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, { timeoutMs = 30000 } = {}) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -57,9 +57,9 @@ class Tab {
       setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
-          reject(new Error(`CDP ${method} timed out`));
+          reject(new Error(`CDP ${method} timed out after ${timeoutMs}ms`));
         }
-      }, 30000).unref?.();
+      }, timeoutMs).unref?.();
     });
   }
 
@@ -71,21 +71,21 @@ class Tab {
    * never shipped to users, and the expressions come from the test files beside it,
    * never from input. Nothing in public/ or server/ uses eval in any form.
    */
-  async eval(expression, attempt = 0) {
+  async eval(expression, { timeoutMs = 30000, attempt = 0 } = {}) {
     let result;
     try {
       result = await this.send('Runtime.evaluate', {
         expression: `(async () => { ${expression} })()`,
         awaitPromise: true,
         returnByValue: true,
-      });
+      }, { timeoutMs });
     } catch (err) {
       // The page navigated out from under us and the execution context was torn down.
       // This is a race, not a failure: retry against the new context rather than
       // letting the whole suite abort intermittently.
       if (/execution context|Execution context was destroyed/i.test(err.message) && attempt < 10) {
         await new Promise((r) => { setTimeout(r, 150).unref?.(); });
-        return this.eval(expression, attempt + 1);
+        return this.eval(expression, { timeoutMs, attempt: attempt + 1 });
       }
       throw err;
     }
