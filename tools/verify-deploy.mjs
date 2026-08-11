@@ -383,7 +383,14 @@ const probes = [
         // The whole rule, selector included: `scroll-margin-top` on its own already appears
         // elsewhere in this stylesheet, so matching the property would be green before the
         // deploy and would stay green if the rule landed on the wrong selector.
-        scrollMargin: css.text.includes("#screen-connected > #games-disc .game-status { scroll-margin-top: calc(var(--bar-h) + 12px); }"),
+        // Selector shortened on 2026-08-11: #games-disc is a child of .conn-rail above
+        // 1024px now, so the old `#screen-connected > #games-disc` descendant combinator
+        // stopped matching it on a desktop and the rule silently applied on phones only.
+        // The leading newline matters. Without it this string is a SUBSTRING of the old
+        // rule, so the probe would have been green against the pre-deploy stylesheet and
+        // would have measured nothing, which is the exact failure the paragraph above is
+        // about. Anchored to the start of the line, it is BAD until the new file is served.
+        scrollMargin: css.text.includes("\n#games-disc .game-status { scroll-margin-top: calc(var(--bar-h) + 12px); }"),
       };
     },
   },
@@ -406,6 +413,51 @@ const probes = [
         frontPageLink: index.text.includes(LINK),
         faqLink: faq.text.includes(LINK),
         deniedItExists: faq.text.includes('no app, no extension and no account'),
+      };
+    },
+  },
+  {
+    // The transfer that died when a phone locked its screen. Both halves are one probe
+    // because either one alone still leaves a stall: resume.js has to stop refusing an
+    // offset that is merely behind what landed here, and peer.js has to stop counting its
+    // drain deadline on a clock that ran while the page did not.
+    name: '20. the served gate tolerates a resume behind it and counts drain time while awake',
+    async run(base) {
+      const resume = await get(base, '/js/resume.js');
+      const peer = await get(base, '/js/peer.js');
+      return {
+        resumeStatus: resume.status,
+        peerStatus: peer.status,
+        // The new comparison, and the ABSENCE of the old one. Presence alone would pass on
+        // a file that somehow carried both.
+        tolerates: resume.text.includes('offset < 0 || offset > at'),
+        strictGone: !resume.text.includes('offset !== at'),
+        // A `let` deadline is the tell: the wall-clock version could not be reassigned.
+        deadlineMoves: peer.text.includes('let deadline = Date.now() + DRAIN_TIMEOUT_MS'),
+        handsBackOvershoot: peer.text.includes('if (late > 0) deadline += late;'),
+      };
+    },
+  },
+  {
+    // 61 KB of wordlist that every visitor used to fetch before the page knew whether they
+    // were creating a gate, joining one, or reading the screen. Three readings, because a
+    // half-deployed version of this is a page that cannot mint a code at all: crypto.js has
+    // to expose the accessor, it must NOT still name words.js in a static import, and
+    // app.js has to be the copy that awaits it.
+    name: '21. the wordlist is served on demand, not on the boot path',
+    async run(base) {
+      const crypto = await get(base, '/js/crypto.js');
+      const app = await get(base, '/js/app.js');
+      const words = await get(base, '/js/words.js');
+      return {
+        cryptoStatus: crypto.status,
+        appStatus: app.status,
+        // Still reachable. A lazy module that 404s is worse than an eager one.
+        wordsStatus: words.status,
+        accessor: crypto.text.includes('export function loadGateCode()'),
+        lazy: crypto.text.includes("import('./words.js')"),
+        noStaticImport: !/^import .*from '\.\/words\.js';$/m.test(crypto.text),
+        appAwaits: (app.text.match(/await loadGateCode\(\)/g) || []).length >= 3,
       };
     },
   },
