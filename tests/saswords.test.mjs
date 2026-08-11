@@ -15,7 +15,10 @@
 
 import { webcrypto } from 'node:crypto';
 import { check, summary } from './lib/harness.mjs';
-import { b64u, deriveSession, generateKeyPair, WORDS } from '../public/js/crypto.js';
+import { b64u, deriveSession, generateKeyPair } from '../public/js/crypto.js';
+// WORDS from words.js directly: crypto.js stopped re-exporting it when the wordlist went
+// behind a dynamic import on 2026-08-11.
+import { WORDS } from '../public/js/words.js';
 import {
   SAS_BITS,
   SAS_DIGITS,

@@ -173,12 +173,23 @@ const packed = (graph) => [...graph.values()]
   // and a careless one does not, and stated in gzipped bytes as well as raw because
   // gzipped is what the server sends and therefore what a phone on mobile data waits for.
   //
-  // words.js is 30 KB gzipped of that and is NOT excludable: crypto.js needs it to turn a
-  // typed gate code into the room secret, which is the first thing a joining device does,
-  // and to render one the instant somebody presses Create. Deferring it was considered and
-  // rejected on 2026-08-10 for that second reason: a lazy import behind Create moves the
-  // same fetch behind the primary action instead of removing it. It is on the critical
-  // path by definition.
+  // ---- words.js, reconsidered on 2026-08-11 ----
+  //
+  // This comment used to say the 7776-word list was NOT excludable, because crypto.js needs
+  // it to turn a typed gate code into the room secret and to mint one the instant somebody
+  // presses Create. That is still true and it is not the same as being on the boot path.
+  // A visitor arrives at /app and reads a screen: nobody has typed a code, nobody has
+  // pressed anything, and 61 KB raw of vocabulary was fetched to serve a decision that had
+  // not been made. It now loads on the decision itself, from crypto.js's loadGateCode(),
+  // and afterAgreement() skips it entirely when there is neither a link fragment nor a
+  // secret held for the tab, which is every first visit.
+  //
+  // The 2026-08-10 argument against it ("a lazy import behind Create moves the same fetch
+  // behind the primary action instead of removing it") was answered rather than overruled:
+  // it removes the fetch for everyone who never presses either button, and for those who do
+  // it overlaps a network round trip they were already going to wait for. What it must not
+  // do is delay the JOIN path, which is why the fetch is started before decodeGateCode
+  // rather than inside the error handler.
   //
   // ---- why the gzipped ceiling moved from 176 KB to 192 KB on 2026-08-10 ----
   //
@@ -221,6 +232,7 @@ const packed = (graph) => [...graph.values()]
     ['the QR decoder', 'qrdecode.js'],
     ['the camera scanner', 'qrscan.js'],
     ['the SAS word derivation', 'saswords.js'],
+    ['the gate code word list', 'words.js'],
     // Split off the eager graph on 2026-08-10, when this session's work took the gate
     // 15,310 B over the raw ceiling. Each of these is the large half of a module whose
     // small half had been holding it on the boot path, and each obeys the same rule as

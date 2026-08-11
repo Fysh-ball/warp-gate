@@ -12,12 +12,18 @@ import {
   base32Encode, base32Decode, b64u,
   deriveRoomId, deriveSignalKey, generateKeyPair, deriveSession, Channel,
   sealEnvelope, openEnvelope, equalCt, TYPE, VERSION, HEADER_BYTES, decodeJson,
-  generateGateCode, decodeGateCode, tryDecodeGateCode, GateCodeError,
-  encodeWordIndices, canonicalPhrase, randomWordIndices,
-  WORDS, WORD_COUNT, WORDLIST_SHA256, CODE_WORDS,
   deriveSecret, clearSecretCache, CODE_STRETCH_ITERATIONS,
   commitPublicKey,
 } from '../public/js/crypto.js';
+// Straight from words.js, not through crypto.js. crypto.js used to re-export these and
+// stopped on 2026-08-11, when the wordlist went behind a dynamic import so that a visitor
+// who never types a code never fetches 61 KB of vocabulary. The tests below are about the
+// list itself, so the direct import is also the honest one.
+import {
+  generateGateCode, decodeGateCode, tryDecodeGateCode, GateCodeError,
+  encodeWordIndices, canonicalPhrase, randomWordIndices,
+  WORDS, WORD_COUNT, WORDLIST_SHA256, CODE_WORDS,
+} from '../public/js/words.js';
 import {
   canAccept, createSink, sanitizeFilename, MEMORY_LIMIT_BYTES,
 } from '../public/js/transfer.js';

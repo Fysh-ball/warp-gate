@@ -441,6 +441,15 @@ try {
     const plan = r.planResumeResponse(request, { id: 'T-resume', size: SIZE, chunkSize: CHUNK, token });
     const verdict = r.judgeResumeResponse(inbound, { id: 'T-resume', token, offset: plan.offset });
 
+    // The frozen-sender case. The answer echoes the offset this side asked from, but the
+    // request and the answer are a round trip apart and the sender's already-buffered bytes
+    // go on landing here in between, so the sink is routinely further on than the number in
+    // the answer. Judged here against a sink that has moved on: BEHIND is that case and must
+    // be corrected forward, AHEAD would skip bytes nothing wrote and stays refused.
+    const behind = r.judgeResumeResponse(inbound, { id: 'T-resume', token, offset: plan.offset - 2 * CHUNK });
+    const ahead = r.judgeResumeResponse(inbound, { id: 'T-resume', token, offset: plan.offset + 3 * CHUNK });
+    const negative = r.judgeResumeResponse(inbound, { id: 'T-resume', token, offset: -CHUNK });
+
     // Sender reads only what was asked for, off a real File, through the real framing.
     const whole = new Uint8Array(SIZE);
     for (let i = 0; i < TOTAL; i += 1) whole.set(chunkFor(i), i * CHUNK);
@@ -462,6 +471,7 @@ try {
       planOk: plan.ok === true,
       planBytes: plan.bytes,
       verdictOk: verdict.ok === true,
+      behind, ahead, negative,
       afterDrop, resent, duplicates, indices,
       position: indexed.position,
     });
@@ -478,6 +488,15 @@ try {
     res.planOk === true && JSON.stringify(res.ranges) === JSON.stringify([[5, 6], [7, 12]]), resumeRaw);
   check('the receiver accepts a resume that echoes its own token and offset',
     res.verdictOk === true, resumeRaw);
+  // #62. A strict equality here killed real transfers: a sender frozen for a minute answered
+  // 3.4 to 4.4 MB behind what its own drained buffer had already written on this side, and
+  // the refusal was final with no retry.
+  check('an offer behind what has landed here is corrected forward, not refused',
+    res.behind.ok === true && res.behind.offset === 5 * RCHUNK, resumeRaw);
+  check('an offer past what was written here is still refused, so no hole can be spliced',
+    res.ahead.ok === false && res.ahead.code === 'bad_offset', resumeRaw);
+  check('an offset that is not a position in a file is refused',
+    res.negative.ok === false && res.negative.code === 'bad_offset', resumeRaw);
   // The gap the roadmap named: half this file was already held, so half of it must move.
   check('the resume moves ONLY the missing chunks, not the file',
     res.resent === RSIZE - 6 * RCHUNK && res.resent === res.planBytes,

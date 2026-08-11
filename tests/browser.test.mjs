@@ -2171,10 +2171,14 @@ const fillLog = (open = false) => `
     const sas = document.getElementById('sas');
     const sever = document.getElementById('sever');
     const railBox = document.querySelector('.conn-rail');
-    // The connection details are no longer IN the rail: they moved under the composer,
-    // into the chat column, because that is where the person reading them is looking.
-    // The rail's own last row before Burn is whatever now sits above it.
+    // Above 1024px both disclosures are BACK in the rail, reversing the placement chosen
+    // in task #26 at desktop widths and nowhere else. Measured reason, on this exact
+    // viewport: the rail was 83% empty (692px of nothing between the code and Burn) while
+    // the two drawers rendered as 1250x70 slabs in the transcript column, each carrying
+    // one short phrase across a width that was 1030px empty. Below 1024px .conn-rail is
+    // display: contents, so the phone and tablet reading order is unchanged.
     const disc = document.getElementById('conn-disc');
+    const games = document.getElementById('games-disc');
     const aboveSever = document.getElementById('sever').previousElementSibling;
     const px = (el) => parseFloat(getComputedStyle(el).fontSize);
     // Every element in the rail that paints its own text, so "largest" is a fact about
@@ -2194,7 +2198,11 @@ const fillLog = (open = false) => `
       others,
       sasTop: r(sas).top,
       discBottom: disc ? r(disc).bottom : null,
+      discTop: disc ? r(disc).top : null,
       discInRail: Boolean(disc && railBox.contains(disc)),
+      gamesInRail: Boolean(games && railBox.contains(games)),
+      gamesTop: games ? r(games).top : null,
+      sasBottom: r(sas).bottom,
       aboveSeverBottom: aboveSever ? r(aboveSever).bottom : null,
       railTop: r(railBox).top,
       severTop: r(sever).top,
@@ -2212,9 +2220,12 @@ const fillLog = (open = false) => `
   // arrangement this replaced.
   check('and it is at the top of the rail, where a thing you check at a glance belongs',
     rail.sasTop - rail.railTop <= 60, `sas top ${rail.sasTop}, rail top ${rail.railTop}`);
-  check('the connection details are in the chat column now, not in the rail',
-    rail.discBottom !== null && rail.discInRail === false && rail.discBottom > rail.composerBottom,
-    JSON.stringify({ discInRail: rail.discInRail, discBottom: rail.discBottom, composerBottom: rail.composerBottom }));
+  check('both drawers are in the rail at desktop widths, not stretched across the transcript',
+    rail.discInRail === true && rail.gamesInRail === true,
+    JSON.stringify({ discInRail: rail.discInRail, gamesInRail: rail.gamesInRail }));
+  check('and they sit under the verification code, which stays the first thing in the rail',
+    rail.discTop >= rail.sasBottom && rail.gamesTop >= rail.discBottom,
+    JSON.stringify({ sasBottom: rail.sasBottom, discTop: rail.discTop, discBottom: rail.discBottom, gamesTop: rail.gamesTop }));
   check('Burn is pinned to the foot of the rail, well clear of everything else',
     rail.severLast === true && rail.severTop - rail.aboveSeverBottom >= 60
     && rail.railBottom - rail.severBottom <= 4,

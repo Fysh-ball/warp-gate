@@ -5,6 +5,11 @@
   --line: #2a323c;
   --text: #e6ebf0;
   --muted: #8b98a6;
+  /* A step ABOVE --text, not a repeat of it. Body copy is --text and the quiet second
+     half of a line is --muted; this is for the handful of lead phrases that have to be
+     read before an action, and it is the only thing on the page allowed to outrank body
+     copy. Restated in the light palette, because pure white there is invisible. */
+  --text-strong: #ffffff;
   --accent: #e8a33d;
   --accent-dim: #6d4a12;
   /* Teal is no longer the brand colour, it means "connected". */
@@ -122,9 +127,10 @@
        medium  something with size arriving: a modal panel, a section scrolled into view.
        large   a whole screen changing.
 
-     --reveal-rise and --press-scale are the ONLY two values the reduced-motion branch
-     changes. Setting them to 0px and 1 collapses every translate and every scale in the
-     file at once while leaving every fade running, which is what reduced actually means:
+     --reveal-rise, --press-scale and --fold-scale are the ONLY three values the
+     reduced-motion branch changes. Setting them to 0px, 1 and 1 collapses every translate
+     and every scale in the file at once while leaving every fade running, which is what
+     reduced actually means:
      MDN's wording is removed, reduced OR REPLACED, and Apple's HIG names the replacement
      directly, "replacing transitions across axes with fades". Killing the fade as well
      would remove the only remaining signal that anything happened, which is a loss for
@@ -138,6 +144,11 @@
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);     /* standard */
   --reveal-rise: 8px;
   --press-scale: 0.985;
+  /* How far a panel is folded back at the hinge before it opens. Third travel token, added
+     2026-08-11 with the gate drawers: a fold is a scale, so --reveal-rise cannot express it
+     and a hard-coded 0.94 would be the one piece of travel the reduced-motion branch could
+     not reach. */
+  --fold-scale: 0.94;
 }
 
 @media (min-width: 700px) {
@@ -283,6 +294,12 @@ html, body {
 .badge-direct { color: var(--live); border-color: var(--line-live); }
 .badge-relay { color: var(--warn); border-color: var(--line-warn); }
 .badge-bad { color: var(--danger); border-color: var(--line-danger); }
+/* The route badge names how the bytes travel, and that answer goes stale the moment the
+   connection drops without becoming wrong: the route it names is the route that WAS there.
+   Dimming says exactly that. It replaced overwriting the badge with the word RECONNECTING,
+   which put a second status vocabulary next to the status pill's own and let the two
+   disagree on screen. Opacity only, so it composites and needs no reduced-motion branch. */
+.badge.is-stale { opacity: 0.45; }
 
 .ttl { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
 
@@ -504,6 +521,11 @@ button.link:active { transform: none; }
 .toggle {
   display: inline-flex;
   align-items: center;
+  /* 44px because this is a control you hit with a thumb while holding the phone in one
+     hand, and measured at 390x844 it was 61.3 x 20.9. Height on the LABEL and not on the
+     checkbox: the label is already the hit area (clicking it toggles the input), so this
+     buys the target without drawing a 44px checkbox next to a 14px word. */
+  min-height: 44px;
   gap: 6px;
   margin: 0;
   font-size: 13.5px;
@@ -631,7 +653,11 @@ audio.msg-media {
   max-width: 100%;
   margin: 6px 0;
 }
-.msg.is-file button, .msg.is-secret button { width: auto; padding: 6px 12px; font-size: 13px; }
+/* Save, Open, Accept and Refuse are the controls a person actually uses during a transfer,
+   and at 6px of padding they measured 55.5 x 34.1 on a phone. 11px takes them to 44 tall
+   without changing the type size, so a row of them still reads as secondary to the file
+   name above it. */
+.msg.is-file button, .msg.is-secret button { width: auto; padding: 11px 12px; font-size: 13px; }
 .chip {
   display: inline-block;
   font-size: 10.5px;
@@ -939,6 +965,10 @@ pre.diag {
 
 .foot {
   display: flex;
+  /* Six links, one row, no wrap: at 360px the last of them overhung the viewport by 1.4px,
+     which is enough to give the whole page a horizontal scrollbar. A footer is the one
+     place where wrapping costs nothing. */
+  flex-wrap: wrap;
   gap: 18px;
   justify-content: center;
   padding: 18px var(--gutter) 26px;
@@ -1764,6 +1794,7 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
   :root {
     --bg: #f6f8fa; --panel: #ffffff; --panel-2: #eef2f6; --line: #d3dbe3;
     --text: #101418; --muted: #55616d; --accent: #8a5410; --accent-dim: #e3c391; --live: #0b7a6b;
+    --text-strong: #000000;
     --warn: #8a6100; --ok: #16704a; --danger: #b3261e;
     --line-warn: #d0a83a; --line-live: #7fbdb4; --line-danger: #e0a49c; --line-ok: #4aa863;
     --warn-wash: rgba(180, 130, 0, 0.10);
@@ -1826,6 +1857,18 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
   }
   main:has(> #screen-connected:not([hidden])) > #screen-connected { flex: 1 1 auto; }
 }
+/* ONE gap, at every width, and the container's `gap` is the only thing that sets it.
+ *
+ * This reset used to live inside `@media (max-width: 699px)`, so it fixed the phone and
+ * left every wider screen carrying whatever margin each child had brought from a layout it
+ * no longer has: `details.disc` 10 below, `details.disc.compact` 14 above, `button.danger`
+ * 20 above. Those stack ON TOP of the container gap rather than replacing it, so the
+ * distances between consecutive blocks measured 10 / 10 / 10 / 24 / 34 / 40px at 768x1024
+ * and 14 / 28 / 38px at 1440x900. Six blocks, four different gaps, none of them chosen.
+ * Zeroed rather than tuned, because a gap and a margin adding to a third number is how the
+ * four appeared in the first place. */
+#screen-connected > *,
+#screen-connected > .conn-rail > * { margin-top: 0; margin-bottom: 0; }
 #screen-connected > .route-line { margin: 0; flex: 0 0 auto; order: 0; }
 /* The rail's three children are laid out as siblings of the transcript on a narrow
    screen, so the verification code sits above the conversation and the burn control
@@ -1836,14 +1879,14 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
 #screen-connected > #chat-form { flex: 0 0 auto; order: 3; }
 /* Connection details is a child of the screen now rather than of the rail, and keeps the
    slot it had on a phone: after the composer, before the burn control. */
-#screen-connected > #conn-disc { flex: 0 0 auto; order: 4; }
+.conn-rail > #conn-disc { flex: 0 0 auto; order: 4; }
 /* Games had NO order at all, so it defaulted to 0 and joined the route line at the very
    top of the column: measured at 390x844 it painted at y 160..230, above the verification
    code, above the transcript and above the composer. Its own comment says it is "the least
    important thing on the screen and must not compete with the transcript for attention",
    which is the opposite of where an unset `order` put it. It sits with the other thing you
    consult rather than read now, immediately after Connection details. */
-#screen-connected > #games-disc { flex: 0 0 auto; order: 5; }
+.conn-rail > #games-disc { flex: 0 0 auto; order: 5; }
 /* The other half of that move. An invitation arriving at a shut drawer opens it
    (gameui.js announceInvite) and then scrolls the row carrying Play and No thanks into
    view, because at order 5 the drawer opens well down a scrolling column: measured at
@@ -1855,7 +1898,7 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
    defined in this file; the rule lives here rather than in games.css for that reason,
    since games.css is deliberately scoped to board colours and defines no shell token.
    The +12px is a breathing gap, not a measurement. */
-#screen-connected > #games-disc .game-status { scroll-margin-top: calc(var(--bar-h) + 12px); }
+#games-disc .game-status { scroll-margin-top: calc(var(--bar-h) + 12px); }
 .conn-rail > #sever { flex: 0 0 auto; order: 6; }
 #screen-connected > #messages {
   flex: 1 1 auto;
@@ -1926,8 +1969,6 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
    * the front page. The margins are zeroed rather than tuned: a gap and a margin adding
    * up to a third number is how the six appeared in the first place. */
   #screen-connected { gap: 14px; }
-  #screen-connected > *,
-  #screen-connected > .conn-rail > * { margin-top: 0; margin-bottom: 0; }
   #screen-connected > #messages { min-height: 120px; }
   /* The transcript is BOUNDED on a phone, so the composer's position stops being a function
    * of what the other device sent.
@@ -1975,40 +2016,105 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
   #screen-connected > .conn-rail > #sever { margin-top: 10px; }
 }
 
+/* The same exception, for the band that has no rail either. Between 700 and 1023px the
+   rail is still `display: contents` and Burn is a sibling of the drawers, but this rule was
+   scoped to `max-width: 699px` and did not reach it, so measured at 768x1024 the gap above
+   the destructive control was 0 and it sat flush against the Games drawer. */
+@media (min-width: 700px) and (max-width: 1023px) {
+  #screen-connected > .conn-rail > #sever { margin-top: 14px; }
+}
+
+/* A SHORT phone, which is a different problem from a narrow one.
+ *
+ * The block above was measured and tuned at 390x844 and it holds there: the composer's
+ * bottom edge lands at y=754 against a fold of 811. At 360x640 the same rules put it at
+ * y=740 against a fold of 607, so Send and Attach were 133px below the screen with the
+ * page at rest and the person had to scroll to reach the button they came for. Nothing
+ * about the width caused that; the window is 204px shorter and the layout spends a fixed
+ * number of pixels above the composer regardless.
+ *
+ * Three things give the height back, cheapest first. The folded capability note is 98px
+ * of a 278px composer and is the one block on the screen that is pure explanation, so it
+ * goes: it is a fold nobody has opened yet, not information that was on screen. The
+ * textarea drops to two lines, which is still a message box and not a search field. The
+ * transcript's cap comes down with the window, since 25dvh of 640 is 160px and the floor
+ * of the clamp above was already holding it there.
+ *
+ * 700px, not 640: at 700 the same arithmetic leaves about 40px of headroom, and headroom
+ * smaller than the amount the verification box moves by when its two words wrap is not
+ * headroom. Better to apply this one band early than to have it arrive one device late. */
+@media (max-width: 699px) and (max-height: 700px) {
+  #screen-connected > #chat-form .hint-fold { display: none; }
+  #screen-connected > #chat-form textarea { min-height: 48px; }
+  #screen-connected > #messages { max-height: clamp(110px, 20dvh, 200px); min-height: 110px; }
+}
+
 @media (min-width: 1024px) {
   main:has(> #screen-connected:not([hidden])) { padding-bottom: 12px; }
 
   #screen-connected {
     display: grid;
     grid-template-columns: minmax(0, 1fr) clamp(300px, 22vw, 400px);
-    /* Four rows: the last one is the connection-details disclosure, which is `auto` and
-       therefore costs one line while closed and takes what it needs while open. The
-       transcript is the only row that flexes, so opening it never squashes the composer. */
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    /* Three rows now: the route line, the transcript, the composer. The two disclosures
+       used to be a fourth and a fifth here and have moved into the rail.
+     *
+     * The transcript row stays `minmax(0, 1fr)`, and that was tried the other way on
+     * 2026-08-11 and reverted the same day. The audit's complaint was real as far as it
+     * went: at 1920x1080 with two file rows and nothing else, the last row ended at y=375
+     * and the box ended at y=531, so 156px of the panel was empty. Sizing the row to its
+     * content with `minmax(0, auto)` plus `align-content: start` did remove that, and it
+     * bought a much worse thing: the transcript then measured 160px at every width from
+     * 1024 to 2560, and the dead space moved out of the panel and onto the page, growing
+     * from 343px under the composer at 1024 to 983px at 2560. An empty panel that grows
+     * with the window is what a chat transcript is supposed to look like; a gate that
+     * stops halfway down a large screen with a thousand pixels of nothing beneath it is
+     * not. tests/browser.test.mjs asserts both halves of this, and it caught the trade. */
+    grid-template-rows: auto minmax(0, 1fr) auto;
     gap: 14px clamp(22px, 2.4vw, 46px);
     align-items: start;
   }
 
   #screen-connected > .route-line { grid-column: 1; grid-row: 1; }
+  /* `align-items: start` above means a grid item does not stretch to its row, so the
+     transcript takes the row 1fr gave it only by asking for it. Without this the box sits
+     at its content height inside a track that is taller, which is the same dead strip by
+     another route. */
   #screen-connected > #messages   { grid-column: 1; grid-row: 2; height: 100%; }
   #screen-connected > #chat-form  { grid-column: 1; grid-row: 3; }
-  #screen-connected > #conn-disc  { grid-column: 1; grid-row: 4; }
 
   /* The rail. The verification code sits at the top because reading it aloud is the one
-     security check this interface asks a person to make; Burn is pushed to the foot by
-     `margin-top: auto`, away from everything else, because it is destructive and
-     irreversible and a destructive control should never be next to a routine one. */
+     security check this interface asks a person to make; the two disclosures follow,
+     because they are the other things you consult rather than read; Burn is pushed to the
+     foot by `margin-top: auto`, away from all three, because it is destructive and
+     irreversible and a destructive control should never be next to a routine one.
+     `1 / -1` rather than a span count, so adding a row to the left column cannot silently
+     leave the rail one row short of the bottom. */
   .conn-rail {
     display: flex;
     flex-direction: column;
     gap: 14px;
     grid-column: 2;
-    grid-row: 1 / span 4;
+    grid-row: 1 / -1;
     height: 100%;
     min-height: 0;
   }
   .conn-rail > * { width: 100%; margin: 0; }
   .conn-rail > #sever { margin-top: auto; }
+
+  /* The rail spans every row, so whatever is inside it sizes the LEFT column's tracks.
+     Measured after the move, with a live battleships match open: two stacked 10x10 boards
+     made the rail 1040px tall, the grid rows became 207 / 630 / 411, and the composer went
+     from y583..818 to y935..1170 against a fold of 1047. That is the same defect the phone
+     transcript cap exists to prevent, arriving from the other side of the screen: the peer
+     accepts a game and the composer leaves the screen of the person who pressed nothing.
+     Chess (370px), tic tac toe and the card shelf all fit with room to spare; battleships
+     is the one board that does not, and capping the body rather than the rail is what keeps
+     the verification code from scrolling away, since reading it is the one security check
+     this interface asks for. The board scrolls inside its own drawer instead. */
+  .conn-rail > #games-disc .disc-body {
+    max-height: calc(100dvh - var(--bar-h) - 300px);
+    overflow-y: auto;
+  }
 
   /* More room means a received image can be worth looking at. */
   #screen-connected .msg img { max-height: 420px; }
@@ -3432,6 +3538,15 @@ main.legal .doc-foot a:hover { color: var(--accent); text-decoration: underline;
 .donate-link:focus-visible { border-color: var(--accent-dim); color: var(--accent); }
 .donate-link .ico { width: 15px; height: 15px; }
 
+/* The three lead phrases in #net-modal carry the whole point of the panel: what will be
+   exposed, what to do about it, and what the page cannot check for you. They sat at
+   --muted, inherited from the paragraph, so the instruction was drawn in exactly the same
+   ink as the sentence explaining it and nothing in the panel read as louder than anything
+   else. They get --text-strong, which is a step above body copy rather than equal to it.
+   Scoped to this modal on purpose: <strong> elsewhere is emphasis inside a sentence, and
+   promoting all of it would flatten the same hierarchy this is trying to restore. */
+#net-modal .wg-modal-panel p strong { color: var(--text-strong); font-weight: 700; }
+
 /* Two buttons on one row on a desktop, stacked on a narrow phone, and the primary is
    first in the DOM so the keyboard reaches it first either way. */
 .net-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0 10px; }
@@ -3566,6 +3681,12 @@ main.legal .doc-foot a:hover { color: var(--accent); text-decoration: underline;
 @keyframes wg-rise-sm { from { opacity: 0; transform: translateY(calc(var(--reveal-rise) / 2)); } to { opacity: 1; transform: none; } }
 @keyframes wg-leave   { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(calc(var(--reveal-rise) / -2)); } }
 @keyframes wg-dim     { from { opacity: 1; } to { opacity: 0.6; } }
+/* A drawer opening and shutting. Both are scaleY about the top edge plus opacity, so both
+   composite; neither touches height, and the panel's own height still changes in a single
+   frame on purpose. See the .is-opening / .is-closing rules below for why that is the
+   trade this file makes. */
+@keyframes wg-unfold  { from { opacity: 0; transform: scaleY(var(--fold-scale)); } to { opacity: 1; transform: none; } }
+@keyframes wg-fold    { from { opacity: 1; transform: none; } to { opacity: 0; transform: scaleY(var(--fold-scale)); } }
 
 /* The scroll reveal on the landing, and the whole of its failure model.
  *
@@ -3598,6 +3719,36 @@ html.js-reveal .u-reveal.is-in { animation: wg-rise var(--motion-medium) var(--e
    show('onboarding') runs fitDisclosures(). Open only; closing is instant, because a
    panel the user has decided to be rid of should be gone. */
 details.disc.is-opening > .disc-body { animation: wg-rise-sm var(--motion-small) var(--ease-enter) both; }
+
+/* The gate's own drawers are furniture, not an accordion. Connection details and Games sit
+   in the rail for the life of a gate and get opened and shut over and over, and the 4px
+   fade that suits a panel somebody reads once on the way in read as a snap there. They
+   unfold from the summary's edge instead, over the large duration, and unlike anywhere
+   else on this site they animate CLOSED too: a drawer that takes 300ms to open and
+   disappears in one frame reads as a fault rather than as speed. app.js holds the panel
+   open for the length of wg-fold and only then sets `open = false`, with a timer as the
+   backstop so a browser that never fires animationend cannot strand a drawer open.
+
+   scaleY and opacity, and the panel's HEIGHT still changes in one frame. That is the
+   deliberate half of this: animating height would relayout the whole connected screen on
+   every frame of every open, over a live transfer and a running board, which is exactly
+   what the motion budget in tests/motion.test.mjs refuses. `details.disc` is
+   `overflow: hidden`, so the fold is clipped to the panel while it runs. */
+#screen-connected details.disc.is-opening > .disc-body {
+  transform-origin: top center;
+  animation: wg-unfold var(--motion-large) var(--ease-enter) both;
+}
+#screen-connected details.disc.is-closing > .disc-body {
+  transform-origin: top center;
+  animation: wg-fold var(--motion-small) var(--ease-exit) both;
+}
+
+/* An invitation is the one thing in this panel that arrives without being asked for, and
+   it arrives into a drawer that may have just opened itself. Same 4px rise as a message
+   landing in the transcript, because it is the same event: something the other device
+   sent. Set by gameui.js on the row it appends, once per invitation, so a re-render for
+   an unrelated notice does not replay it. */
+#game-area .game-row.is-arriving { animation: wg-rise-sm var(--motion-small) var(--ease-enter) both; }
 
 /* Dismissing a banner. Opacity and a 4px lift, and explicitly NOT a height collapse:
    these banners sit above a screen that may be running a live transfer, and relayouting
@@ -3641,7 +3792,7 @@ html[data-motion="off"] .lp-flip-box { transition: none; }
 html[data-motion="off"] .lp-bar::after { animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  /* Two tokens, and they collapse every translate and every scale in the file at once.
+  /* Three tokens, and they collapse every translate and every scale in the file at once.
      Every fade keeps running. This is the whole reduced-motion policy: WebKit's own
      guidance is to "only remove the animations you know to be vestibular triggers...
      removing it prematurely only succeeds in making your site unnecessarily boring", and
@@ -3656,6 +3807,8 @@ html[data-motion="off"] .lp-bar::after { animation: none; }
   :root {
     --reveal-rise: 0px;
     --press-scale: 1;
+    /* A drawer still fades open and shut; it just stops folding to get there. */
+    --fold-scale: 1;
   }
   /* --press-scale: 1 leaves the press with nothing to say, so it says it in luminance
      instead. Apple's HIG calls this substitution out by name. */

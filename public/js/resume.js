@@ -520,14 +520,27 @@ export function judgeResumeResponse(inbound, control) {
 
   const offset = Number(control.offset);
   const at = inbound.sink.position;
-  if (!Number.isSafeInteger(offset) || offset !== at) {
+  // BEHIND is normal, and refusing it killed real transfers. The offer echoes the offset
+  // THIS side asked from, and the request and the answer are separated by a round trip:
+  // bytes already in the sender's SCTP buffer keep landing here in the meantime, so by the
+  // time the answer arrives the sink is routinely further on than the number in it. Measured
+  // at 3.4 to 4.4 MB behind after a sender's page was frozen for a minute, which is exactly
+  // the buffer draining while the sender could not count it. The old strict equality turned
+  // that into a permanent, unretryable failure. Re-sent chunks are dropped by index in
+  // createIndexedSink, so the cost of tolerating it is bandwidth, not correctness.
+  //
+  // AHEAD stays refused. An offset past the contiguous frontier means the sender intends to
+  // skip bytes nothing has written, which leaves a hole no length check on either side can
+  // see. Negative is refused with it: it is not a position in a file.
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > at) {
     return {
       ok: false,
       code: 'bad_offset',
-      reason: `the other device offered to continue from ${control.offset} bytes but ${at} have been written here`,
+      reason: `the other device offered to continue from ${control.offset} bytes but only ${at} have been written here`,
     };
   }
-  return { ok: true, offset };
+  // `at`, not `offset`: what gets reported and displayed is what this side actually holds.
+  return { ok: true, offset: at };
 }
 
 /**

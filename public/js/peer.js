@@ -466,7 +466,17 @@ export class Peer extends EventTarget {
         // pc.close() closes the channel without dispatching 'close', and a peer that
         // stops reading dispatches nothing. Waiting on events alone wedged send() -- and
         // with it session.sendFile's `for await` -- forever, listeners still attached.
-        const deadline = Date.now() + DRAIN_TIMEOUT_MS;
+        // Running time, not wall-clock time. A backgrounded tab has its timers clamped to
+        // about a second and a frozen one runs none at all, while Date.now() keeps moving,
+        // so a fixed wall-clock deadline fires the moment the page thaws and reports the
+        // peer as dead for something this page did. link.js guards its two auth timers with
+        // sleptThrough() for exactly this reason; that helper is not importable from here,
+        // and it does not need to be: a poll that was due 250ms ago and ran 40s ago says the
+        // same thing more directly. Only the OVERSHOOT is given back, so a hidden page that
+        // is genuinely blocked still times out, at roughly four times the interval a clamped
+        // poll can measure, rather than never.
+        let deadline = Date.now() + DRAIN_TIMEOUT_MS;
+        let lastTick = Date.now();
         let poll = null;
         const cleanup = () => {
           if (poll) { clearInterval(poll); poll = null; }
@@ -477,9 +487,13 @@ export class Peer extends EventTarget {
         const onLow = () => { cleanup(); resolve(); };
         const onClose = () => { cleanup(); reject(new Error('data channel closed while waiting to drain')); };
         poll = setInterval(() => {
+          const now = Date.now();
+          const late = now - lastTick - DRAIN_POLL_MS;
+          lastTick = now;
+          if (late > 0) deadline += late;
           if (channel.readyState !== 'open') { onClose(); return; }
           if (channel.bufferedAmount <= CHUNK_RESUME_BYTES) { cleanup(); resolve(); return; }
-          if (Date.now() >= deadline) {
+          if (now >= deadline) {
             cleanup();
             reject(new Error(`the other device stopped accepting data (nothing sent for ${DRAIN_TIMEOUT_MS / 1000}s)`));
           }

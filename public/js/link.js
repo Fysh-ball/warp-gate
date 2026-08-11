@@ -964,6 +964,11 @@ export class Link extends EventTarget {
       if (event.detail === 'connected' && this.state === STATE.RECONNECTING
         && this.confirmedByPeer && this.peer?.channel?.readyState === 'open') {
         this.setState(STATE.CONNECTED);
+        // A restart skips key confirmation, which was reportRoute's only caller, so the
+        // route badge latched on the drop for the life of the gate. See docs/decisions.
+        void this.reportRoute().catch((err) => {
+          this.emit('warning', `could not re-check how the connection is routed: ${err.message}`);
+        });
       }
       // 'disconnected' is frequently TRANSIENT in the W3C model: it can and often does
       // return to 'connected' on its own, so it must never be terminal. It only ARMS the

@@ -152,7 +152,7 @@ try {
       micro: read('--motion-micro'), small: read('--motion-small'),
       medium: read('--motion-medium'), large: read('--motion-large'),
       enter: read('--ease-enter'), exit: read('--ease-exit'), standard: read('--ease-standard'),
-      rise: read('--reveal-rise'), press: read('--press-scale'),
+      rise: read('--reveal-rise'), press: read('--press-scale'), fold: read('--fold-scale'),
     });
   `));
   check('the motion scale resolves: four durations from the M3 tokens',
@@ -161,8 +161,9 @@ try {
   check('and three easing curves, none of them empty',
     tokens.enter.startsWith('cubic-bezier') && tokens.exit.startsWith('cubic-bezier')
     && tokens.standard.startsWith('cubic-bezier'), JSON.stringify(tokens));
-  check('the two tokens the reduced-motion branch rewrites are at their full values',
-    tokens.rise === '8px' && tokens.press === '0.985', `${tokens.rise} / ${tokens.press}`);
+  check('the three tokens the reduced-motion branch rewrites are at their full values',
+    tokens.rise === '8px' && tokens.press === '0.985' && tokens.fold === '0.94',
+    `${tokens.rise} / ${tokens.press} / ${tokens.fold}`);
 
   // ============================================================== 4. the no-JS safety net
   //
@@ -398,11 +399,13 @@ try {
     return JSON.stringify({
       rise: cs.getPropertyValue('--reveal-rise').trim(),
       press: cs.getPropertyValue('--press-scale').trim(),
+      fold: cs.getPropertyValue('--fold-scale').trim(),
       medium: cs.getPropertyValue('--motion-medium').trim(),
     });
   `));
-  check('under reduce, the two travel tokens collapse and the durations do not',
-    quietTokens.rise === '0px' && quietTokens.press === '1' && quietTokens.medium === '250ms',
+  check('under reduce, the three travel tokens collapse and the durations do not',
+    quietTokens.rise === '0px' && quietTokens.press === '1' && quietTokens.fold === '1'
+    && quietTokens.medium === '250ms',
     JSON.stringify(quietTokens));
 
   const quietReveal = JSON.parse(await quiet.eval(ANIM_FNS + `
@@ -539,6 +542,89 @@ try {
   const brokenLine = enteringLine.replace("'connected'", "'connected', 'failed'");
   check('CONTROL: the same test reports BAD when failed is added to the set',
     notEntering.some((n) => brokenLine.includes(`'${n}'`)) === true, brokenLine);
+
+  // ============================================================== 7b. the gate's drawers
+  //
+  // Connection details and Games are the only disclosures on this site that get opened and
+  // shut repeatedly, and they were the only motion on the connected screen that was still a
+  // snap in one direction: a 150ms fade in, nothing at all on the way out. Both halves are
+  // measured here, and the closing half is the one with a mechanism behind it. A <details>
+  // shuts natively between two frames, so app.js preventDefaults the summary click, marks
+  // the panel and lets wg-fold run before setting `open = false`. What must be true is that
+  // the panel is STILL OPEN while that runs, and that it ends closed anyway.
+  const drawer = JSON.parse(await app.eval(`
+    for (const s of document.querySelectorAll('section.screen')) s.hidden = s.id !== 'screen-connected';
+    const disc = document.getElementById('games-disc');
+    const body = disc.querySelector('.disc-body');
+    const summary = disc.querySelector('summary');
+    const mine = () => (document.getAnimations ? document.getAnimations() : [])
+      .filter((a) => a.effect && a.effect.target === body);
+    const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const settle = async () => {
+      await Promise.all(mine().map((a) => a.finished.catch((err) => { void err; })));
+      await frame();
+    };
+
+    disc.open = false;
+    await frame();
+
+    summary.click();
+    await frame();
+    const opening = { open: disc.open, marked: disc.classList.contains('is-opening'), running: mine().length };
+    await settle();
+
+    summary.click();
+    await frame();
+    const closing = { open: disc.open, marked: disc.classList.contains('is-closing'), running: mine().length };
+    await settle();
+    // Past the 500ms backstop as well, so "it closed" cannot be the timer rescuing a
+    // listener that never fired without that being visible in the numbers above.
+    await new Promise((r) => setTimeout(r, 600));
+    const shut = { open: disc.open, marked: disc.classList.contains('is-closing') };
+    return JSON.stringify({ opening, closing, shut });
+  `));
+  check('a gate drawer opens with an animation rather than a snap',
+    drawer.opening.open === true && drawer.opening.marked === true && drawer.opening.running >= 1,
+    JSON.stringify(drawer.opening));
+  check('and it is held open while it folds shut, instead of disappearing in one frame',
+    drawer.closing.open === true && drawer.closing.marked === true && drawer.closing.running >= 1,
+    JSON.stringify(drawer.closing));
+  check('and it does end closed, with nothing left marked on it',
+    drawer.shut.open === false && drawer.shut.marked === false, JSON.stringify(drawer.shut));
+
+  // An invitation is the one thing in that drawer that arrives without being asked for,
+  // and it may arrive into a panel that just opened itself. It gets the same 4px rise a
+  // message landing in the transcript gets, ONCE: a re-render for an unrelated notice
+  // replaying it would make the motion mean nothing.
+  const inviteArrival = JSON.parse(await app.eval(`
+    const [play, ui] = await Promise.all([import('/js/gameplay.js'), import('/js/gameui.js')]);
+    const area = document.getElementById('game-area');
+    const games = new play.GameSession({ send: async () => true });
+    const gameUi = new ui.GameUI({
+      root: area,
+      games,
+      partners: () => [{ peer: 'peer-them', label: 'Their Device' }],
+      onNotice: () => {},
+    });
+    area.replaceChildren();
+    gameUi.render();
+    await games.receive('peer-them', { t: 'invite', mid: 'aaaa000000000002', game: 'chess', seat: 'w' });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const row = () => area.querySelector('.game-row.game-status');
+    const running = (el) => (document.getAnimations ? document.getAnimations() : [])
+      .filter((a) => a.effect && a.effect.target === el).length;
+    const first = { found: Boolean(row()), marked: row() ? row().classList.contains('is-arriving') : null,
+                    running: row() ? running(row()) : 0 };
+    gameUi.render();
+    const second = { found: Boolean(row()), marked: row() ? row().classList.contains('is-arriving') : null };
+    return JSON.stringify({ first, second });
+  `));
+  check('an invitation arriving in the Games drawer is animated in',
+    inviteArrival.first.found === true && inviteArrival.first.marked === true
+    && inviteArrival.first.running >= 1, JSON.stringify(inviteArrival.first));
+  check('and a re-render of the same invitation does not replay the arrival',
+    inviteArrival.second.found === true && inviteArrival.second.marked === false,
+    JSON.stringify(inviteArrival.second));
 
   app.close();
 

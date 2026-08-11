@@ -260,15 +260,26 @@ function inlineElementFor(mime) {
 export function decorateFileRow(row, meta, ctx) {
   const name = ctx.sanitizeFilename(meta.name);
   const save = row.querySelector('button.save-btn');
+  // Where content goes in. A received row's first action is Save and the preview belongs
+  // above it; a SENT row has no Save and ends in a "Sent." line, and a thumbnail printed
+  // underneath a line that says the send already finished reads as a second event. Null on
+  // the disk row, which has neither, and appends instead.
+  const anchor = save ?? row.querySelector('.sent-note');
 
-  // Unconditional and FIRST, before every early return below. A file that gets no inline
-  // preview and no Open button is not a file that needs less caution: the Open button is
-  // withheld for types this page will not navigate to, and those are exactly the ones a user
-  // opens from their own file manager instead, where nothing here can say anything at all.
-  // This function is only ever reached from app.js's received-file path, which returns at
-  // "Sent." for anything this device sent, so there is no route by which a sent file lands
-  // here. tests/batchui.test.mjs pins that in app.js's source.
-  appendScanCaution(row);
+  // FIRST, before every early return below, so a file that gets no inline preview and no
+  // Open button still gets the caution: the Open button is withheld for types this page
+  // will not navigate to, and those are exactly the ones a user opens from their own file
+  // manager instead, where nothing here can say anything at all.
+  //
+  // `meta.sent` is the one exemption, and it is a statement about provenance rather than a
+  // rendering flag. Telling somebody to upload their OWN outgoing file to a third party
+  // that publishes it would be advice to leak the thing they just chose to send privately,
+  // which is the exact harm the caution's own wording warns about. Until sender previews
+  // existed this was enforced by the caller: app.js's finishFileRow returned at "Sent."
+  // and there was no route here at all. There is one now, so the rule is enforced where it
+  // is stated. tests/batchui.test.mjs pins the caller side; the caution count is pinned in
+  // tests/browser.test.mjs.
+  if (!meta.sent) appendScanCaution(row);
 
   // ------------------------------------------------------------------ inline preview
   if (meta.blob) {
@@ -319,10 +330,8 @@ export function decorateFileRow(row, meta, ctx) {
       el.addEventListener(el.tagName === 'IMG' ? 'load' : 'loadedmetadata', arrived, { once: true });
       el.addEventListener('error', failed, { once: true });
       el.src = url;
-      // Before the buttons, so the row reads as content-then-actions. save is always
-      // present on a row with a blob; the null guard is for the disk row below, which has
-      // no Save button and never reaches this branch.
-      if (save) row.insertBefore(el, save);
+      // Before the buttons, so the row reads as content-then-actions.
+      if (anchor) row.insertBefore(el, anchor);
       else row.appendChild(el);
     }
   }
@@ -347,5 +356,6 @@ export function decorateFileRow(row, meta, ctx) {
   open.title = `Open ${name} in a new tab`;
   open.addEventListener('click', () => { void openBytes(row, getBytes, forced, ctx); });
   if (save) save.after(open);
+  else if (anchor) anchor.before(open);
   else row.appendChild(open);
 }

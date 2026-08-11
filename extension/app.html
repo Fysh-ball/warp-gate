@@ -609,46 +609,24 @@
     </form>
     <div id="drop-veil" class="drop-veil" hidden>Drop to send</div>
 
-    <!-- Connection details belong to the conversation, not to the rail. The rail is for
-         the two things you act on: the code you read aloud, and the control that destroys
-         the gate. How the bytes are routed is something you consult while looking at the
-         messages, so it sits under them, closed, and does not take a slot next to a
-         destructive button. On a phone this lands in exactly the position it had before,
-         between the composer and Burn. -->
-    <details class="disc compact" id="conn-disc">
-      <summary><span class="disc-title">Connection details</span>
-        <span class="disc-hint" id="conn-hint">how your data is routed</span></summary>
-      <div class="disc-body"><pre id="conn-detail" class="diag">gathering...</pre></div>
-    </details>
-
-    <!-- Games. Closed by default and in the same shape as the connection disclosure,
-         because this is the least important thing on the screen and must not compete
-         with the transcript for attention.
-
-         It sits inside the gate rather than being a page of its own for the same reason
-         everything else does: a game is played over the pair's own encrypted channel and
-         has no server side at all. Moves are control messages. Nothing about a game is
-         stored, and it dies with the gate like everything else here.
-
-         The board and the controls are rendered by js/gameui.js into #game-area. The
-         markup is empty on purpose: there are four games with four different boards, and
-         a shell that described one of them would be wrong for the other three. -->
-    <details class="disc compact" id="games-disc">
-      <summary><span class="disc-title">Games</span>
-        <span class="disc-hint" id="games-hint">something to do while you wait</span></summary>
-      <div class="disc-body">
-        <div id="game-area" class="game-area"></div>
-      </div>
-    </details>
-
     <!-- The rail: the things you consult rather than read, and the one control that
          destroys the gate.
 
-         `display: contents` below 1024px, so on a phone these three are laid out as
-         siblings of the transcript and `order` puts the verification code above it and
-         the burn control at the very bottom. From 1024px up the wrapper becomes the
-         rail itself, a flex column in the grid's second track, and Burn is pushed to
-         its foot by `margin-top: auto`. One element, two layouts, no duplication.
+         `display: contents` below 1024px, so on a phone these are laid out as siblings of
+         the transcript and `order` puts the verification code above it, the two
+         disclosures under the composer and the burn control at the very bottom. That is
+         the same sequence they had when they were direct children of the screen, so the
+         phone and tablet layouts did not move when they were reparented here.
+
+         From 1024px up the wrapper becomes the rail itself, a flex column in the grid's
+         second track. The two disclosures moved into it because measured at 1920x1080 the
+         old arrangement put them in the transcript column as two 1250x70 slabs carrying
+         one short phrase each, roughly 1030px of the width empty, directly beside a rail
+         that was 83% empty: a 692px void between the verification code and Burn. The
+         things you consult rather than read now live together, the column that carries the
+         conversation gets its width back, and Burn is still pushed to the rail's foot by
+         `margin-top: auto` because it is destructive and irreversible and must not sit on
+         the same rhythm as a routine control. One element, two layouts, no duplication.
 
          Reading the verification code aloud is the only security check this interface
          asks a person to make, so it is legible and it is never folded behind a
@@ -675,6 +653,32 @@
         <p class="rail-note">Both devices should show the same digits and the same two words.
         Read them aloud. If they differ, burn the gate.</p>
       </div>
+
+      <details class="disc compact" id="conn-disc">
+        <summary><span class="disc-title">Connection details</span>
+          <span class="disc-hint" id="conn-hint">how your data is routed</span></summary>
+        <div class="disc-body"><pre id="conn-detail" class="diag">gathering...</pre></div>
+      </details>
+
+      <!-- Games. Closed by default and in the same shape as the connection disclosure,
+           because this is the least important thing on the screen and must not compete
+           with the transcript for attention.
+
+           It sits inside the gate rather than being a page of its own for the same reason
+           everything else does: a game is played over the pair's own encrypted channel and
+           has no server side at all. Moves are control messages. Nothing about a game is
+           stored, and it dies with the gate like everything else here.
+
+           The board and the controls are rendered by js/gameui.js into #game-area. The
+           markup is empty on purpose: there are four games with four different boards, and
+           a shell that described one of them would be wrong for the other three. -->
+      <details class="disc compact" id="games-disc">
+        <summary><span class="disc-title">Games</span>
+          <span class="disc-hint" id="games-hint">something to do while you wait</span></summary>
+        <div class="disc-body">
+          <div id="game-area" class="game-area"></div>
+        </div>
+      </details>
 
       <button id="sever" class="danger">Burn the gate</button>
     </div>

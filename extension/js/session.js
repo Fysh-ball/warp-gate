@@ -1083,7 +1083,8 @@ export class Session extends EventTarget {
           this.emit('warning', `${file.name} did not reach ${this.labelFor(targets[i])}: ${results[i].reason.message}`);
         }
       }
-      return undefined;
+      // The transfer id, so the caller can find the row this send drew. See docs/decisions.
+      return id;
     } finally {
       this.fanouts.delete(id);
     }

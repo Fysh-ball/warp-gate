@@ -257,6 +257,9 @@ export class GameUI {
     this.chosenPeer = null;
     // The match id of the last invitation this screen announced. See announceInvite().
     this.announcedInvite = null;
+    // Set by announceInvite, consumed by renderInvite. Declared here so the field exists
+    // before the first render rather than appearing on the instance halfway through a match.
+    this.inviteArriving = false;
     this.games.addEventListener('update', () => this.render());
   }
 
@@ -289,6 +292,10 @@ export class GameUI {
     // exists to prevent, so the latch must not be forgeable by the sender.
     if (this.announcedInvite === inv) return;
     this.announcedInvite = inv;
+    // Consumed by renderInvite, once. The row is about to be built by the same render()
+    // call, and a later re-render for an unrelated notice must not replay the arrival:
+    // motion that repeats without a new event stops meaning "something happened".
+    this.inviteArriving = true;
     if (this.onNotice) this.onNotice(`${this.labelFor(inv.peer)} wants to play ${inv.name}.`);
     // closest() rather than a known id: this class is handed a root and does not own the
     // markup around it, and a copy of the app that does not wrap it in a disclosure at all
@@ -461,6 +468,14 @@ export class GameUI {
   renderInvite(root, inv) {
     const who = this.labelFor(inv.peer);
     const row = el('div', 'game-row game-status');
+    // Only for an invitation that has just been announced. The class drives a 4px rise in
+    // style.css, the same one a message landing in the transcript gets, because it is the
+    // same kind of event: something the other device sent, into a panel that may have just
+    // opened itself to show it.
+    if (this.inviteArriving) {
+      row.classList.add('is-arriving');
+      this.inviteArriving = false;
+    }
     row.append(el('p', 'game-idle', `${who} wants to play ${inv.name}.`));
     row.append(button('Play', 'btn small', () => { this.selected = null; this.games.accept(); }));
     row.append(button('No thanks', 'btn ghost small', () => this.games.decline()));

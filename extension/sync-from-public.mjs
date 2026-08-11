@@ -182,13 +182,16 @@ edit('js/app.js', [
   // fork" will actually see it. It is also the one import app.js cannot lose while remaining
   // app.js, and the multi-line form makes it long enough to be unique on its own: verified
   // with grep, not by eye.
+  //
+  // Shortened on 2026-08-11: the four gate-code symbols left this import when words.js went
+  // behind loadGateCode(), so the anchor as written matched zero times and this script did
+  // what it is for and refused rather than patching something else. Four names on one line
+  // is still unique in the file, and it is still the block app.js cannot lose.
   [`import {
-  generateGateCode, decodeGateCode, tryDecodeGateCode, deriveSecret, clearSecretCache,
-  GateCodeError, deriveRoomId,
+  deriveSecret, clearSecretCache, deriveRoomId, loadGateCode,
 } from './crypto.js';`,
     `${jsHeader('app.js')}import {
-  generateGateCode, decodeGateCode, tryDecodeGateCode, deriveSecret, clearSecretCache,
-  GateCodeError, deriveRoomId,
+  deriveSecret, clearSecretCache, deriveRoomId, loadGateCode,
 } from './crypto.js';\n`
     + '// EXTENSION PATCH: this page is not served by the signalling server, so neither the API\n'
     + "// origin nor the shareable gate link can be read off `location`. See js/endpoint.js.\n"

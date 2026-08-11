@@ -25,7 +25,7 @@ cd "$(dirname "$0")/.." || exit 2
 # and exit 2 BEFORE a single suite ran. The guard did its job: the failure was loud. What it
 # shows is that adding a suite is two edits, not one, and that a runner which refuses to run is
 # the correct behaviour rather than a nuisance to be worked around.
-suites=(crypto qr qrdecode size signalling http suggest download outbound browser mesh games gameplay saswords pwa motion legal securecontext batchui disconnect)
+suites=(crypto qr qrdecode size signalling http suggest download outbound drain browser mesh games gameplay saswords pwa motion legal securecontext batchui disconnect)
 
 # Deliberately not run, and therefore deliberately not a gap. Anything in tests/ that is
 # neither here nor above is an omission and stops the run.

@@ -16,16 +16,36 @@
 // Keys are non-extractable CryptoKey objects wherever possible, so key bytes never
 // enter the JS heap and dropping the reference is a real erasure (DESIGN.md 1.11).
 
-import { decodeGateCode } from './words.js';
+// words.js is 61 KB of wordlist, a fifth of the gate's eager graph, and NOT reachable from
+// here as a static import. It used to be: crypto.js imported decodeGateCode and re-exported
+// eleven symbols, so every visitor fetched all 7776 words before the page could decide
+// whether they were creating a gate, joining one, or reading the screen. Nothing needs the
+// list until somebody types a code or arrives on a link, and both of those are decisions a
+// person makes after the page is up.
+//
+// The accessor stays HERE rather than each caller importing words.js directly, so the rule
+// that everything about a gate code arrives from one module survives the split: crypto.js
+// still owns "code -> S", words.js still owns "text -> words" and knows nothing about keys.
+// One promise, so eight callers share one fetch, and a failed fetch is not remembered as
+// the answer.
+let gateCodeModule = null;
 
-// Re-exported so that everything a caller needs about a gate code arrives from one
-// module. crypto.js owns "code -> S"; words.js owns "text -> words" and knows nothing
-// about keys.
-export {
-  generateGateCode, decodeGateCode, tryDecodeGateCode, GateCodeError,
-  CODE_WORDS, WORD_COUNT, WORDS, WORDLIST_SHA256, randomWordIndices,
-  encodeWordIndices, canonicalPhrase,
-} from './words.js';
+/**
+ * The gate-code vocabulary, fetched on first use.
+ *
+ * @returns {Promise<object>} the words.js namespace: generateGateCode, decodeGateCode,
+ *   tryDecodeGateCode, GateCodeError, WORDS, WORD_COUNT, WORDLIST_SHA256, CODE_WORDS,
+ *   randomWordIndices, encodeWordIndices, canonicalPhrase.
+ */
+export function loadGateCode() {
+  if (!gateCodeModule) {
+    gateCodeModule = import('./words.js').catch((err) => {
+      gateCodeModule = null;
+      throw new Error(`the gate code word list could not be loaded: ${err.message}`);
+    });
+  }
+  return gateCodeModule;
+}
 
 const subtle = globalThis.crypto.subtle;
 const te = new TextEncoder();
@@ -226,6 +246,7 @@ const SECRET_CACHE_MAX = 8;
  * its own secret cannot corrupt anybody else's.
  */
 export async function deriveSecret(code) {
+  const { decodeGateCode } = await loadGateCode();
   const { code: canonical, phrase } = decodeGateCode(code);
 
   const existing = SECRET_CACHE.get(canonical);

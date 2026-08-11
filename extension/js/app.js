@@ -13,8 +13,7 @@
 // that would delete this copy is written up in extension/README.md.
 
 import {
-  generateGateCode, decodeGateCode, tryDecodeGateCode, deriveSecret, clearSecretCache,
-  GateCodeError, deriveRoomId,
+  deriveSecret, clearSecretCache, deriveRoomId, loadGateCode,
 } from './crypto.js';
 // EXTENSION PATCH: this page is not served by the signalling server, so neither the API
 // origin nor the shareable gate link can be read off `location`. See js/endpoint.js.
@@ -494,10 +493,14 @@ function scrollPageToTop() {
  * show('onboarding') runs and fitDisclosures() touches them. A toggle event is the only
  * signal that says a person did this.
  *
- * Open only. Closing is instant: a panel somebody has decided to be rid of should be
- * gone, not lingering while it is animated away.
+ * Closing is instant everywhere EXCEPT the two drawers in a live gate. Onboarding's five
+ * panels are read once on the way in and a panel somebody has decided to be rid of should
+ * be gone; Connection details and Games are furniture that gets opened and shut for the
+ * life of the gate, and a drawer that takes 300ms to open and vanishes in one frame reads
+ * as a fault. Those two are held open for the length of the closing animation instead.
  */
 function wireDisclosureMotion() {
+  const reduced = () => Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
   for (const disc of document.querySelectorAll('details.disc')) {
     const body = disc.querySelector('.disc-body');
     if (!body) continue;
@@ -508,6 +511,36 @@ function wireDisclosureMotion() {
       }
       disc.classList.add('is-opening');
       body.addEventListener('animationend', () => disc.classList.remove('is-opening'), { once: true });
+    });
+
+    // The gate's drawers only. `closest`, not an id list: app.html is free to add a third
+    // drawer to that screen and it should behave like its neighbours without a second edit
+    // here, and a copy of this page that has no connected screen gets the old behaviour.
+    if (!disc.closest('#screen-connected')) continue;
+    const summary = disc.querySelector('summary');
+    if (!summary) continue;
+    summary.addEventListener('click', (event) => {
+      // Opening, already closing, or a person who asked for less motion: let the element
+      // do what it natively does. Under reduce the fold collapses to a fade, and a fade on
+      // the way out of something that is about to be removed is worth less than the frame
+      // it costs.
+      if (!disc.open || disc.classList.contains('is-closing') || reduced()) return;
+      // The one preventDefault in this file. Space and Enter on a summary both arrive here
+      // as a click, so the keyboard path is the same path.
+      event.preventDefault();
+      disc.classList.add('is-closing');
+      let timer = null;
+      const shut = () => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        body.removeEventListener('animationend', shut);
+        disc.classList.remove('is-closing');
+        disc.open = false;
+      };
+      body.addEventListener('animationend', shut);
+      // The backstop, and it is not optional: animationend does not fire for an element
+      // that is display:none, and a drawer that could be opened and never closed would be
+      // a worse bug than the snap this replaces. Comfortably past wg-fold's 150ms.
+      timer = setTimeout(shut, 500);
     });
   }
 }
@@ -800,11 +833,11 @@ let sasWordsLoading = null;
 /**
  * Fetch the wordlist that turns the verification digits into two spoken words.
  *
- * The saving here is CPU rather than bytes: the wordlist itself (words.js) stays eager
- * because crypto.js needs it to decode a typed gate code. What defers is saswords.js's
- * module-eval work, which filters and phonetically de-collides all 7776 entries to build
- * the spoken list, and on a phone that is main-thread time spent before the home screen
- * paints for a value nobody sees until a peer connects.
+ * The saving here is mostly CPU. words.js is itself lazy now (see loadGateCode), and by
+ * the time a gate exists it has already been fetched to mint or read the code, so what
+ * defers here is saswords.js's own module-eval work: it filters and phonetically
+ * de-collides all 7776 entries to build the spoken list, and on a phone that is main-thread
+ * time spent before the home screen paints for a value nobody sees until a peer connects.
  *
  * It still needs justifying more carefully than the games, because it IS on the security
  * path. Three things make deferring it safe:
@@ -901,6 +934,14 @@ function wire(active) {
   // actually work for you". Reset here rather than at boot for that reason.
   everConnected = false;
 
+  // Same reason, and it was missing: a second gate in this tab inherited the first one's
+  // route badge, dimming included, until a candidate pair resolved.
+  const routeBadge = $('route-badge');
+  if (routeBadge) {
+    routeBadge.textContent = 'connecting';
+    routeBadge.className = 'badge';
+  }
+
   // The games live for exactly one gate. A new gate is a new board, and a GameSession
   // carried over from the last one would hold a match id and a peer that no longer exist.
   // Cleared here rather than reloaded: the module stays in the browser's module map, so
@@ -938,8 +979,15 @@ function wire(active) {
     const [label, kind] = STATE_LABELS[event.detail.state] ?? [event.detail.state, 'work'];
     badge(label, kind);
     if (event.detail.state === STATE.CONNECTED) {
+      // Read before it is set: a second CONNECTED is a recovery, and the dock shows only
+      // the newest line, so it needs a newer TRUE one to retire the last failure's. The log
+      // body is deliberately not cleared: it is that drop's evidence. See docs/decisions.
+      const recovered = everConnected;
       everConnected = true;
       show('connected');
+      if (recovered) log('Connected again.', 'ok');
+      // reportRoute() runs from the same transition on the link side and refines it.
+      $('route-badge')?.classList.remove('is-stale');
       // While both devices are here the server keeps pushing the expiry forward, so a
       // countdown would be misleading. It resumes if the other side leaves.
       stopTtl();
@@ -1212,13 +1260,11 @@ function wire(active) {
   // user's network of a NAT problem that a working connection has already disproved.
   active.addEventListener('holding', (event) => {
     const d = event.detail ?? {};
-    const banner = $('conn-hint');
-    if (banner) banner.textContent = d.peerLeft ? 'other device away, waiting' : 'reconnecting';
+    // The badge answers one question, how the bytes travel, and the pill is the one status
+    // surface. Dimmed, not overwritten: the route it names is the route that WAS there.
+    // #conn-hint is not written here either; renderDiagnostics() owns it. See docs/decisions.
     const el = $('route-badge');
-    if (el) {
-      el.textContent = 'RECONNECTING';
-      el.className = 'badge badge-work';
-    }
+    if (el) el.classList.add('is-stale');
     log(d.detail ?? 'The connection dropped. Waiting for the other device.', 'warn');
     if (d.transferInFlight) log('The transfer is being held where it stopped and will carry on by itself.', 'warn');
   });
@@ -1861,10 +1907,33 @@ async function renderFilePreview(row, meta) {
     // preview and the Open button in silence, indistinguishable from a type that gets none.
     const note = document.createElement('div');
     note.className = 'muted small';
-    note.textContent = `The preview could not be prepared (${err.message}). Save still works.`;
+    // Direction-aware: a sent row has no Save button, so promising one would be a second
+    // wrong statement stacked on the first.
+    note.textContent = meta.sent
+      ? `The preview could not be prepared (${err.message}). The file was still sent.`
+      : `The preview could not be prepared (${err.message}). Save still works.`;
     row.appendChild(note);
   }
   scrollMessages();
+}
+
+/**
+ * Show the sender what they just sent, from the LOCAL File. No extra byte crosses the
+ * channel. Called from sendFilesNow because that is the last place still holding the File:
+ * link.js clears it one line before 'file-sent', which carries neither mime nor bytes.
+ * `sent: true` keeps the VirusTotal caution off a file this device did not receive.
+ * See docs/decisions/2026-08-11-gate-ui.md.
+ */
+async function showWhatWasSent(id, file) {
+  const row = document.getElementById(`transfer-${id}`);
+  if (!row) return;
+  await renderFilePreview(row, {
+    name: file.name,
+    mime: file.type || 'application/octet-stream',
+    blob: file,
+    size: file.size,
+    sent: true,
+  });
 }
 
 /** Show a preview inline once the file has arrived; everything gets a save button. */
@@ -1886,7 +1955,8 @@ function finishFileRow(row, meta, from) {
   // a location they never chose: that message belongs only to a received disk transfer.
   if (from === 'me') {
     const done = document.createElement('div');
-    done.className = 'muted small';
+    // `sent-note` is preview.js's anchor: the thumbnail goes ABOVE this line.
+    done.className = 'muted small sent-note';
     done.textContent = 'Sent.';
     row.appendChild(done);
     return;
@@ -2111,7 +2181,9 @@ async function sendFilesNow(list) {
     // renderProgress reads this to tell a send this side started from a forged one.
     localSends += 1;
     try {
-      await session.sendFile(file, batch);
+      // The id, so the row this send drew can be found again.
+      const sentId = await session.sendFile(file, batch);
+      if (sentId) await showWhatWasSent(sentId, file);
     } catch (err) {
       log(`could not send ${file.name}: ${err.message}`, 'bad');
       // EVERY rejection resolves the row, not only the ones that emit an event. This used to
@@ -2241,6 +2313,10 @@ async function startCreate() {
   // the only thing that travels, and S is a one-way function of it. PBKDF2 at 600,000
   // iterations is a one to four second pause, which is why it happens once, here. runFlow
   // already has the button disabled and reading "Working..." for the duration.
+  // The 7776-word list arrives here, on the first decision that actually needs it. See
+  // loadGateCode() in crypto.js: it is a fifth of the eager graph and a visitor who never
+  // creates or joins never fetches it.
+  const { generateGateCode } = await loadGateCode();
   const formatted = generateGateCode();
   const secret = await deriveSecret(formatted);
 
@@ -2320,6 +2396,7 @@ async function startJoin(text) {
   // keeps the order the comment below asks for AND keeps a bad code from costing a second
   // of PBKDF2 before it is rejected.
   let parsed;
+  const { decodeGateCode, GateCodeError } = await loadGateCode();
   try {
     parsed = decodeGateCode(text);
   } catch (err) {
@@ -2618,7 +2695,7 @@ async function boot() {
     try {
       localStorage.setItem(AGREEMENT_KEY, JSON.stringify({ version: 1, acceptedAt: new Date().toISOString() }));
     } catch (err) { void err; }
-    afterAgreement();
+    void afterAgreement();
   });
 
   // Say plainly which instance this is. A hostile host would simply delete this, which
@@ -2866,29 +2943,46 @@ async function boot() {
 
   let agreed = false;
   try { agreed = Boolean(JSON.parse(localStorage.getItem(AGREEMENT_KEY) || 'null')); } catch (err) { void err; }
-  if (agreed) afterAgreement();
+  if (agreed) void afterAgreement();
   else show('onboarding');
 }
 
 // The secret as it arrived in the fragment, held from boot until the user has agreed.
 let arrivalHash = '';
 
-function afterAgreement() {
+async function afterAgreement() {
   const hash = arrivalHash;
   arrivalHash = '';
 
   // A fresh arrival brings the secret in the link. A reload has no link any more, so
   // fall back to the copy held for this tab, which is what makes refresh survivable.
+  const stored = recallSecret();
+
+  // Neither, so there is no code to read and no reason to fetch the list that reads one.
+  // This is the ordinary first visit, and it is the case the split exists for: the home
+  // screen is shown without 61 KB of vocabulary behind it.
+  if (!hash && !stored) { show('home'); return; }
+
+  let words;
+  try {
+    words = await loadGateCode();
+  } catch (err) {
+    // The link is still in `hash`, which has already been taken out of the address bar, so
+    // there is nothing left to retry with. Say so rather than showing an empty home screen
+    // that silently dropped the gate the person was sent.
+    showHomeError(`${err.message}. Reload the page and open the link again.`);
+    return;
+  }
+
   // tryDecodeGateCode, not deriveSecret: this is a yes/no question and deriveSecret returns
   // a promise, which is always truthy. Using it here would treat every fragment on the page
   // as a gate code, and pay a second of PBKDF2 on every load to do it.
-  const fromLink = hash && tryDecodeGateCode(hash) ? hash : null;
-  const stored = fromLink ? null : recallSecret();
+  const fromLink = hash && words.tryDecodeGateCode(hash) ? hash : null;
 
   // startJoin resumes an existing slot if this tab already holds one, so a reload of
   // either side lands back in the same gate rather than being refused as full.
   if (fromLink) runFlow($('join-btn'), () => startJoin(fromLink));
-  else if (stored && tryDecodeGateCode(stored)) runFlow($('join-btn'), () => startJoin(stored));
+  else if (stored && words.tryDecodeGateCode(stored)) runFlow($('join-btn'), () => startJoin(stored));
   else show('home');
 }
 
