@@ -16,3 +16,11 @@ node_modules/
 # Build artifacts. The extension zip is produced by extension/pack.mjs and belongs on a
 # release, not in the tree: a binary in git drifts from the source it was built from.
 dist/
+
+# Internal operator documents. These two were written for operating one private
+# deployment and neither carries anything a reader of this project needs. This
+# repository is public.
+# deploy/SELF-HOSTING.md is the document
+# written for that audience; these two were never meant to be.
+CLAUDE.md
+deploy/NOTES.md
