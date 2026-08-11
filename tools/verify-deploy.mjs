@@ -436,7 +436,11 @@ const probes = [
     async run(base) {
       const index = await get(base, '/index.html');
       const faq = await get(base, '/faq.html');
-      const LINK = 'https://github.com/Fysh-ball/warp-gate/tree/main/extension';
+      // The release download, not the source folder it used to point at: "clone the repo"
+      // is a developer instruction. /releases/latest rather than a pinned tag so the link
+      // does not have to be edited, and this probe does not have to be edited, every time
+      // a version ships.
+      const LINK = 'https://github.com/Fysh-ball/warp-gate/releases/latest';
       return {
         indexStatus: index.status,
         faqStatus: faq.status,
