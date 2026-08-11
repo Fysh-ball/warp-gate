@@ -37,7 +37,7 @@ recorded in the header of `public/js/words.js` and its SHA-256 is asserted by th
 suite. There is no backward compatibility: an old code is recognised only so that the
 person holding one is told the format changed.
 
-**coturn was dropped in favour of an in-process STUN responder.** UDP 3478 turned out to be unavailable: another service publishes it, but nothing listens behind that publish (verified by entering the container's network namespace, where the only UDP socket is Docker's embedded DNS). Rather than disturb another service, Warp Gate took 3479. At that point adding a whole coturn container for what is a stateless, non-cryptographic, fully specified request and response looked like exactly the overengineering section 21 forbids. `server/stun.js` is roughly 50 lines of RFC 5389 Binding handling, which keeps the deployment to the single process the specification asks for. It is verified against an independently written client, and that client is proved able to fail before its passes are trusted. **coturn is not deployed and no coturn configuration exists in this repository.**
+**coturn was dropped in favour of an in-process STUN responder.** UDP 3478 turned out to be unavailable: another service on the host publishes it, but nothing listens behind that publish (verified by entering the container's network namespace, where the only UDP socket is Docker's embedded DNS). Rather than disturb that service, Warp Gate took 3479. At that point adding a whole coturn container for what is a stateless, non-cryptographic, fully specified request and response looked like exactly the overengineering section 21 forbids. `server/stun.js` is roughly 50 lines of RFC 5389 Binding handling, which keeps the deployment to the single process the specification asks for. It is verified against an independently written client, and that client is proved able to fail before its passes are trusted. **coturn is not deployed and no coturn configuration exists in this repository.**
 
 **Then self hosting the STUN responder was abandoned too, which reverses finding 1.2.**
 Cloudflare Tunnel carries TCP only, so a self hosted STUN server cannot sit behind it.
@@ -1109,7 +1109,7 @@ Stand up a 30 line SSE echo behind the real Cloudflare Tunnel. Verify with `curl
 
 **Phase 8: hardening.** Every item on the brief's section 20 test list, plus: wrong secret, room ID guess, oversized relay body, malformed envelope, replayed frame, counter rollback, tag corruption, simultaneous join race, double join, refresh mid transfer, tab close mid transfer, two devices behind the same NAT, WiFi to LTE with ICE restart, and a deliberate P2P failure to confirm the failure message is the honest one from section 12.
 
-**Phase 9: deploy.** As executed: a container rather than a systemd unit, no coturn, `stun.cloudflare.com` rather than a self hosted responder, Cloudflare Tunnel through the existing an existing connector connector, and an explicit verification that access logging is off at the origin **and** in `cloudflared`. Recorded in Recorded outside this repository; the transferable parts are in `deploy/SELF-HOSTING.md`.
+**Phase 9: deploy.** As executed: a container rather than a systemd unit, no coturn, `stun.cloudflare.com` rather than a self hosted responder, Cloudflare Tunnel through an existing connector, and an explicit verification that access logging is off at the origin **and** in `cloudflared`. Recorded in Recorded outside this repository; the transferable parts are in `deploy/SELF-HOSTING.md`.
 
 ### Test strategy
 

@@ -4,7 +4,7 @@
 # the source mounted read-only is the whole deployment. Updating is a file copy and a
 # restart, and nothing is ever built on this host.
 #
-# Deploy path on the host: <deploy path>
+# Deploy path on the host, wherever you keep it:
 #   ./app     the project (server/ and public/), mounted read-only
 #   ./secrets TUNNEL_TOKEN, only if the cloudflared service below is enabled
 
@@ -48,7 +48,7 @@ services:
       # home IP out of public DNS. Port 53/udp is a documented alternate that gets
       # through networks which block 3478.
       - WG_STUN_URL=${WG_STUN_URL:-stun:stun.cloudflare.com:3478}
-      # Traffic arrives through cloudflared (an existing connector tunnel, host networking) as of
+      # Traffic arrives through cloudflared (an existing tunnel, host networking) as of
       # 2026-08-08, so CF-Connecting-IP must be trusted: without it every request is keyed
       # by the peer address, which is one address for everybody, and all users share a
       # single rate-limit bucket. Safe here only because 3095 is bound to loopback, so
