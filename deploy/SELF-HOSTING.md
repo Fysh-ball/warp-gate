@@ -10,6 +10,28 @@ is the honest one: **whoever serves the page controls the code that does the
 encryption.** Hosting it yourself, from source you have read, is the only configuration
 where that question has a definite answer.
 
+## Start here
+
+The README's Quickstart is the three commands that get a gate running on your own machine,
+and it is not repeated here: read it first, then come back. This document is the rest of
+the road, in the order the decisions actually arrive.
+
+| # | Step | Where |
+|---|---|---|
+| 1 | Get it running on loopback and send a file between two tabs | README, Quickstart |
+| 2 | Decide which compose file you are building on | The two compose files, below |
+| 3 | Understand why the port is on loopback before you move it | Ports |
+| 4 | Put TLS in front of it. Not optional, and not a hardening step | TLS, and why plain HTTP will not do |
+| 5 | Tell the server which proxy to trust, or every user shares one rate limit | WG_TRUST_PROXY is a footgun |
+| 6 | Choose a STUN server, or it works on one LAN only | STUN: why it is off by default |
+| 7 | Set gate lifetimes, capacity and abuse limits for your instance | Environment |
+| 8 | Decide whether you want the suggestion box, and create its directory first | The suggestion box |
+| 9 | Publish your source URL if you modified it | AGPL section 13 |
+| 10 | Run the probes, and read them | Verifying a deployment |
+
+Steps 4 and 5 are the two that produce a deployment which looks fine to you and is broken
+for everyone else, so neither is safe to defer until after you have shown it to someone.
+
 ## The two compose files, and which one you want
 
 Warp Gate ships two, and they are not variants of each other:
@@ -80,6 +102,85 @@ state available, because it does not look broken. Measured 2026-08-10, headless 
 Both rendered `/app` identically. Get TLS in front of it before you move the publish off
 `127.0.0.1`; if you need to test from a phone before that exists, a tunnel that terminates
 TLS for you (`cloudflared`, `tailscale serve`) is a secure context and a LAN IP is not.
+
+## TLS, and why plain HTTP will not do
+
+This is the step that catches people, and it fails in a way that looks like a bug in Warp
+Gate rather than a missing certificate.
+
+`crypto.subtle` exists only in a **secure context**. Browsers grant that to HTTPS origins
+and to loopback, and to nothing else:
+
+| Origin | `isSecureContext` | `crypto.subtle` |
+|---|---|---|
+| `https://gate.example.com` | true | present |
+| `http://127.0.0.1:3095` | true | present |
+| `http://192.168.1.50:3095` | **false** | **undefined** |
+
+The third row is the trap. You start it, it works perfectly in a browser on the server,
+you open the LAN address on your phone to show someone, and the encryption primitives are
+not there at all. Warp Gate detects this and says so rather than quietly serving a page
+that cannot encrypt, but the cause is the origin, not the installation. There is no flag
+that turns it off: it is the browser's rule, not ours.
+
+So loopback to try it, TLS for anything else.
+
+### Caddy
+
+The least that can go wrong. Certificates are automatic and Server-Sent Events pass
+through untouched:
+
+```
+gate.example.com {
+    reverse_proxy 127.0.0.1:3095
+}
+```
+
+### nginx
+
+Works, with one setting that is not optional:
+
+```nginx
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name gate.example.com;
+    # ssl_certificate / ssl_certificate_key from certbot or your CA
+
+    location / {
+        proxy_pass http://127.0.0.1:3095;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Signalling is Server-Sent Events, and nginx buffers proxied responses by
+        # default. Buffered, every event is held until the buffer fills or the response
+        # ends, so the two sides never receive each other's offer: the gate sits at
+        # "connecting" forever with nothing logged anywhere, because from the server's
+        # side it sent the event and from the browser's side it never arrived.
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+}
+```
+
+### Cloudflare Tunnel
+
+What the public instance runs, and the reason `deploy/docker-compose.yml` carries a
+`cloudflared` service. It needs no inbound port at all, which is why it suits a home
+connection. The origin stays on loopback and the tunnel reaches it there.
+
+Server-Sent Events survive Cloudflare without a Websockets or gRPC setting: see
+"Server-Sent Events survive a CDN, verified" below, which is a measurement rather than an
+assumption.
+
+### If you put anything in front of it
+
+Read the `WG_TRUST_PROXY` section below before you finish. A reverse proxy makes every
+request arrive from one address, and until the server is told which hop to trust, all of
+your users share a single rate-limit bucket and lock each other out.
 
 ## Environment
 
@@ -417,6 +518,44 @@ node tests/public-e2e.mjs https://your.host
 ```
 
 It drives two real browsers through a full gate lifecycle over the public path.
+
+## Updating
+
+With `compose.yaml` (image build):
+
+```sh
+git pull
+docker compose up -d --build
+```
+
+With `deploy/docker-compose.yml` (bind mount), a copy and a restart:
+
+```sh
+rsync -a --delete server public /path/to/warp-gate/app/
+docker restart warp-gate
+```
+
+Two things worth knowing before you do either:
+
+- **A restart destroys every live gate.** That is by design: gates are session state held
+  in memory and there is nothing to persist. If anyone might be mid-transfer, wait.
+- **Changing an environment variable needs a recreate, not a restart.** `docker compose
+  up -d` does that for you; `docker restart` does not, and the container comes back with
+  the old value while the file on disk says otherwise. This is an easy hour to lose.
+
+If you changed only `public/`, a bind-mount deployment needs neither: the files are read
+from the mount on each request, so a copy is enough.
+
+## When something is wrong
+
+| Symptom | Almost always |
+|---|---|
+| Page loads, says the browser is missing what it needs | Not a secure context. You are on `http://` and not on loopback. See the TLS section. |
+| Both sides sit at "connecting" and nothing happens | Server-Sent Events are being buffered by a proxy. `proxy_buffering off` for nginx. |
+| Everyone gets 429 after a few gates | The forwarding header is not trusted, so every request is keyed to the proxy's address and shares one bucket. See `WG_TRUST_PROXY`. |
+| The suggestion box accepts text and stores nothing | `data/` is owned by root. `cap_drop: ALL` removes `CAP_DAC_OVERRIDE`, so container-root cannot write a host directory it does not own. Create it with the right uid BEFORE first start. |
+| Works on one LAN, never across the internet | No STUN. `WG_STUN_URL` is empty by default, so the browser is handed `iceServers: []` and has no way to discover its public address. See the STUN section. A few networks need a relay even with STUN, and Warp Gate has no TURN support: `iceServers` is built as `[{ urls: stunUrls }]` with no credential fields, so a TURN URL cannot be expressed. |
+| A code change does not take effect | On a bind mount, the file has to actually reach `app/` on the host: check there, not in your git tree. On a built image, `docker compose up -d` without `--build` reuses the old image and reports success. |
 
 ## Operational notes
 
