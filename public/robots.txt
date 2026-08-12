@@ -1,0 +1,16 @@
+# Everything here is public and safe to fetch, including /app.
+#
+# /app is deliberately NOT disallowed. A gate link IS an /app link, and the preview
+# fetchers behind Twitter and several chat clients honour robots.txt, so disallowing it
+# would stop a pasted gate link from ever showing a card: the exact thing the preview
+# tags were added to fix. Nothing leaks by allowing it either, because the room secret
+# lives in the URL fragment, which a browser never sends to a server and a crawler
+# therefore never sees.
+#
+# /app is left out of sitemap.xml all the same. Crawl it, by all means; there is just
+# no standing page there to rank, since a gate exists only while two devices hold it.
+
+User-agent: *
+Allow: /
+
+Sitemap: https://warpgate.fysh.site/sitemap.xml

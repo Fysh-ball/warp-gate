@@ -27,6 +27,12 @@ const TYPES = new Map(Object.entries({
   '.webmanifest': 'application/manifest+json',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  // robots.txt and sitemap.xml. Without an entry here they fall through to
+  // application/octet-stream, and securityHeaders() sends nosniff on every response, so
+  // nothing downstream is allowed to guess a better type. Google is documented to reject
+  // a robots.txt that is not text/*: the file would be served, fetched, and ignored.
+  '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
 }));
 
 // Strict by design. No external origins at all: a page that can reach a third party
@@ -231,6 +237,17 @@ function serveStatic(req, res, pathname) {
     // here, and nothing else can.
     if (target === path.join(PUBLIC_DIR, 'app.html')) {
       res.setHeader('permissions-policy', PERMISSIONS_GATE);
+    }
+    // The link-preview card, and nothing else. securityHeaders() sets
+    // cross-origin-resource-policy: same-origin site-wide, which is right for every byte
+    // here except this one: og-card.png exists to be loaded BY another origin. Crawlers
+    // fetch server-side and ignore CORP, so this changes nothing for Discord or Slack,
+    // but an in-browser preview widget embedding the card would be refused. Keyed on the
+    // resolved path like the two rules above, so no request path or traversal can carry
+    // the widening onto a document. It is a static image with nothing derived from a
+    // gate in it, so there is nothing here for another origin to learn.
+    if (target === path.join(PUBLIC_DIR, 'og-card.png')) {
+      res.setHeader('cross-origin-resource-policy', 'cross-origin');
     }
     // Vary is set whether or not this response is compressed. A shared cache that stored
     // the identity copy of app.js without it would then hand that copy to a client that
