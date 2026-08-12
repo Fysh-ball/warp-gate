@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 // The recipe itself: the list of patched files and the function that applies their
 // patches. One source of truth, shared with the tool that writes the files.
 // extension/README.md explains WHY each file is patched.
-import { PATCHES, PATCHED_FILES, patchedText } from './sync-from-public.mjs';
+import { PATCHES, PATCHED_FILES, patchedText, NOT_SHIPPED } from './sync-from-public.mjs';
 import { DEFAULT_ORIGIN, matchPatternFor } from './js/endpoint.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -50,22 +50,9 @@ const EXTENSION_ONLY = new Set([
   'pack.mjs',
 ]);
 
-/**
- * Files in public/ this package deliberately does not ship, and why.
- *
- * Stated rather than left as an absence: "it is not there" and "we decided not to ship it"
- * look identical on disk, and only one of them is a decision.
- */
-const NOT_SHIPPED = new Map([
-  ['index.html', "the site landing page: a marketing document with no gate machinery in it. "
-    + "The extension's own index.html of the same name replaces it, which is why the "
-    + 'comparison below skips this name entirely.'],
-  ['js/landing.js', 'only the site landing page loads it.'],
-  ['sw.js', 'Chromium refuses to let an extension PAGE register a service worker, so the '
-    + 'streaming download it provides cannot run here at all. See js/streamable.js.'],
-  ['manifest.webmanifest', 'a web app manifest names a start_url and a scope on a server. '
-    + 'There is no server here.'],
-]);
+// NOT_SHIPPED is imported above rather than restated here: the sync decides what it does
+// not copy, and this file checks that the tree matches that decision. Two copies of the
+// list meant a file could be skipped by one and demanded by the other.
 
 let problems = 0;
 const fail = (msg) => { problems += 1; process.stdout.write(`BAD  ${msg}\n`); };

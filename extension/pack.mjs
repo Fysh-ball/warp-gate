@@ -26,24 +26,31 @@ const NEVER_SHIP = ['pack.mjs', 'sync-from-public.mjs', 'drift-check.mjs', 'exte
 
 const ASSET_DIRS = ['css', 'icons', 'js'];
 
+/**
+ * Does this path, relative to the extension root, go in the package?
+ *
+ * THE allowlist, stated once. fileList() below is this predicate applied to a directory,
+ * and sync-from-public.mjs refuses to copy a public/ file this returns false for. Said
+ * twice it would eventually be two different rules: public/og-card.png is what that looked
+ * like, a file the sync mirrored happily and this predicate would never have shipped.
+ */
+export function ships(rel) {
+  if (rel === 'manifest.json') return true;
+  if (!rel.includes('/')) return rel.endsWith('.html');
+  return ASSET_DIRS.includes(rel.split('/')[0]);
+}
+
 /** Every file the package ships, relative to the extension root, sorted. */
 export function fileList(root) {
-  const out = ['manifest.json'];
-  for (const name of fs.readdirSync(root)) {
-    if (name.endsWith('.html')) out.push(name);
-  }
-  for (const dir of ASSET_DIRS) {
-    const abs = path.join(root, dir);
-    if (!fs.existsSync(abs)) continue;
-    const walk = (rel) => {
-      for (const name of fs.readdirSync(path.join(root, rel)).sort()) {
-        const child = `${rel}/${name}`;
-        if (fs.statSync(path.join(root, child)).isDirectory()) walk(child);
-        else out.push(child);
-      }
-    };
-    walk(dir);
-  }
+  const out = [];
+  const walk = (rel) => {
+    for (const name of fs.readdirSync(path.join(root, rel || '.')).sort()) {
+      const child = rel ? `${rel}/${name}` : name;
+      if (fs.statSync(path.join(root, child)).isDirectory()) walk(child);
+      else if (ships(child)) out.push(child);
+    }
+  };
+  walk('');
   return out.sort();
 }
 

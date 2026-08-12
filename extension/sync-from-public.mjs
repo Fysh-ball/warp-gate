@@ -28,13 +28,40 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { ships } from './pack.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.resolve(HERE, '..', 'public');
 
-/** Files in public/ that are deliberately not copied. Kept in step with drift-check.mjs. */
-const SKIP = new Set(['index.html', 'js/landing.js', 'sw.js', 'manifest.webmanifest']);
+/**
+ * Files in public/ this package deliberately does not copy, and why.
+ *
+ * Stated rather than left as an absence: "it is not there" and "we decided not to ship it"
+ * look identical on disk, and only one of them is a decision.
+ *
+ * Exported because drift-check.mjs reads THIS map rather than keeping its own. It used to
+ * keep a second copy, with the reasons here and the bare names in the sync, and the comment
+ * on the sync's copy asked a human to keep the two in step. public/og-card.png is what that
+ * costs: a new public file the sync copied and the packer would never ship.
+ */
+export const NOT_SHIPPED = new Map([
+  ['index.html', "the site landing page: a marketing document with no gate machinery in it. "
+    + "The extension's own index.html of the same name replaces it, which is why "
+    + 'drift-check.mjs skips this name when it compares the two trees.'],
+  ['js/landing.js', 'only the site landing page loads it.'],
+  ['sw.js', 'Chromium refuses to let an extension PAGE register a service worker, so the '
+    + 'streaming download it provides cannot run here at all. See js/streamable.js.'],
+  ['manifest.webmanifest', 'a web app manifest names a start_url and a scope on a server. '
+    + 'There is no server here.'],
+  ['robots.txt', 'tells a web crawler what to fetch from a web SERVER. There is no server '
+    + 'here and no crawler reaches a chrome-extension:// page.'],
+  ['sitemap.xml', 'the same: a list of URLs on the website, which are not URLs in here.'],
+  ['og-card.png', 'the link-preview card a chat client fetches when someone pastes the site '
+    + 'URL. Nothing scrapes a chrome-extension:// page, and pack.mjs ships by structure '
+    + '(manifest.json, the top-level pages, css/ icons/ js/), so a top-level png was never '
+    + 'going to reach a user. Copying it here only put an unaccounted 111 KiB in the mirror.'],
+]);
 
 function walk(dir, base = dir) {
   const out = [];
@@ -351,6 +378,12 @@ edit('privacy.html', [
 // list would go stale the moment a page gains another footer link.
 export const ROOT_LINK_PAGES = ['app.html', 'faq.html', 'privacy.html', 'terms.html', 'acceptable-use.html'];
 
+// Link-preview metadata. A packaged page cannot be pasted into a chat, so og:* can never
+// fire here, and every tag in that block names the hosted origin: dead weight inside a
+// package whose whole argument is that it does not depend on that server. Stripped for the
+// same reason the root links are rewritten, and by the same mechanical rule.
+export const PREVIEW_BLOCK = /<meta name="description"[\s\S]*?<meta name="twitter:card" content="summary_large_image">\n/;
+
 /** Every file this directory deliberately changes. */
 export const PATCHED_FILES = new Set([...PATCHES.keys(), ...ROOT_LINK_PAGES]);
 
@@ -377,6 +410,13 @@ export function patchedText(rel, text) {
       throw new Error(`${rel} contains no link to the site root, so the rewrite that is `
         + 'supposed to redirect them all did nothing. Either the page changed or this loop is stale.');
     }
+    // Fails loudly rather than matching nothing quietly: a block that stops being found is
+    // a block that has started shipping again, and nothing else would say so.
+    if (!PREVIEW_BLOCK.test(text)) {
+      throw new Error(`${rel} carries no link-preview block, so the strip meant to remove `
+        + 'it did nothing. Either public/ dropped the tags or this pattern is stale.');
+    }
+    text = text.replace(PREVIEW_BLOCK, '');
   }
   return text;
 }
@@ -400,7 +440,19 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   }
   let copied = 0;
   for (const rel of walk(PUBLIC)) {
-    if (SKIP.has(rel)) continue;
+    if (NOT_SHIPPED.has(rel)) continue;
+    // Structural, not another list of names. pack.mjs ships by shape, so a public/ file
+    // outside that shape would be copied here and then silently dropped from the archive:
+    // present in the repo, absent from the package, and nothing saying so. Refused rather
+    // than skipped, because "we decided not to ship it" is a decision that belongs in
+    // NOT_SHIPPED above with a reason next to it.
+    if (!ships(rel)) {
+      process.stderr.write(`REFUSING to copy public/${rel}: pack.mjs ships manifest.json, the `
+        + 'top-level .html pages and css/ icons/ js/, so this file would sit in the mirror and '
+        + 'never reach a user.\n'
+        + `Add '${rel}' to NOT_SHIPPED with the reason, or put it in one of those directories.\n`);
+      process.exit(1);
+    }
     const dest = path.join(HERE, rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(path.join(PUBLIC, rel), dest);
