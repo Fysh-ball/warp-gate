@@ -57,7 +57,7 @@ services:
 
       # The bundled RFC 5389 responder stays off. Turning it on needs a published UDP
       # port, a router forward and a public DNS record pointing at your home address,
-      # which for a privacy tool is a real cost. See deploy/NOTES.md.
+      # which for a privacy tool is a real cost.
       WG_STUN_ENABLED: "${WG_STUN_ENABLED:-0}"
 
       # Off by default because they are only correct behind a proxy that terminates TLS.

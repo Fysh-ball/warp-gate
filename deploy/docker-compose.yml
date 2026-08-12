@@ -56,8 +56,9 @@ services:
       #
       # This service is bridge-networked, so the address the process actually sees is the
       # bridge gateway rather than 127.0.0.1, and the server only reads the forwarding
-      # header from an address on its trusted list. See "CONFIRMED: WG_TRUST_PROXY=1 is
-      # inert on a bridge network" in NOTES.md.
+      # header from an address on its trusted list. Measured on the live stack: WG_TRUST_PROXY=1
+      # on its own is inert here, because the gateway is not on that list until it is named
+      # below.
       - WG_TRUST_PROXY=${WG_TRUST_PROXY:-1}
       # The live stack's bridge gateway, measured 2026-08-11 inside the running container
       # (`docker exec warp-gate ip route` -> default via 172.16.28.1) after the server's
@@ -93,8 +94,8 @@ services:
       #
       #   docker compose exec warp-gate node deploy/read-suggestions.mjs /data/suggestions.jsonl
       #
-      # but ONLY once a deploy has shipped it: /app holds what the deploy sequence in
-      # NOTES.md rsyncs there, which was server/ and public/ alone until 2026-08-11, so on
+      # but ONLY once a deploy has shipped it: /app holds what the deploy sequence rsyncs
+      # there, which was server/ and public/ alone until 2026-08-11, so on
       # a tree synced before then /app/deploy does not exist and the exec form fails.
       - WG_SUGGESTIONS_PATH=${WG_SUGGESTIONS_PATH:-/data/suggestions.jsonl}
     volumes:

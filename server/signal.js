@@ -33,7 +33,7 @@ function trustedHop(addr) {
  * A bridge-networked container is the case that motivates it: host loopback traffic
  * reaches the service from the bridge gateway, not 127.0.0.1, so the loopback default
  * does not cover it and WG_TRUSTED_PROXIES has to name the gateway. That topology is
- * UNVERIFIED here (see NOTES.md), which is exactly why this counts rather than asserts.
+ * UNVERIFIED here, which is exactly why this counts rather than asserts.
  *
  * It is also the signature of a spoof attempt: someone who can reach the port directly,
  * sending a forwarding header they hope will be believed. Both readings want the same

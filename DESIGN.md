@@ -955,7 +955,6 @@ produced. Both were cited by earlier versions of this section and have been remo
                                root: the client shipped as a store-signed package
                                instead of served, closing the delivery gap the threat
                                model names
-  CLAUDE.md                    maintainers' working notes
   LICENSE                      AGPL-3.0
   Dockerfile                   the published image
   compose.yaml                 the quickstart compose file; deploy/docker-compose.yml
@@ -1063,7 +1062,6 @@ produced. Both were cited by earlier versions of this section and have been remo
     docker-compose.yml         node:22-alpine, source mounted read-only, no image build
     SELF-HOSTING.md            deployment guidance, minus anything machine-specific
                                (the authors' own ops log is not published at all)
-    NOTES.md                   the authors' deployment record for the official instance
     read-suggestions.mjs       read the suggestion box file
   tools/
     stun-client.mjs            an RFC 5389 client written independently of server/stun.js

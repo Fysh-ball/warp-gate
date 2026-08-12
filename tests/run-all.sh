@@ -14,8 +14,8 @@ cd "$(dirname "$0")/.." || exit 2
 #                                  the CSP stops what it injects
 #
 # Do not add either to the list below. This runner is meant to pass offline, and a suite
-# that needs the internet turns "no network" into a product failure. See deploy/NOTES.md
-# for where they belong: the deploy sequence, before and after.
+# that needs the internet turns "no network" into a product failure. They belong in the
+# deploy sequence instead, run against the live instance before and after it ships.
 # `legal` was missing from this list until 2026-08-10 and had therefore never run here.
 # It was not an exclusion, it was an omission: the file exists, passes 24/24 offline and
 # needs no network. That is the failure mode this list has, so the completeness of the list
