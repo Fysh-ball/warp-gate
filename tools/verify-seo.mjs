@@ -59,9 +59,15 @@ const robots = await get('/robots.txt');
 check('robots.txt is text/plain and is really robots.txt, not a page',
   robots.status === 200 && robots.type.startsWith('text/plain') && robots.body.toString().includes('User-agent:'),
   `status ${robots.status}, type ${robots.type}`);
+// Gated on the file being there. Read as `!/Disallow: \/app/` alone this passed against a
+// 404 body, which is to say it reported green on a site with no robots.txt at all: the one
+// state where the question it asks has no answer.
+const robotsServed = robots.status === 200 && robots.body.toString().includes('User-agent:');
 check('robots.txt does NOT disallow /app, which is what a gate link is',
-  !/^\s*Disallow:\s*\/app/mi.test(robots.body.toString()),
-  'a Disallow: /app line is present, so a pasted gate link will not render a card',
+  robotsServed && !/^\s*Disallow:\s*\/app/mi.test(robots.body.toString()),
+  robotsServed
+    ? 'a Disallow: /app line is present, so a pasted gate link will not render a card'
+    : 'there is no robots.txt to read, so this says nothing either way',
   'no Disallow: /app line');
 
 const sitemap = await get('/sitemap.xml');
