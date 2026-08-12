@@ -149,6 +149,9 @@
      and a hard-coded 0.94 would be the one piece of travel the reduced-motion branch could
      not reach. */
   --fold-scale: 0.94;
+  /* How far the phone games sheet rises from the bottom edge. A token so the reduce block
+     below can flatten it the same way it flattens every other translate in this file. */
+  --sheet-travel: 100%;
 }
 
 @media (min-width: 700px) {
@@ -360,6 +363,18 @@ input[type=text], input[type=password], input[type=file], select, textarea {
 }
 textarea { resize: vertical; font-family: var(--font-mono); font-size: 14px; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+/* Buttons and links had no focus style of their own, so they fell through to the UA ring,
+   which Chromium paints PURE WHITE on a dark page. It was reported as a rendering fault
+   rather than read as focus. The ring is the one thing a keyboard user navigates by, so it
+   is restated in the palette rather than removed. */
+button:focus-visible, a:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 2px; }
+/* app.js gives the incoming screen `tabindex="-1"` and focuses it, so that a Tab press
+   after a screen change starts inside the new screen and a screen reader is told the screen
+   changed. That focus is programmatic and the element is not reachable by Tab, so the ring
+   around it marks nothing anybody can act on: measured at 1920x1002 it was 2px of white
+   around 1696x923 of layout, drawn around the whole gate. Keyed on the attribute app.js
+   sets, so this can never reach a control a person can actually focus. */
+.screen[tabindex="-1"]:focus { outline: none; }
 
 button {
   font: inherit;
@@ -2081,14 +2096,18 @@ a.kofi:hover { filter: brightness(1.08); border-color: var(--accent); }
      because they are the other things you consult rather than read; Burn is pushed to the
      foot by `margin-top: auto`, away from all three, because it is destructive and
      irreversible and a destructive control should never be next to a routine one.
-     `1 / -1` rather than a span count, so adding a row to the left column cannot silently
-     leave the rail one row short of the bottom. */
+     Row 2, not row 1: the route line is the left column's own header and the rail has no
+     counterpart to it, so spanning row 1 started the rail 45px above the transcript and
+     nothing in either column shared a top edge. Measured on the reported screenshot: the
+     verification card's top was y=107 against the transcript's y=152. Ending at `-1`
+     rather than a span count, so adding a row to the left column cannot silently leave the
+     rail one row short of the bottom. */
   .conn-rail {
     display: flex;
     flex-direction: column;
     gap: 14px;
     grid-column: 2;
-    grid-row: 1 / -1;
+    grid-row: 2 / -1;
     height: 100%;
     min-height: 0;
   }
@@ -3782,8 +3801,73 @@ html[data-motion="off"] .lp-bar::after { animation: none; }
     --press-scale: 1;
     /* A drawer still fades open and shut; it just stops folding to get there. */
     --fold-scale: 1;
+    /* Same trade for the phone sheet: it fades in where it will sit instead of travelling. */
+    --sheet-travel: 0%;
   }
   /* --press-scale: 1 leaves the press with nothing to say, so it says it in luminance
      instead. Apple's HIG calls this substitution out by name. */
   button:active:not(:disabled) { filter: brightness(0.92); }
 }
+
+/* ---- the games drawer as a phone bottom sheet ---------------------------------------
+   On a phone there is no rail: `.conn-rail { display: contents }` drops its children into
+   the single column and Games lands under the composer as an inline drawer. Opening it
+   there pushes the composer and the transcript around and the board arrives below the
+   fold, which is the opposite of what a drawer is for on a screen this size. Every phone
+   app that shows a panel over a conversation uses the same shape instead, so this does
+   too: a sheet that rises from the bottom edge over a scrim, with a grab handle, dismissed
+   by the scrim, by Escape, or by dragging it back down. app.js wires those three; a sheet
+   whose only exit is the summary it covers is a sheet people get stuck inside.
+
+   Two id selectors on purpose. `#screen-connected details.disc.is-opening > .disc-body` is
+   (1,3,1) and would otherwise keep the desktop unfold animation on something that is now a
+   sheet. This is (2,2,0) and wins on the id count alone. */
+@media (max-width: 1023.98px) {
+  #screen-connected #games-disc[open]::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+    background: var(--scrim-veil);
+  }
+
+  #screen-connected #games-disc[open] > .disc-body {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    max-height: 85dvh;
+    overflow-y: auto;
+    /* Without this, flicking past the end of a board scrolls the transcript underneath. */
+    overscroll-behavior: contain;
+    padding: 0 14px calc(14px + env(safe-area-inset-bottom, 0px));
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 16px 16px 0 0;
+    animation: wg-sheet-up var(--motion-large) var(--ease-enter) both;
+  }
+
+  /* The grab handle. A sheet with no handle is a sheet nobody thinks to drag. */
+  #screen-connected #games-disc[open] > .disc-body::before {
+    content: "";
+    display: block;
+    width: 40px;
+    height: 4px;
+    margin: 10px auto 12px;
+    border-radius: 2px;
+    background: var(--line);
+  }
+
+  #screen-connected #games-disc.is-closing > .disc-body {
+    animation: wg-sheet-down var(--motion-small) var(--ease-exit) both;
+  }
+
+  /* The page behind a sheet must not scroll under it. `.page` is the scroll container
+     here, not the document, which is why this is not `body { overflow: hidden }`. */
+  body:has(#games-disc[open]) > .page { overflow: hidden; }
+}
+
+@keyframes wg-sheet-up   { from { opacity: 0; transform: translateY(var(--sheet-travel)); } to { opacity: 1; transform: none; } }
+@keyframes wg-sheet-down { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(var(--sheet-travel)); } }

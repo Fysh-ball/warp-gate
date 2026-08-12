@@ -440,7 +440,31 @@ function show(name) {
   if (ENTERING.has(name)) {
     const el = $(`screen-${name}`);
     el.dataset.enter = '';
-    el.addEventListener('animationend', () => { delete el.dataset.enter; }, { once: true });
+    // Two separate bugs shared the one line this replaces, and both leave the flag on the
+    // element for the rest of the session. It took ANY animationend that bubbled up, so a
+    // message landing or a drawer folding inside the new screen could clear it before the
+    // screen's own animation had run; and when nothing bubbled, nothing cleared it at all.
+    // Measured on a live gate: #screen-connected and #screen-onboarding both still carried
+    // data-enter long after, with NO animationend ever delivered to the element.
+    //
+    // A stranded flag is not cosmetic. `both` fill keeps the finished keyframe applied for
+    // as long as the rule matches, so the screen keeps a transform, and an element with a
+    // transform is the containing block for every `position: fixed` descendant under it.
+    // That is what pinned the phone games sheet into the middle of the screen instead of
+    // the bottom edge of the viewport, and it would do the same to any fixed thing added
+    // to a screen later. Same backstop shape as the drawer close below, for the same
+    // reason: an element hidden mid-animation never delivers animationend at all.
+    let timer = null;
+    const clear = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      el.removeEventListener('animationend', onEnd);
+      delete el.dataset.enter;
+    };
+    const onEnd = (event) => {
+      if (event.target === el && event.animationName === 'wg-rise-sm') clear();
+    };
+    timer = setTimeout(clear, 1200);
+    el.addEventListener('animationend', onEnd);
   }
   // Any screen change ends whatever drag was in progress; the veil must not survive it.
   resetDrag();
@@ -576,6 +600,69 @@ function wireDisclosureMotion() {
       timer = setTimeout(shut, 500);
     });
   }
+  wireGamesSheet();
+}
+
+/**
+ * The games drawer is a bottom sheet on a phone. See the sheet block in style.css.
+ *
+ * This wires the three dismissals a sheet is expected to answer. Without them the only way
+ * out is the summary, which on a short screen the sheet itself is covering. All three route
+ * through that summary's own click handler rather than setting `open` directly, so the
+ * close animation and the 500ms backstop above stay the single path that shuts this drawer
+ * and there is no second way to close it that could drift from the first.
+ */
+function wireGamesSheet() {
+  const disc = $('games-disc');
+  if (!disc) return;
+  const body = disc.querySelector('.disc-body');
+  const summary = disc.querySelector('summary');
+  if (!body || !summary) return;
+  // Read per event rather than once: a phone that rotates into 1024 wide stops being a
+  // sheet mid-gate, and a captured boolean would keep answering for the old orientation.
+  const isSheet = () => window.matchMedia('(max-width: 1023.98px)').matches;
+  const dismiss = () => { if (disc.open) summary.click(); };
+
+  // The scrim is #games-disc::before, and a pseudo-element's clicks arrive on its host, so
+  // a click whose target IS the details element is a click on the scrim. Every real control
+  // in this drawer is a descendant and names itself instead.
+  disc.addEventListener('click', (event) => {
+    if (!isSheet() || !disc.open || event.target !== disc) return;
+    dismiss();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !isSheet() || !disc.open) return;
+    // A modal is in front of the sheet and owns Escape for as long as it is up.
+    if (document.querySelector('.wg-modal-open')) return;
+    dismiss();
+  });
+
+  // Drag down to dismiss, from the top strip only and only with the sheet already scrolled
+  // to its own top. Otherwise dragging a board or flicking a long card reads as a dismissal
+  // and the panel someone is using disappears under their finger.
+  let startY = null;
+  body.addEventListener('pointerdown', (event) => {
+    if (!isSheet() || !disc.open || body.scrollTop > 0) return;
+    if (event.clientY - body.getBoundingClientRect().top > 44) return;
+    startY = event.clientY;
+    body.setPointerCapture(event.pointerId);
+  });
+  body.addEventListener('pointermove', (event) => {
+    if (startY === null) return;
+    // Downward only: dragging up must not lift the sheet off the bottom edge.
+    body.style.transform = `translateY(${Math.max(0, event.clientY - startY)}px)`;
+  });
+  const release = (event) => {
+    if (startY === null) return;
+    const travelled = Math.max(0, event.clientY - startY);
+    startY = null;
+    body.style.transform = '';
+    if (travelled > 80) dismiss();
+  };
+  body.addEventListener('pointerup', release);
+  // Without this a drag interrupted by a system gesture leaves the sheet mid-screen.
+  body.addEventListener('pointercancel', release);
 }
 
 let disclosuresFitted = false;
