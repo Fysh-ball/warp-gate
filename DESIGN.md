@@ -8,7 +8,7 @@ rewrites its own conclusions is not evidence of anything.
 
 Date: 2026-08-08, maintained since (last audit against the code: 2026-08-09). Live at
 `https://warpgate.fysh.site`. Deployment guidance is in
-[deploy/SELF-HOSTING.md](deploy/SELF-HOSTING.md); the authors' own deployment log is not
+[deploy/SELF-HOSTING.md](deploy/SELF-HOSTING.md); the deployment log is not
 published, because it is specific to their machines. The user-facing honest version of
 section 5 is in [THREAT-MODEL.md](THREAT-MODEL.md).
 
@@ -1107,7 +1107,7 @@ Stand up a 30 line SSE echo behind the real Cloudflare Tunnel. Verify with `curl
 
 **Phase 8: hardening.** Every item on the brief's section 20 test list, plus: wrong secret, room ID guess, oversized relay body, malformed envelope, replayed frame, counter rollback, tag corruption, simultaneous join race, double join, refresh mid transfer, tab close mid transfer, two devices behind the same NAT, WiFi to LTE with ICE restart, and a deliberate P2P failure to confirm the failure message is the honest one from section 12.
 
-**Phase 9: deploy.** As executed: a container rather than a systemd unit, no coturn, `stun.cloudflare.com` rather than a self hosted responder, Cloudflare Tunnel through an existing connector, and an explicit verification that access logging is off at the origin **and** in `cloudflared`. Recorded in Recorded outside this repository; the transferable parts are in `deploy/SELF-HOSTING.md`.
+**Phase 9: deploy.** As executed: a container rather than a systemd unit, no coturn, `stun.cloudflare.com` rather than a self hosted responder, Cloudflare Tunnel through an existing connector, and an explicit verification that access logging is off at the origin **and** in `cloudflared`. Recorded outside this repository; the transferable parts are in `deploy/SELF-HOSTING.md`.
 
 ### Test strategy
 
