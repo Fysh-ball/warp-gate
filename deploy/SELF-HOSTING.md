@@ -88,7 +88,7 @@ should be reachable directly from the internet.
 A browser exposes the Web Crypto API, service workers and the camera to a **secure
 context** only. The W3C rule for what counts is TLS *or* a loopback address, so
 `http://localhost`, `http://127.0.0.1` and `http://[::1]` qualify over plain HTTP and
-`http://192.168.1.20` does not.
+`http://192.0.2.10` does not.
 
 That makes "publish it on the LAN for now, add TLS later" the single worst intermediate
 state available, because it does not look broken. Measured 2026-08-10, headless Chromium
@@ -97,7 +97,7 @@ state available, because it does not look broken. Measured 2026-08-10, headless 
 | Origin | `isSecureContext` | `crypto.subtle` | service worker | `getUserMedia` |
 |---|---|---|---|---|
 | `http://127.0.0.1:3095` | `true` | `object` | present | `function` |
-| `http://172.16.34.2:3095` | `false` | `undefined` | absent | `undefined` |
+| `http://192.0.2.10:3095` | `false` | `undefined` | absent | `undefined` |
 
 Both rendered `/app` identically. Get TLS in front of it before you move the publish off
 `127.0.0.1`; if you need to test from a phone before that exists, a tunnel that terminates

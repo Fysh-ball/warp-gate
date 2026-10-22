@@ -49,7 +49,7 @@ not transfer automatically to a deployment that is not already behind Cloudflare
 is worth being exact about. Warp Gate encrypts with the Web Crypto API
 (`crypto.subtle`), which browsers expose in a *secure context* only, and the W3C rule for
 what counts is TLS **or** a loopback address: `localhost`, `127.0.0.1` and `[::1]` are
-secure over plain HTTP, and `192.168.1.20` is not. So moving the published port from
+secure over plain HTTP, and `192.0.2.10` is not. So moving the published port from
 `127.0.0.1:3095:3095` to `3095:3095` and browsing to the machine's LAN address gives you
 a page that loads perfectly, a landing that looks right, and a gate that cannot derive a
 key.
@@ -61,7 +61,7 @@ variable is the address in the bar:
 | Origin | `isSecureContext` | `crypto.subtle` | `navigator.serviceWorker` | `getUserMedia` |
 |---|---|---|---|---|
 | `http://127.0.0.1:3095` | `true` | `object` | present | `function` |
-| `http://172.16.34.2:3095` | `false` | **`undefined`** | absent | `undefined` |
+| `http://192.0.2.10:3095` | `false` | **`undefined`** | absent | `undefined` |
 
 Both served an identical `/app` with the title "Warp Gate", which is the point: the page
 renders and the primitives underneath it are gone. Nothing in `public/js` tests for
