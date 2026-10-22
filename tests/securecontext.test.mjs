@@ -8,7 +8,7 @@
 // container on 2026-08-10, one process and two origins:
 //
 //   http://127.0.0.1:3095    isSecureContext true   crypto.subtle object
-//   http://172.16.34.2:3095  isSecureContext false  crypto.subtle undefined
+//   http://192.0.2.10:3095  isSecureContext false  crypto.subtle undefined
 //
 // Both served the same document with the same title. The page renders, the primitive the
 // whole product rests on is gone, and before requireSecureContext() the symptom was an
